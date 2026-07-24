@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 from pathlib import Path
 
 import mujoco
@@ -22,6 +23,14 @@ def contact_metrics(model: mujoco.MjModel, data: mujoco.MjData) -> tuple[float, 
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="print the first 100 integration steps in addition to the summary",
+    )
+    args = parser.parse_args()
+
     model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
@@ -38,7 +47,7 @@ def main() -> None:
         peak_force = max(peak_force, force)
         peak_penetration = max(peak_penetration, penetration)
         error = data.qpos - home
-        if step <= 100:
+        if args.verbose and step <= 100:
             error_text = " ".join(f"{value:+.6f}" for value in error)
             print(
                 f"step={step:03d} t={data.time:.3f} ncon={data.ncon} "

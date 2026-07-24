@@ -94,7 +94,7 @@ class BimanualPinkIK:
                 self.configuration,
                 tasks,
                 self.dt,
-                solver="osqp",
+                solver="quadprog",
                 safety_break=True,
             )
         except (QPError, AssertionError) as exc:
