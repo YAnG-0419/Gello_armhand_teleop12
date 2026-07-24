@@ -1,0 +1,10 @@
+/left/franka/joint_states:
+  history: keep_last
+  depth: 5
+  reliability: best_effort
+  durability: volatile
+/right/franka/joint_states:
+  history: keep_last
+  depth: 5
+  reliability: best_effort
+  durability: volatile

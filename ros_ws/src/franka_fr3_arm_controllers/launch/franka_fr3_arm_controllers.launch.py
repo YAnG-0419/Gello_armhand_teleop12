@@ -1,0 +1,100 @@
+#  Copyright (c) 2025 Franka Robotics GmbH
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+import os
+import yaml
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+
+# Opens the specified YAML file and loads its contents into a Python dictionary.
+
+
+def load_yaml(file_path):
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    with open(file_path, "r") as file:
+        return yaml.safe_load(file)
+
+
+def generate_robot_nodes(context):
+    config_file_name = LaunchConfiguration("robot_config_file").perform(context)
+    if os.path.isabs(config_file_name):
+        config_file = config_file_name
+    else:
+        package_config_dir = FindPackageShare(
+            "franka_fr3_arm_controllers"
+        ).perform(context)
+        config_file = os.path.join(package_config_dir, "config", config_file_name)
+    configs = load_yaml(config_file)
+    nodes = []
+    for item_name, config in configs.items():
+        namespace = config["namespace"]
+        nodes.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution(
+                        [
+                            FindPackageShare("franka_fr3_arm_controllers"),
+                            "launch",
+                            "franka.launch.py",
+                        ]
+                    )
+                ),
+                launch_arguments={
+                    "arm_id": str(config["arm_id"]),
+                    "arm_prefix": str(config["arm_prefix"]),
+                    "controller_cpus": str(config["controller_cpus"]),
+                    "namespace": str(namespace),
+                    "urdf_file": str(config["urdf_file"]),
+                    "robot_ip": str(config["robot_ip"]),
+                    "use_fake_hardware": str(config["use_fake_hardware"]),
+                    "fake_sensor_commands": str(config["fake_sensor_commands"]),
+                }.items(),
+            )
+        )
+        nodes.append(
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                namespace=namespace,
+                arguments=["joint_impedance_controller", "--controller-manager-timeout", "30"],
+                parameters=[
+                    PathJoinSubstitution(
+                        [
+                            FindPackageShare("franka_fr3_arm_controllers"),
+                            "config",
+                            "controllers.yaml",
+                        ]
+                    )
+                ],
+                output="screen",
+            )
+        )
+    return nodes
+
+
+def generate_launch_description():
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "robot_config_file",
+                description="Absolute path or package-relative robot configuration file.",
+            ),
+            OpaqueFunction(function=generate_robot_nodes),
+        ]
+    )

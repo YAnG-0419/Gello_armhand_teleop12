@@ -1,0 +1,25 @@
+schema_version: franka.teleop.raw.v1
+data_root: /data/episodes
+storage_id: sqlite3
+
+topics:
+  left_arm_state:
+    topic: /left/franka/joint_states
+    type: sensor_msgs/msg/JointState
+  right_arm_state:
+    topic: /right/franka/joint_states
+    type: sensor_msgs/msg/JointState
+  source_arm_command:
+    topic: /teleop/arm_commands
+    type: teleop_interfaces/msg/ArmCommand
+  validated_arm_command:
+    topic: /teleop/validated_arm_commands
+    type: sensor_msgs/msg/JointState
+  camera_color:
+    topic: /camera/color/image_raw
+    type: sensor_msgs/msg/Image
+    required: false
+  camera_depth:
+    topic: /camera/depth/image_raw
+    type: sensor_msgs/msg/Image
+    required: false

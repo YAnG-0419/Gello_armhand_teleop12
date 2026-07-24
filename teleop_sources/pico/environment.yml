@@ -1,0 +1,7 @@
+name: franka-teleop-pico
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pybind11

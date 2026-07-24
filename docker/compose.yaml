@@ -1,0 +1,54 @@
+x-runtime: &runtime
+  image: franka-upper-body-teleop:latest
+  network_mode: host
+  ipc: host
+  volumes:
+    - ..:/workspace/franka_upper_body_teleop
+    - ${TELEOP_DATA_ROOT:?Set TELEOP_DATA_ROOT in docker/.env}:/data
+  environment:
+    - ROS_LOCALHOST_ONLY=0
+    - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+  working_dir: /workspace/franka_upper_body_teleop
+
+services:
+  franka-control:
+    <<: *runtime
+    privileged: true
+    cpuset: ${FRANKA_CPUSET:-16-23}
+    ulimits:
+      rtprio: 99
+      rttime: -1
+      memlock: -1
+    volumes:
+      - ..:/workspace/franka_upper_body_teleop
+      - /dev:/dev
+    command:
+      - ros2
+      - launch
+      - franka_fr3_arm_controllers
+      - robot_control.launch.py
+      - robot_config:=${FRANKA_ROBOT_CONFIG:-/workspace/franka_upper_body_teleop/config/current_workcell.yaml}
+
+  teleop-control:
+    <<: *runtime
+    command:
+      - ros2
+      - launch
+      - teleop_core
+      - control.launch.py
+      - enabled:=${TELEOP_OUTPUT_ENABLED:-false}
+
+  pico-bridge:
+    <<: *runtime
+    command:
+      - ros2
+      - launch
+      - pico_teleop_bridge
+      - pico.launch.py
+
+  tools:
+    <<: *runtime
+    profiles: [tools]
+    stdin_open: true
+    tty: true
+    command: bash
