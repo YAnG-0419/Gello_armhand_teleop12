@@ -1,16 +1,22 @@
 # Franka Upper Body Teleop
 
-PICO controller or motion-tracker teleoperation, recording, conversion, and
-replay for the mounted dual Franka FR3 workcell.
+Monorepo for dual-FR3 teleoperation, recording, conversion, and replay.
 
 ```text
-PICO input -> host IK -> UDP -> ROS adapter -> command gateway -> FR3 controllers
-                                ^
-                             replay
+PICO input -> retargeting/IK -> UDP -> ROS gateway -> FR3 controllers
+                                      ^
+                                   replay
 ```
 
-Every input publishes the same `ArmCommand` interface. Device I/O stays in
-`teleop_sources/`; robot control and data tooling do not depend on PICO.
+PICO inputs are selected explicitly on the CLI:
+
+```text
+--input controllers
+--input motion-trackers
+```
+
+The choice is not stored in YAML. Both inputs share the same mapping, IK, UDP,
+ROS, and robot-control pipeline.
 
 ## Setup
 
@@ -20,53 +26,32 @@ cp docker/.env.example docker/.env
 ./scripts/setup_pico_env.sh
 ```
 
+The only public scripts are:
+
+- `build.sh`: build the Docker image and ROS workspace
+- `setup_pico_env.sh`: create/update the PICO Conda environment
+
+Docker services use ordinary Compose commands from `docker/`; Compose reads
+`docker/.env` automatically.
+
 Mock simulation:
 
 ```bash
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/simulation/teleop_dual_fr3_mujoco.py \
-  --config config/pico.yaml --headless --mock-xr --duration 2
+  --config config/pico.yaml --input mock --headless --duration 2
 ```
 
-For hardware, follow [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md).
+See [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md) for real PICO and FR3
+commands.
 
-## Configuration
+## Configuration ownership
 
-Each setting has one owner:
-
-- `docker/.env`: data mount, ROS domain, CPU set, selected workcell
-- `config/current_workcell.yaml`: real FR3 connections
-- `config/pico.yaml`: selected PICO input and all PICO/UDP parameters
-- `config/teleop_control.yaml`: command gateway
+- `docker/.env`: host paths, ROS domain, CPU allocation, workcell selection
+- `config/current_workcell.yaml`: FR3 addresses and namespaces
+- `config/pico.yaml`: controller and motion-tracker settings, mapping, IK, and UDP
+- `config/teleop_control.yaml`: ROS command gateway
 - `ros_ws/src/teleop_data/config/recording.yaml`: data pipeline
 - `ros_ws/src/franka_fr3_arm_controllers/config/initial_pose.yaml`: reset pose
 
-`scripts/compose.sh` validates `docker/.env`, then forwards its arguments
-unchanged to `docker compose`. It does not choose services or add ROS options.
-
-## Data CLI
-
-Start the interactive operator with the complete command:
-
-```bash
-./scripts/compose.sh run --rm tools ros2 run teleop_data operator \
-  --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml \
-  --qos /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording_qos.yaml
-```
-
-Its commands include `/capture`, `/reset`, `/record`, `/stop`, `/save`,
-`/discard`, and `/status`.
-
-Convert and replay:
-
-```bash
-./scripts/compose.sh run --rm tools ros2 run teleop_data convert \
-  /data/episodes/episode0 /data/normalized/episode0.npz \
-  --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml
-
-./scripts/compose.sh run --rm tools ros2 run teleop_data replay \
-  /data/normalized/episode0.npz \
-  --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml
-```
-
-Stop live PICO input before replay.
+Missing or unknown YAML fields are errors.

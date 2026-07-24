@@ -13,17 +13,21 @@ host:
   robot_state_wait_timeout: 10.0
 
 input:
-  type: motion_trackers
   controllers:
     grip_threshold: 0.9
     ready_timeout: 30.0
     stale_timeout: 0.25
   motion_trackers:
     serials:
-      left: REPLACE_WITH_LEFT_TRACKER_SERIAL
-      right: REPLACE_WITH_RIGHT_TRACKER_SERIAL
+      left: PC2310MLL6020917G
+      right: PC2310MLL5290914G
     ready_timeout: 30.0
     stale_timeout: 0.25
+    frozen_timeout: 1.0
+    max_position_jump: 0.20
+    max_rotation_jump: 1.0
+    max_linear_speed: 3.0
+    max_angular_speed: 12.0
     activation:
       type: keyboard
       device: /dev/tty

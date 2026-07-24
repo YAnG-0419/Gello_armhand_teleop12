@@ -16,12 +16,12 @@ from .xr_input import MockTeleopInput, create_pico_input
 class DualFr3Simulation:
     def __init__(
         self,
-        mock_xr: bool,
         translation_scale: float,
         rotation_scale: float,
         control_rate: float,
         max_joint_speed: float,
         input_config: InputConfig,
+        input_type: str,
     ) -> None:
         if control_rate <= 0.0:
             raise ValueError("Control rate must be positive")
@@ -40,10 +40,10 @@ class DualFr3Simulation:
             )
             for side in SIDES
         }
-        if mock_xr:
+        if input_type == "mock":
             self.teleop_input = MockTeleopInput()
         else:
-            self.teleop_input = create_pico_input(input_config)
+            self.teleop_input = create_pico_input(input_config, input_type)
         self.target_mocap = {
             side: self.model.body(f"{side}_target").mocapid[0]
             for side in SIDES

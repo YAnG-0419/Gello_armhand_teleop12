@@ -84,6 +84,14 @@ install(
   DESTINATION lib/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(
+    test_reset_to_initial_pose
+    test/test_reset_to_initial_pose.py
+  )
+endif()
+
 ament_export_include_directories(
         include
 )

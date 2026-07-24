@@ -24,6 +24,12 @@ from std_srvs.srv import Trigger
 
 SIDES = ("left", "right")
 JOINT_COUNT = 7
+STATE_MAX_AGE = 0.5
+RESET_MAX_SPEED = 0.20
+RESET_MAX_ACCELERATION = 0.40
+RESET_MIN_DURATION = 1.0
+SMOOTHERSTEP_PEAK_SPEED = 1.875
+SMOOTHERSTEP_PEAK_ACCELERATION = 10.0 * math.sqrt(3.0) / 3.0
 
 
 def load_targets(path):
@@ -57,6 +63,32 @@ def load_targets(path):
 def smootherstep(progress):
     progress = min(1.0, max(0.0, progress))
     return progress**3 * (progress * (progress * 6.0 - 15.0) + 10.0)
+
+
+def reset_duration(
+    max_distance,
+    max_speed=RESET_MAX_SPEED,
+    max_acceleration=RESET_MAX_ACCELERATION,
+    min_duration=RESET_MIN_DURATION,
+):
+    values = (max_distance, max_speed, max_acceleration, min_duration)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("Reset trajectory limits must be finite")
+    if max_distance < 0 or max_speed <= 0 or max_acceleration <= 0:
+        raise ValueError("Reset distance must be non-negative and limits positive")
+    if min_duration < 0:
+        raise ValueError("Reset minimum duration must be non-negative")
+    if max_distance == 0:
+        return 0.0
+    velocity_duration = (
+        SMOOTHERSTEP_PEAK_SPEED * max_distance / max_speed
+    )
+    acceleration_duration = math.sqrt(
+        SMOOTHERSTEP_PEAK_ACCELERATION
+        * max_distance
+        / max_acceleration
+    )
+    return max(min_duration, velocity_duration, acceleration_duration)
 
 
 class InitialPoseReset(Node):
@@ -130,14 +162,19 @@ class InitialPoseReset(Node):
             message.position = positions[side]
             self.command_publishers[side].publish(message)
 
+    def _states_are_fresh(self):
+        now = time.monotonic()
+        return all(
+            side in self.states
+            and side in self.state_times
+            and now - self.state_times[side] < STATE_MAX_AGE
+            for side in SIDES
+        )
+
     def _wait_for_fresh_states(self, timeout=5.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            now = time.monotonic()
-            if all(
-                side in self.states and now - self.state_times[side] < 0.5
-                for side in SIDES
-            ):
+            if self._states_are_fresh():
                 return
             time.sleep(0.05)
         raise RuntimeError("Timed out waiting for fresh dual-arm joint states")
@@ -151,19 +188,36 @@ class InitialPoseReset(Node):
         if missing:
             raise RuntimeError("No active joint controller for: " + ", ".join(missing))
 
-    def _move(self, speed=0.15, rate=50.0, tolerance=0.04):
+    def _move(
+        self,
+        max_speed=RESET_MAX_SPEED,
+        max_acceleration=RESET_MAX_ACCELERATION,
+        rate=50.0,
+        tolerance=0.04,
+    ):
         starts = {side: list(self.states[side]) for side in SIDES}
         max_distance = max(
             abs(target - current)
             for side in SIDES
             for current, target in zip(starts[side], self.targets[side])
         )
-        duration = 0.0 if max_distance == 0.0 else 1.875 * max_distance / speed
+        duration = reset_duration(
+            max_distance,
+            max_speed=max_speed,
+            max_acceleration=max_acceleration,
+        )
+        self.get_logger().info(
+            f"Reset trajectory: maximum joint distance {max_distance:.3f} rad, "
+            f"duration {duration:.1f} s, peak limits {max_speed:.2f} rad/s "
+            f"and {max_acceleration:.2f} rad/s^2."
+        )
         period = 1.0 / rate
         started = time.monotonic()
 
         while rclpy.ok():
             cycle_started = time.monotonic()
+            if not self._states_are_fresh():
+                raise RuntimeError("Dual-arm joint state became stale during reset")
             elapsed = cycle_started - started
             progress = 1.0 if duration == 0.0 else elapsed / duration
             blend = smootherstep(progress)
@@ -181,8 +235,11 @@ class InitialPoseReset(Node):
 
         deadline = time.monotonic() + 10.0
         settled_since = None
+        error = math.inf
         while rclpy.ok() and time.monotonic() < deadline:
             cycle_started = time.monotonic()
+            if not self._states_are_fresh():
+                raise RuntimeError("Dual-arm joint state became stale during reset")
             self._publish(self.targets)
             error = max(
                 abs(target - current)

@@ -26,11 +26,21 @@ from teleop_interfaces.msg import ArmCommand
 class PicoTeleopBridge(Node):
     def __init__(self):
         super().__init__("pico_teleop_bridge")
-        listen_host = str(self._required_parameter("listen_host"))
-        command_port = int(self._required_parameter("command_port"))
-        feedback_host = str(self._required_parameter("feedback_host"))
-        feedback_port = int(self._required_parameter("feedback_port"))
-        self.state_timeout = float(self._required_parameter("state_timeout"))
+        listen_host = self._required_parameter(
+            "listen_host", Parameter.Type.STRING
+        )
+        command_port = self._required_parameter(
+            "command_port", Parameter.Type.INTEGER
+        )
+        feedback_host = self._required_parameter(
+            "feedback_host", Parameter.Type.STRING
+        )
+        feedback_port = self._required_parameter(
+            "feedback_port", Parameter.Type.INTEGER
+        )
+        self.state_timeout = self._required_parameter(
+            "state_timeout", Parameter.Type.DOUBLE
+        )
         if self.state_timeout <= 0:
             raise ValueError("State timeout must be positive.")
 
@@ -61,8 +71,8 @@ class PicoTeleopBridge(Node):
             f"PICO adapter listening on udp://{listen_host}:{command_port}."
         )
 
-    def _required_parameter(self, name):
-        parameter = self.declare_parameter(name)
+    def _required_parameter(self, name, parameter_type):
+        parameter = self.declare_parameter(name, parameter_type)
         if parameter.type_ == Parameter.Type.NOT_SET:
             raise ValueError(f"Required parameter '{name}' is missing")
         return parameter.value

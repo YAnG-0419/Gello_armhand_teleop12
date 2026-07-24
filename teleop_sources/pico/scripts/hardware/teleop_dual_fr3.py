@@ -8,8 +8,13 @@ from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--input",
+        required=True,
+        choices=("controllers", "motion-trackers"),
+    )
     args = parser.parse_args()
-    config = load_config(args.config, allow_unconfigured_trackers=False)
+    config = load_config(args.config)
     teleop = DualFr3HardwareTeleop(
         command_host=config.udp.command_host,
         command_port=config.udp.command_port,
@@ -22,6 +27,7 @@ def main() -> None:
         max_joint_speed=config.host.max_joint_speed,
         robot_state_wait_timeout=config.host.robot_state_wait_timeout,
         input_config=config.input,
+        input_type=args.input,
     )
     teleop.run()
 

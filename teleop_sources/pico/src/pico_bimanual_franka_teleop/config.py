@@ -54,12 +54,16 @@ class MotionTrackerConfig:
     tracker_to_control: dict[str, dict]
     ready_timeout: float
     stale_timeout: float
+    frozen_timeout: float
+    max_position_jump: float
+    max_rotation_jump: float
+    max_linear_speed: float
+    max_angular_speed: float
     keyboard_device: str
 
 
 @dataclass(frozen=True)
 class InputConfig:
-    type: str
     controllers: ControllerConfig
     motion_trackers: MotionTrackerConfig
 
@@ -146,57 +150,18 @@ def _load_controllers(raw) -> ControllerConfig:
     )
 
 
-def _load_motion_trackers(raw, require_serials: bool) -> MotionTrackerConfig:
-    trackers = _exact_mapping(
-        raw,
-        {
-            "serials",
-            "ready_timeout",
-            "stale_timeout",
-            "activation",
-            "tracker_to_control",
-        },
-        "input.motion_trackers",
-    )
-    serials = _exact_mapping(
-        trackers["serials"],
-        {"left", "right"},
-        "input.motion_trackers.serials",
-    )
-    serials = {side: str(serials[side]).strip() for side in ("left", "right")}
-    if any(not serial for serial in serials.values()):
-        raise ValueError("Both motion tracker serials must be non-empty")
-    if serials["left"] == serials["right"]:
-        raise ValueError("Left and right motion tracker serials must differ")
-    if require_serials and any(
-        serial.startswith("REPLACE_WITH_") for serial in serials.values()
-    ):
-        raise ValueError(
-            "Motion tracker serials are not configured; run the tracker-list "
-            "command documented in docs/HARDWARE_DEPLOY.md"
-        )
-
-    activation = _exact_mapping(
-        trackers["activation"],
-        {"type", "device"},
-        "input.motion_trackers.activation",
-    )
-    if activation["type"] != "keyboard":
-        raise ValueError("input.motion_trackers.activation.type must be keyboard")
-    keyboard_device = str(activation["device"]).strip()
-    if not keyboard_device:
-        raise ValueError("input.motion_trackers.activation.device must be non-empty")
-
+def _load_tracker_transforms(raw) -> dict[str, dict]:
+    section = "input.motion_trackers"
     transforms = _exact_mapping(
-        trackers["tracker_to_control"],
+        raw,
         {"left", "right"},
-        "input.motion_trackers.tracker_to_control",
+        f"{section}.tracker_to_control",
     )
     for side in ("left", "right"):
         transform = _exact_mapping(
             transforms[side],
             {"translation_xyz", "quaternion_xyzw"},
-            f"input.motion_trackers.tracker_to_control.{side}",
+            f"{section}.tracker_to_control.{side}",
         )
         translation = np.asarray(transform["translation_xyz"], dtype=float)
         quaternion = np.asarray(transform["quaternion_xyzw"], dtype=float)
@@ -206,42 +171,99 @@ def _load_motion_trackers(raw, require_serials: bool) -> MotionTrackerConfig:
             raise ValueError(f"{side} tracker transform must be finite")
         if np.linalg.norm(quaternion) <= 1e-8:
             raise ValueError(f"{side} tracker quaternion must be non-zero")
+    return transforms
+
+
+def _load_motion_trackers(raw) -> MotionTrackerConfig:
+    section = "input.motion_trackers"
+    trackers = _exact_mapping(
+        raw,
+        {
+            "serials",
+            "ready_timeout",
+            "stale_timeout",
+            "frozen_timeout",
+            "max_position_jump",
+            "max_rotation_jump",
+            "max_linear_speed",
+            "max_angular_speed",
+            "activation",
+            "tracker_to_control",
+        },
+        section,
+    )
+    serials = _exact_mapping(
+        trackers["serials"],
+        {"left", "right"},
+        f"{section}.serials",
+    )
+    serials = {side: str(serials[side]).strip() for side in ("left", "right")}
+    if any(not serial for serial in serials.values()):
+        raise ValueError("Both motion tracker serials must be non-empty")
+    if serials["left"] == serials["right"]:
+        raise ValueError("Left and right motion tracker serials must differ")
+
+    activation = _exact_mapping(
+        trackers["activation"],
+        {"type", "device"},
+        f"{section}.activation",
+    )
+    if activation["type"] != "keyboard":
+        raise ValueError(f"{section}.activation.type must be keyboard")
+    keyboard_device = str(activation["device"]).strip()
+    if not keyboard_device:
+        raise ValueError(f"{section}.activation.device must be non-empty")
 
     return MotionTrackerConfig(
         serials=serials,
-        tracker_to_control=transforms,
+        tracker_to_control=_load_tracker_transforms(
+            trackers["tracker_to_control"]
+        ),
         ready_timeout=_positive(
-            trackers["ready_timeout"], "input.motion_trackers.ready_timeout"
+            trackers["ready_timeout"], f"{section}.ready_timeout"
         ),
         stale_timeout=_positive(
-            trackers["stale_timeout"], "input.motion_trackers.stale_timeout"
+            trackers["stale_timeout"], f"{section}.stale_timeout"
+        ),
+        frozen_timeout=_positive(
+            trackers["frozen_timeout"],
+            f"{section}.frozen_timeout",
+        ),
+        max_position_jump=_positive(
+            trackers["max_position_jump"],
+            f"{section}.max_position_jump",
+        ),
+        max_rotation_jump=_positive(
+            trackers["max_rotation_jump"],
+            f"{section}.max_rotation_jump",
+        ),
+        max_linear_speed=_positive(
+            trackers["max_linear_speed"],
+            f"{section}.max_linear_speed",
+        ),
+        max_angular_speed=_positive(
+            trackers["max_angular_speed"],
+            f"{section}.max_angular_speed",
         ),
         keyboard_device=keyboard_device,
     )
 
 
-def load_config(path, allow_unconfigured_trackers: bool) -> PicoConfig:
+def load_config(path) -> PicoConfig:
     config_path = Path(path)
     with config_path.open(encoding="utf-8") as stream:
         root = yaml.safe_load(stream)
     root = _exact_mapping(root, {"udp", "host", "input"}, str(config_path))
     input_raw = _exact_mapping(
         root["input"],
-        {"type", "controllers", "motion_trackers"},
+        {"controllers", "motion_trackers"},
         "input",
     )
-    input_type = str(input_raw["type"]).strip()
-    if input_type not in {"controllers", "motion_trackers"}:
-        raise ValueError("input.type must be controllers or motion_trackers")
-    require_serials = input_type == "motion_trackers" and not allow_unconfigured_trackers
     return PicoConfig(
         udp=_load_udp(root["udp"]),
         host=_load_host(root["host"]),
         input=InputConfig(
-            type=input_type,
             controllers=_load_controllers(input_raw["controllers"]),
-            motion_trackers=_load_motion_trackers(
-                input_raw["motion_trackers"], require_serials
-            ),
+            motion_trackers=_load_motion_trackers(input_raw["motion_trackers"]),
         ),
     )

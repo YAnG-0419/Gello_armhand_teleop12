@@ -3,10 +3,15 @@
   <link name="lychee_root"/>
 
   <link name="left_fr3v2_link0"/>
+  <!--
+    Measured world-to-base calibration for the remounted workcell.
+    Do not replace this with the legacy dual_arm_45 CAD transform when
+    regenerating the combined model.
+  -->
   <joint name="left_mount" type="fixed">
     <parent link="lychee_root"/>
     <child link="left_fr3v2_link0"/>
-    <origin xyz="-0.038 -0.18 0.304" rpy="-0.5567600306 0.5689773370 -2.4626595739"/>
+    <origin xyz="0.013079894 0.100675805 -0.005974552" rpy="-0.78850572 0.02334617 0.01037711"/>
   </joint>
   <link name="left_fr3v2_link1"/>
   <joint name="left_fr3v2_joint1" type="revolute">
@@ -60,7 +65,7 @@
   <joint name="right_mount" type="fixed">
     <parent link="lychee_root"/>
     <child link="right_fr3v2_link0"/>
-    <origin xyz="-0.038 0.18 0.304" rpy="0.5567600306 0.5689773370 2.4626595739"/>
+    <origin xyz="-0.013079894 -0.100675805 0.005974552" rpy="0.76133216 0.03792674 -0.01038175"/>
   </joint>
   <link name="right_fr3v2_link1"/>
   <joint name="right_fr3v2_joint1" type="revolute">

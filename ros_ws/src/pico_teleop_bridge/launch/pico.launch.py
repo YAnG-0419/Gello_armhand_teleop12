@@ -60,7 +60,6 @@ def launch_bridge(context):
             details.append(f"unknown host keys: {', '.join(unknown_host)}")
         raise ValueError(f"{path}: {'; '.join(details)}")
     required_input = {
-        "type",
         "controllers",
         "motion_trackers",
     }
@@ -72,10 +71,6 @@ def launch_bridge(context):
             f"unknown={sorted(input_fields - required_input)}"
         )
     input_config = root["input"]
-    if input_config["type"] not in {"controllers", "motion_trackers"}:
-        raise ValueError(
-            f"{path}: input.type must be controllers or motion_trackers"
-        )
     controller_fields = {"grip_threshold", "ready_timeout", "stale_timeout"}
     controllers = input_config["controllers"]
     if not isinstance(controllers, dict) or set(controllers) != controller_fields:
@@ -90,6 +85,11 @@ def launch_bridge(context):
         "serials",
         "ready_timeout",
         "stale_timeout",
+        "frozen_timeout",
+        "max_position_jump",
+        "max_rotation_jump",
+        "max_linear_speed",
+        "max_angular_speed",
         "activation",
         "tracker_to_control",
     }

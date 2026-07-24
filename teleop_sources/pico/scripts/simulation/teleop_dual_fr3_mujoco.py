@@ -7,21 +7,23 @@ from pico_bimanual_franka_teleop.simulation import DualFr3Simulation
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mock-xr", action="store_true")
+    parser.add_argument(
+        "--input",
+        required=True,
+        choices=("controllers", "motion-trackers", "mock"),
+    )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--duration", type=float)
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    config = load_config(
-        args.config, allow_unconfigured_trackers=args.mock_xr
-    )
+    config = load_config(args.config)
     simulation = DualFr3Simulation(
-        mock_xr=args.mock_xr,
         translation_scale=config.host.translation_scale,
         rotation_scale=config.host.rotation_scale,
         control_rate=config.host.control_rate,
         max_joint_speed=config.host.max_joint_speed,
         input_config=config.input,
+        input_type=args.input,
     )
     simulation.run(duration=args.duration, headless=args.headless)
 

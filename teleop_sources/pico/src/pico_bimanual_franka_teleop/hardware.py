@@ -24,6 +24,7 @@ class DualFr3HardwareTeleop:
         max_joint_speed: float,
         robot_state_wait_timeout: float,
         input_config: InputConfig,
+        input_type: str,
     ) -> None:
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
@@ -35,7 +36,7 @@ class DualFr3HardwareTeleop:
             state_timeout=state_timeout,
         )
         try:
-            self.teleop_input = create_pico_input(input_config)
+            self.teleop_input = create_pico_input(input_config, input_type)
         except BaseException:
             self.robot.close()
             raise

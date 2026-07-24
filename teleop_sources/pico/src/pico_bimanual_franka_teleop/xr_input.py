@@ -225,6 +225,11 @@ class MotionTrackerInput:
         tracker_to_control: dict[str, dict],
         ready_timeout: float,
         stale_timeout: float,
+        frozen_timeout: float,
+        max_position_jump: float,
+        max_rotation_jump: float,
+        max_linear_speed: float,
+        max_angular_speed: float,
         keyboard_device: str,
     ) -> None:
         import xrobotoolkit_sdk as xrt
@@ -235,8 +240,17 @@ class MotionTrackerInput:
             raise ValueError("Left and right motion tracker serials must differ")
         if set(tracker_to_control) != set(SIDES):
             raise ValueError("Both tracker-to-control transforms are required")
-        if ready_timeout <= 0 or stale_timeout <= 0:
-            raise ValueError("Tracker ready and stale timeouts must be positive")
+        limits = (
+            ready_timeout,
+            stale_timeout,
+            frozen_timeout,
+            max_position_jump,
+            max_rotation_jump,
+            max_linear_speed,
+            max_angular_speed,
+        )
+        if any(not np.isfinite(value) or value <= 0 for value in limits):
+            raise ValueError("Tracker timeouts and motion limits must be positive")
 
         self.xrt = xrt
         self.serials = dict(serials)
@@ -245,8 +259,16 @@ class MotionTrackerInput:
             for side in SIDES
         }
         self.stale_timeout = float(stale_timeout)
+        self.frozen_timeout = float(frozen_timeout)
+        self.max_position_jump = float(max_position_jump)
+        self.max_rotation_jump = float(max_rotation_jump)
+        self.max_linear_speed = float(max_linear_speed)
+        self.max_angular_speed = float(max_angular_speed)
         self.last_motion_timestamp: int | None = None
         self.last_motion_update_at: float | None = None
+        self.last_poses: dict[str, Pose | None] = {side: None for side in SIDES}
+        self.last_pose_changed_at = {side: None for side in SIDES}
+        self.last_activations = {side: False for side in SIDES}
         self.keyboard = KeyboardActivation(keyboard_device)
         try:
             self.xrt.init()
@@ -258,6 +280,7 @@ class MotionTrackerInput:
     def _snapshot(self):
         for _ in range(3):
             timestamp_before = int(self.xrt.get_motion_timestamp_ns())
+            count = int(self.xrt.num_motion_data_available())
             serials = list(self.xrt.get_motion_tracker_serial_numbers())
             poses = list(self.xrt.get_motion_tracker_pose())
             timestamp_after = int(self.xrt.get_motion_timestamp_ns())
@@ -265,7 +288,11 @@ class MotionTrackerInput:
                 break
         else:
             return None
-        if len(serials) != len(poses) or len(set(serials)) != len(serials):
+        if (
+            count != len(serials)
+            or count != len(poses)
+            or len(set(serials)) != len(serials)
+        ):
             return None
         by_serial = {
             serial: np.asarray(pose, dtype=float)
@@ -289,9 +316,18 @@ class MotionTrackerInput:
             snapshot = self._snapshot()
             detected = list(self.xrt.get_motion_tracker_serial_numbers())
             if snapshot is not None:
-                timestamp, _, _ = snapshot
+                timestamp, raw_poses, _ = snapshot
+                now = time.monotonic()
                 self.last_motion_timestamp = timestamp
-                self.last_motion_update_at = time.monotonic()
+                self.last_motion_update_at = now
+                self.last_poses = {
+                    side: _apply_local_transform(
+                        xr_pose_to_world(raw_poses[side]),
+                        self.transforms[side],
+                    )
+                    for side in SIDES
+                }
+                self.last_pose_changed_at = {side: now for side in SIDES}
                 self.keyboard.disable_all("motion trackers initialized")
                 return
             time.sleep(0.05)
@@ -300,6 +336,60 @@ class MotionTrackerInput:
             f"{self.serials}; detected serials={detected}"
         )
 
+    def _motion_fault(
+        self,
+        poses: dict[str, Pose],
+        activations: dict[str, bool],
+        timestamp: int,
+        now: float,
+    ) -> str | None:
+        previous_timestamp = self.last_motion_timestamp
+        if previous_timestamp is None:
+            return None
+        if timestamp < previous_timestamp:
+            return "motion tracker timestamp moved backwards"
+        if timestamp == previous_timestamp:
+            return None
+
+        elapsed = (timestamp - previous_timestamp) * 1e-9
+        fault = None
+        for side in SIDES:
+            previous_pose = self.last_poses[side]
+            if (
+                not activations[side]
+                or not self.last_activations[side]
+                or previous_pose is None
+            ):
+                self.last_poses[side] = poses[side]
+                self.last_pose_changed_at[side] = now
+                continue
+            position_delta = float(
+                np.linalg.norm(poses[side].position - previous_pose.position)
+            )
+            rotation_delta = float(
+                np.linalg.norm(
+                    pin.log3(poses[side].rotation @ previous_pose.rotation.T)
+                )
+            )
+            linear_speed = position_delta / elapsed
+            angular_speed = rotation_delta / elapsed
+            if position_delta > self.max_position_jump:
+                fault = f"{side} tracker position jumped {position_delta:.3f} m"
+            elif rotation_delta > self.max_rotation_jump:
+                fault = f"{side} tracker rotation jumped {rotation_delta:.3f} rad"
+            elif linear_speed > self.max_linear_speed:
+                fault = f"{side} tracker linear speed {linear_speed:.3f} m/s"
+            elif angular_speed > self.max_angular_speed:
+                fault = f"{side} tracker angular speed {angular_speed:.3f} rad/s"
+
+            if position_delta > 1e-5 or rotation_delta > 1e-4:
+                self.last_pose_changed_at[side] = now
+            changed_at = self.last_pose_changed_at[side]
+            if changed_at is None or now - changed_at > self.frozen_timeout:
+                fault = f"{side} tracker pose is frozen"
+            self.last_poses[side] = poses[side]
+        return fault
+
     def sample(self) -> TeleopSample | None:
         activations = self.keyboard.poll()
         snapshot = self._snapshot()
@@ -307,16 +397,14 @@ class MotionTrackerInput:
         if snapshot is not None:
             timestamp, raw_poses, _ = snapshot
             if timestamp != self.last_motion_timestamp:
-                self.last_motion_timestamp = timestamp
                 self.last_motion_update_at = now
         if (
             snapshot is None
             or self.last_motion_update_at is None
             or now - self.last_motion_update_at > self.stale_timeout
         ):
-            self.keyboard.disable_all("motion tracker data missing or stale")
+            self.disable_all("motion tracker data missing or stale")
             return None
-        _, raw_poses, _ = snapshot
         poses = {
             side: _apply_local_transform(
                 xr_pose_to_world(raw_poses[side]),
@@ -324,10 +412,17 @@ class MotionTrackerInput:
             )
             for side in SIDES
         }
+        motion_fault = self._motion_fault(poses, activations, timestamp, now)
+        self.last_motion_timestamp = timestamp
+        if motion_fault is not None:
+            self.disable_all(motion_fault)
+            return None
+        self.last_activations = dict(activations)
         return TeleopSample(poses, activations, now)
 
     def disable_all(self, reason: str) -> None:
         self.keyboard.disable_all(reason)
+        self.last_activations = {side: False for side in SIDES}
 
     def close(self) -> None:
         try:
@@ -342,24 +437,37 @@ class MotionTrackerInput:
                 keyboard.close()
 
 
-def create_pico_input(config: InputConfig):
-    if config.type == "controllers":
+def create_pico_input(config: InputConfig, input_type: str):
+    if input_type == "controllers":
         controllers = config.controllers
         return ControllerInput(
             grip_threshold=controllers.grip_threshold,
             ready_timeout=controllers.ready_timeout,
             stale_timeout=controllers.stale_timeout,
         )
-    if config.type == "motion_trackers":
+    if input_type == "motion-trackers":
         trackers = config.motion_trackers
+        if any(
+            serial.startswith("REPLACE_WITH_")
+            for serial in trackers.serials.values()
+        ):
+            raise ValueError(
+                "Motion tracker serials are not configured; set "
+                "input.motion_trackers.serials in config/pico.yaml."
+            )
         return MotionTrackerInput(
             serials=trackers.serials,
             tracker_to_control=trackers.tracker_to_control,
             ready_timeout=trackers.ready_timeout,
             stale_timeout=trackers.stale_timeout,
+            frozen_timeout=trackers.frozen_timeout,
+            max_position_jump=trackers.max_position_jump,
+            max_rotation_jump=trackers.max_rotation_jump,
+            max_linear_speed=trackers.max_linear_speed,
+            max_angular_speed=trackers.max_angular_speed,
             keyboard_device=trackers.keyboard_device,
         )
-    raise ValueError(f"Unsupported PICO input type: {config.type}")
+    raise ValueError(f"Unsupported PICO input type: {input_type}")
 
 
 class MockTeleopInput:

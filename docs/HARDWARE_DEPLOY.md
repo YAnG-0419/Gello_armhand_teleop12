@@ -1,4 +1,7 @@
-# Dual-FR3 deployment
+# Dual-FR3 hardware deployment
+
+Run the setup in the repository README first. Keep the emergency stop
+reachable.
 
 Current workcell:
 
@@ -7,111 +10,144 @@ Current workcell:
 - host: `enp6s0`, `172.16.0.6/24`
 - ROS domain: `0`
 
-Keep the emergency stop reachable.
+The combined Pinocchio and MuJoCo models use the measured world-to-base
+transforms for the remounted workcell, not the legacy `dual_arm_45` CAD
+transforms. The MuJoCo `home` keyframe matches the measured joint pose in
+`ros_ws/src/franka_fr3_arm_controllers/config/initial_pose.yaml`. Hardware
+`/reset` uses that separately captured joint-space target; the calibrated base
+transforms do not alter its joint angles or prove that every interpolation path
+to it is collision-free.
 
-## Setup
-
-```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-cp docker/.env.example docker/.env
-./scripts/build.sh
-./scripts/setup_pico_env.sh
-```
-
-Review every value in `docker/.env` and `config/pico.yaml`. Before a session,
-activate both arms and FCI in Franka Desk, then verify:
+Before every session, activate both arms and FCI in Franka Desk:
 
 ```bash
 ping -c 2 172.16.0.3
 ping -c 2 172.16.0.2
 ```
 
-## Choose PICO input
+## PICO input
 
-Set one selector in `config/pico.yaml`:
+The input is a required CLI argument.
 
-```yaml
-input:
-  type: controllers       # or: motion_trackers
-```
+Keep the XRoboToolkit `RoboticsService` and the app on the headset running, but
+close the desktop `RobotLinuxDemo` GUI before starting Python teleop. The GUI
+and Python SDK compete for the PC Service feedback stream; whichever connects
+last can leave the other client open but no longer receiving fresh poses.
 
-Controller mode uses each grip as an independent hold-to-run clutch. After
-startup or stale data, release the grip once before reacquiring that arm.
-
-Motion-tracker mode uses keyboard activation. First identify the serials:
+Controller mode:
 
 ```bash
 conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/hardware/list_motion_trackers.py \
-  --config config/pico.yaml
+  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
+  --config config/pico.yaml --input controllers
 ```
 
-Move one tracker at a time and fill
-`input.motion_trackers.serials.{left,right}`. The mounting transforms initially
-use identity; calibrate them later if rotation creates unwanted translation.
+Each grip controls one arm. After startup or stale data, release the grip once
+before reacquiring that arm.
 
-Keyboard controls are:
+For motion-tracker mode, select object/motion tracking (not full-body tracking)
+in the PICO XRoboToolkit app, confirm that both trackers are shown, and enable
+data sending. Put the left and right tracker serial numbers in
+`input.motion_trackers.serials` in `config/pico.yaml`.
+Other connected trackers are allowed and ignored. Label the two selected wrist
+trackers and always wear each serial on its configured side.
+
+To inspect the available IDs before editing the configuration, first close the
+desktop `RobotLinuxDemo` GUI and run this single SDK client:
+
+```bash
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/hardware/inspect_motion_trackers.py
+```
+
+It listens for ten seconds, prints every detected serial number, then closes
+the SDK. It refuses to start while the competing desktop GUI is running.
+
+The mounting transforms initially use identity. Calibrate them if tracker
+rotation creates unwanted control-point translation.
+
+Tracker input automatically disengages both arms on missing or stale data,
+frozen poses, timestamp errors, pose jumps, or excessive linear/angular speed.
+Re-engage explicitly after tracking is stable.
+
+Then run:
+
+```bash
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
+  --config config/pico.yaml --input motion-trackers
+```
+
+Tracker keyboard controls:
 
 - `Space`: toggle both arms
 - `L` / `R`: toggle one arm
 - `X`: disable both arms
 - `Q`: disable both arms and exit
 
-Both modes can be checked in MuJoCo before starting the robots:
+Test either real input in MuJoCo by using the same `--input` value:
 
 ```bash
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/simulation/teleop_dual_fr3_mujoco.py \
-  --config config/pico.yaml
+  --config config/pico.yaml --input controllers
 ```
 
-Verify that PICO forward/right/up maps to robot `+X/-Y/+Z`.
+Confirm forward/right/up maps to robot `+X/-Y/+Z`.
 
-## Run
+## Start the robot pipeline
 
 Start XRoboToolkit PC Service and the selected PICO stream.
 
-Terminal 1 — FR3 controllers:
+Terminal 1:
 
 ```bash
-./scripts/compose.sh up franka-control
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose up franka-control
 ```
 
-Terminal 2 — enabled output:
+Terminal 2:
 
 ```bash
-./scripts/compose.sh up teleop-control pico-bridge
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose up teleop-control pico-bridge
 ```
 
-For dry-run output, use:
+Terminal 3 runs one of the PICO commands above. Input starts disengaged or
+requires acquisition, so selecting a CLI mode does not immediately move an
+arm.
+
+## Operator
 
 ```bash
-./scripts/compose.sh up teleop-control-dry-run pico-bridge
-```
-
-Terminal 3 — selected PICO input:
-
-```bash
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml
-```
-
-On the first robot run, acquire one arm at a time and test a small translation
-before rotation or bimanual motion.
-
-## Operator and data
-
-```bash
-./scripts/compose.sh run --rm tools ros2 run teleop_data operator \
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose run --rm tools ros2 run teleop_data operator \
   --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml \
   --qos /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording_qos.yaml
 ```
 
-Before `/reset`, release both controller grips or press `X` in tracker mode.
-Stop the PICO Python process before replay.
+Commands include `/capture`, `/reset`, `/record`, `/stop`, `/save`, `/discard`,
+and `/status`. Disengage PICO before `/reset`, and use only an operator-validated
+captured pose and path.
+
+`/reset` moves both arms together along a synchronized joint-space
+smootherstep trajectory. Its duration is chosen from the largest of the 14
+joint displacements, with peak limits of `0.20 rad/s` and `0.40 rad/s²` and a
+minimum duration of one second. For example, a largest displacement of 1 rad
+takes about 9.4 seconds; 2 rad takes about 18.8 seconds. The reset aborts if
+either arm stops publishing fresh joint states. This is not collision
+planning, so verify the path and keep the emergency stop reachable.
+
+With `franka-control` already running, reset can also be invoked without the
+operator shell:
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose run --rm tools \
+  ros2 service call /reset_to_initial_pose std_srvs/srv/Trigger '{}'
+```
 
 ## Shutdown
 
-Disengage both arms, stop Terminal 3, Terminal 2, then Terminal 1. Disable FCI
-when the workcell is unattended.
+Disengage both arms, stop the PICO process, then stop Terminal 2 and Terminal
+1. Disable FCI when the workcell is unattended.

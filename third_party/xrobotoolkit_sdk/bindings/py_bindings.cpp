@@ -1,12 +1,16 @@
-#include <pybind11/pybind11.h>
-#include <pybind11/chrono.h>
-#include <pybind11/stl.h>
-#include <thread>
+#include <algorithm>
+#include <array>
 #include <iostream>
 #include <mutex>
 #include <sstream>
-#include <array>
+#include <thread>
+#include <vector>
+
 #include <nlohmann/json.hpp>
+#include <pybind11/chrono.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
 #include "PXREARobotSDK.h"
 
 
@@ -31,10 +35,10 @@ std::array<int64_t, 24> BodyJointsTimestamp;  // IMU timestamp for each joint
 int64_t BodyTimeStampNs = 0;  // Body data timestamp
 bool BodyDataAvailable = false;  // Flag to indicate if body data is available
 
-std::array<std::array<double, 7>, 3> MotionTrackerPose;  // Position and rotation for each joint
-std::array<std::array<double, 6>, 3> MotionTrackerVelocity;  // Velocity and angular velocity for each joint
-std::array<std::array<double, 6>, 3> MotionTrackerAcceleration;  // Acceleration and angular acceleration for each joint
-std::array<std::string, 3> MotionTrackerSerialNumbers;  // Serial numbers of the motion trackers
+std::vector<std::array<double, 7>> MotionTrackerPose;
+std::vector<std::array<double, 6>> MotionTrackerVelocity;
+std::vector<std::array<double, 6>> MotionTrackerAcceleration;
+std::vector<std::string> MotionTrackerSerialNumbers;
 int64_t MotionTimeStampNs = 0;  // Motion data timestamp
 int NumMotionDataAvailable = 0;  // number of motion trackers
 
@@ -95,19 +99,19 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
     switch (type)
     {
     case PXREAServerConnect:
-        std::cout << "server connect\n" << std::endl;
+        std::cout << "\nserver connect" << std::endl;
         break;
     case PXREAServerDisconnect:
-        std::cout << "server disconnect\n" << std::endl;
+        std::cout << "\nserver disconnect" << std::endl;
         break;
     case PXREADeviceFind:
-        std::cout << "device found\n" << (const char*)userData << std::endl;
+        std::cout << "\ndevice found\n" << (const char*)userData << std::endl;
         break;
     case PXREADeviceMissing:
-        std::cout << "device missing\n" << (const char*)userData << std::endl;
+        std::cout << "\ndevice missing\n" << (const char*)userData << std::endl;
         break;
     case PXREADeviceConnect:
-        std::cout << "device connect\n" << (const char*)userData << status << std::endl;
+        std::cout << "\ndevice connect\n" << (const char*)userData << status << std::endl;
         break;
     case PXREADeviceStateJson:
         auto& dsj = *((PXREADevStateJson*)userData);
@@ -117,6 +121,12 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
             json data = json::parse(dsj.stateJson);
             if (data.contains("value")) {
                 auto value = json::parse(data["value"].get<std::string>());
+                int64_t frameTimeStampNs = 0;
+                if (value.contains("timeStampNs")) {
+                    frameTimeStampNs = value["timeStampNs"].get<int64_t>();
+                    std::lock_guard<std::mutex> lock(timestampMutex);
+                    TimeStampNs = frameTimeStampNs;
+                }
                 if (value["Controller"].contains("left")) {
                     auto& left = value["Controller"]["left"];
                     {
@@ -154,10 +164,6 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                         HeadsetPose = stringToPoseArray(headset["pose"].get<std::string>());
                     }
                 }
-                if (value.contains("timeStampNs")) {
-                    std::lock_guard<std::mutex> lock(timestampMutex);
-                    TimeStampNs = value["timeStampNs"].get<int64_t>();
-                }
                 if (value["Hand"].contains("leftHand")) {
                     auto& leftHand = value["Hand"]["leftHand"];
                     {
@@ -165,8 +171,10 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
 
                         LeftHandScale = leftHand["scale"].get<double>();
                         LeftHandIsActive = leftHand["isActive"].get<int>();
-                        for (int i = 0; i < 26; i++) {
-                            LeftHandTrackingState[i] = stringToPoseArray(leftHand["HandJointLocations"][i]["p"].get<std::string>());
+                        auto& joints = leftHand["HandJointLocations"];
+                        int jointCount = std::min(static_cast<int>(joints.size()), 26);
+                        for (int i = 0; i < jointCount; i++) {
+                            LeftHandTrackingState[i] = stringToPoseArray(joints[i]["p"].get<std::string>());
                         }
                     }
                 }
@@ -176,8 +184,10 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                         std::lock_guard<std::mutex> lock(rightHandMutex);
                         RightHandScale = rightHand["scale"].get<double>();
                         RightHandIsActive = rightHand["isActive"].get<int>();
-                        for (int i = 0; i < 26; i++) {
-                            RightHandTrackingState[i] = stringToPoseArray(rightHand["HandJointLocations"][i]["p"].get<std::string>());
+                        auto& joints = rightHand["HandJointLocations"];
+                        int jointCount = std::min(static_cast<int>(joints.size()), 26);
+                        for (int i = 0; i < jointCount; i++) {
+                            RightHandTrackingState[i] = stringToPoseArray(joints[i]["p"].get<std::string>());
                         }
                     }
                 }
@@ -189,6 +199,8 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
 
                         if (body.contains("timeStampNs")) {
                             BodyTimeStampNs = body["timeStampNs"].get<int64_t>();
+                        } else {
+                            BodyTimeStampNs = frameTimeStampNs;
                         }
 
                         if (body.contains("joints") && body["joints"].is_array()) {
@@ -220,6 +232,8 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                             }
 
                             BodyDataAvailable = true;
+                        } else {
+                            BodyDataAvailable = false;
                         }
                     }
                 }
@@ -230,10 +244,25 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                         std::lock_guard<std::mutex> lock(motionMutex);
                         if (motion.contains("timeStampNs")) {
                             MotionTimeStampNs = motion["timeStampNs"].get<int64_t>();
+                        } else {
+                            // XRoboToolkit Unity sends the frame timestamp at
+                            // the top level, not inside the Motion object.
+                            MotionTimeStampNs = frameTimeStampNs;
                         }
                         if (motion.contains("joints") && motion["joints"].is_array()) {
                             auto joints = motion["joints"];
-                            NumMotionDataAvailable = std::min(static_cast<int>(joints.size()), 3);
+                            int motionCount = static_cast<int>(joints.size());
+                            if (motion.contains("len")) {
+                                motionCount = std::min(
+                                    motionCount,
+                                    motion["len"].get<int>()
+                                );
+                            }
+                            NumMotionDataAvailable = std::max(motionCount, 0);
+                            MotionTrackerPose.assign(NumMotionDataAvailable, {});
+                            MotionTrackerVelocity.assign(NumMotionDataAvailable, {});
+                            MotionTrackerAcceleration.assign(NumMotionDataAvailable, {});
+                            MotionTrackerSerialNumbers.assign(NumMotionDataAvailable, {});
 
                             for (int i = 0; i < NumMotionDataAvailable; i++) {
                                 auto& joint = joints[i];
@@ -258,6 +287,12 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                                 }
                             }
 
+                        } else {
+                            NumMotionDataAvailable = 0;
+                            MotionTrackerPose.clear();
+                            MotionTrackerVelocity.clear();
+                            MotionTrackerAcceleration.clear();
+                            MotionTrackerSerialNumbers.clear();
                         }
                     }
                 }
@@ -269,14 +304,29 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
     }
 }
 
+void clearMotionData() {
+    std::lock_guard<std::mutex> lock(motionMutex);
+    MotionTrackerPose.clear();
+    MotionTrackerVelocity.clear();
+    MotionTrackerAcceleration.clear();
+    MotionTrackerSerialNumbers.clear();
+    MotionTimeStampNs = 0;
+    NumMotionDataAvailable = 0;
+}
+
 void init() {
+    clearMotionData();
     if (PXREAInit(NULL, OnPXREAClientCallback, PXREAFullMask) != 0) {
+        std::cout << std::endl;
         throw std::runtime_error("PXREAInit failed");
     }
+    std::cout << std::endl;
 }
 
 void deinit() {
+    std::cout << std::endl;
     PXREADeinit();
+    std::cout << std::endl;
 }
 
 std::array<double, 7> getLeftControllerPose() {
@@ -438,38 +488,22 @@ int numMotionDataAvailable() {
 
 std::vector<std::array<double, 7>> getMotionTrackerPose() {
     std::lock_guard<std::mutex> lock(motionMutex);
-    std::vector<std::array<double, 7>> result;
-    for (int i = 0; i < NumMotionDataAvailable; i++) {
-        result.push_back(MotionTrackerPose[i]);
-    }
-    return result;
+    return MotionTrackerPose;
 }
 
 std::vector<std::array<double, 6>> getMotionTrackerVelocity() {
     std::lock_guard<std::mutex> lock(motionMutex);
-    std::vector<std::array<double, 6>> result;
-    for (int i = 0; i < NumMotionDataAvailable; i++) {
-        result.push_back(MotionTrackerVelocity[i]);
-    }
-    return result;
+    return MotionTrackerVelocity;
 }
 
 std::vector<std::array<double, 6>> getMotionTrackerAcceleration() {
     std::lock_guard<std::mutex> lock(motionMutex);
-    std::vector<std::array<double, 6>> result;
-    for (int i = 0; i < NumMotionDataAvailable; i++) {
-        result.push_back(MotionTrackerAcceleration[i]);
-    }
-    return result;
+    return MotionTrackerAcceleration;
 }
 
 std::vector<std::string> getMotionTrackerSerialNumbers() {
     std::lock_guard<std::mutex> lock(motionMutex);
-    std::vector<std::string> result;
-    for (int i = 0; i < NumMotionDataAvailable; i++) {
-        result.push_back(MotionTrackerSerialNumbers[i]);
-    }
-    return result;
+    return MotionTrackerSerialNumbers;
 }
 
 int64_t getMotionTimeStampNs() {
@@ -531,9 +565,9 @@ PYBIND11_MODULE(xrobotoolkit_sdk, m) {
 
     // Motion tracker functions
     m.def("num_motion_data_available", &numMotionDataAvailable, "Check if motion tracker data is available.");
-    m.def("get_motion_tracker_pose", &getMotionTrackerPose, "Get the motion tracker pose data (3 trackers, 7 values each: x,y,z,qx,qy,qz,qw).");
-    m.def("get_motion_tracker_velocity", &getMotionTrackerVelocity, "Get the motion tracker velocity data (3 trackers, 6 values each: vx,vy,vz,wx,wy,wz).");
-    m.def("get_motion_tracker_acceleration", &getMotionTrackerAcceleration, "Get the motion tracker acceleration data (3 trackers, 6 values each: ax,ay,az,wax,way,waz).");
+    m.def("get_motion_tracker_pose", &getMotionTrackerPose, "Get motion tracker poses (7 values each: x,y,z,qx,qy,qz,qw).");
+    m.def("get_motion_tracker_velocity", &getMotionTrackerVelocity, "Get motion tracker velocities (6 values each: vx,vy,vz,wx,wy,wz).");
+    m.def("get_motion_tracker_acceleration", &getMotionTrackerAcceleration, "Get motion tracker accelerations (6 values each: ax,ay,az,wax,way,waz).");
     m.def("get_motion_tracker_serial_numbers", &getMotionTrackerSerialNumbers, "Get the serial numbers of the motion trackers.");
     m.def("get_motion_timestamp_ns", &getMotionTimeStampNs, "Get the motion data timestamp in nanoseconds.");
 

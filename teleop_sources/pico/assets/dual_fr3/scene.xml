@@ -181,11 +181,12 @@
     <geom name="world_x" class="frame_axis" fromto="0 0 0.01 0.12 0 0.01" rgba="1 0 0 1"/>
     <geom name="world_y" class="frame_axis" fromto="0 0 0.01 0 0.12 0.01" rgba="0 1 0 1"/>
     <geom name="world_z" class="frame_axis" fromto="0 0 0.01 0 0 0.13" rgba="0 0 1 1"/>
+    <!-- Stand proxy only; the arm base bodies below use measured calibration. -->
     <body name="mount" pos="0 0 0.02">
       <geom name="mount_collision" type="box" size="0.20 0.32 0.02" rgba="0.25 0.28 0.32 1" contype="1" conaffinity="1"/>
     </body>
-    <!-- MuJoCo euler (extrinsic XYZ) equivalent of URDF rpy; keep in sync with dual_fr3_kinematics.urdf. -->
-    <body name="left_fr3v2_link0" pos="-0.038 -0.18 0.304" euler="0.7735619283 -0.0241318956 -2.2860696211">
+    <!-- Calibrated remounted-workcell pose; MuJoCo intrinsic XYZ equivalent of the URDF RPY. -->
+    <body name="left_fr3v2_link0" pos="0.013079894 0.100675805 -0.005974552" euler="-0.7887354282 0.0090942400 0.0238750710">
       <inertial pos="-0.017200 0.000400 0.074500" mass="2.396600" fullinertia="0.009000 0.011500 0.008500 0 0.002000 0"/>
       <geom name="left_link0_visual" class="visual" mesh="fr3v2_link0" material="left_arm"/>
       <geom name="left_link0_collision_00" class="collision" mesh="fr3v2_link0_part00"/>
@@ -356,8 +357,8 @@
         </body>
       </body>
     </body>
-    <!-- MuJoCo euler (extrinsic XYZ) equivalent of URDF rpy; keep in sync with dual_fr3_kinematics.urdf. -->
-    <body name="right_fr3v2_link0" pos="-0.038 0.18 0.304" euler="-0.7735619283 -0.0241318956 2.2860696211">
+    <!-- Calibrated remounted-workcell pose; MuJoCo intrinsic XYZ equivalent of the URDF RPY. -->
+    <body name="right_fr3v2_link0" pos="-0.013079894 -0.100675805 0.005974552" euler="0.7618707990 0.0202870659 -0.0336861590">
       <inertial pos="-0.017200 0.000400 0.074500" mass="2.396600" fullinertia="0.009000 0.011500 0.008500 0 0.002000 0"/>
       <geom name="right_link0_visual" class="visual" mesh="fr3v2_link0" material="right_arm"/>
       <geom name="right_link0_collision_00" class="collision" mesh="fr3v2_link0_part00"/>
@@ -581,6 +582,7 @@
     <position name="right_a7" class="wrist_actuator" joint="right_fr3v2_joint7" ctrlrange="-3.05083335 3.05083335"/>
   </actuator>
   <keyframe>
-    <key name="home" qpos="-0.1064695120 0.5432978868 -0.7150393724 -2.0424106121 0.7801840901 2.3256008625 0.3307797611 -1.2620162964 -0.3890800774 2.3749103546 -2.3138155937 -0.6073474288 2.2486193180 0.0537403040"/>
+    <!-- Keep synchronized with the measured hardware pose in config/initial_pose.yaml. -->
+    <key name="home" qpos="-0.110970355570 -0.493441432714 0.114729285240 -2.441572666170 0.119077377021 2.436770200730 0.340127378702 0.013091343455 -0.640385985374 0.092484131455 -2.371014595030 -0.152732670307 2.262799263000 -1.051395416260"/>
   </keyframe>
 </mujoco>

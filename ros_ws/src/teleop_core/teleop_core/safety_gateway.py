@@ -29,7 +29,6 @@ from .safety import CommandSafetyGate
 class SafetyGateway(Node):
     def __init__(self):
         super().__init__("teleop_safety_gateway")
-        self.enabled = bool(self._required_parameter("enabled"))
         allowed_sources = self._required_parameter("allowed_sources")
         self.state_timeout = float(self._required_parameter("state_timeout"))
         command_timeout = float(self._required_parameter("command_timeout"))
@@ -68,8 +67,9 @@ class SafetyGateway(Node):
         self.hardware_publisher = self.create_publisher(
             JointState, ARM_COMMAND_TOPIC, 10
         )
-        mode = "ENABLED" if self.enabled else "DRY-RUN"
-        self.get_logger().info(f"Teleoperation safety gateway mode={mode}.")
+        self.get_logger().info(
+            "Teleoperation safety gateway is forwarding validated commands."
+        )
 
     def _required_parameter(self, name):
         parameter = self.declare_parameter(name)
@@ -141,8 +141,7 @@ class SafetyGateway(Node):
         output.name = list(validated.names)
         output.position = list(validated.positions)
         self.validated_publisher.publish(output)
-        if self.enabled:
-            self.hardware_publisher.publish(output)
+        self.hardware_publisher.publish(output)
 
 
 def main(args=None):

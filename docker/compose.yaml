@@ -55,17 +55,6 @@ services:
       - teleop_core
       - control.launch.py
       - config:=/workspace/franka_upper_body_teleop/config/teleop_control.yaml
-      - enabled:=true
-
-  teleop-control-dry-run:
-    <<: *runtime
-    command:
-      - ros2
-      - launch
-      - teleop_core
-      - control.launch.py
-      - config:=/workspace/franka_upper_body_teleop/config/teleop_control.yaml
-      - enabled:=false
 
   pico-bridge:
     <<: *runtime
