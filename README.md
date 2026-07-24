@@ -43,7 +43,8 @@ conda run --no-capture-output --name franka-teleop-pico \
 ```
 
 See [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md) for real PICO and FR3
-commands.
+commands. See [docs/HANDOVER.md](docs/HANDOVER.md) for the current implementation
+state, safety boundaries, and suggested next work.
 
 ## Configuration ownership
 
