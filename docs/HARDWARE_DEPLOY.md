@@ -33,13 +33,13 @@ Start XRoboToolkit PC Service and connect the headset.
 Terminal 1:
 
 ```bash
-ROS_DOMAIN_ID=0 ./scripts/start_franka.sh
+./scripts/start_franka.sh
 ```
 
 Terminal 2:
 
 ```bash
-ROS_DOMAIN_ID=0 ./scripts/start_pico_enabled.sh
+./scripts/start_pico_enabled.sh
 ```
 
 Terminal 3:

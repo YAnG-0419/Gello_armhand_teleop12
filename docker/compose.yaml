@@ -7,7 +7,7 @@ x-runtime: &runtime
     - ${TELEOP_DATA_ROOT:?Set TELEOP_DATA_ROOT in docker/.env}:/data
   environment:
     - ROS_LOCALHOST_ONLY=0
-    - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+    - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:-0}
   working_dir: /workspace/franka_upper_body_teleop
 
 services:
