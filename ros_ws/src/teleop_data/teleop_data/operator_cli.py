@@ -32,9 +32,10 @@ class Operator:
         self.capture_client = node.create_client(Trigger, "/capture_initial_pose")
 
     def _call(self, client, name, timeout):
-        if not client.wait_for_service(timeout_sec=2.0):
+        if not client.wait_for_service(timeout_sec=10.0):
             raise RuntimeError(
-                f"{name} service is unavailable; start franka-control first"
+                f"{name} service is unavailable after 10 seconds; "
+                "start or restart franka-control and wait for reset=ready"
             )
         future = client.call_async(Trigger.Request())
         deadline = time.monotonic() + timeout
