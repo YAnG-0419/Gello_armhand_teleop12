@@ -4,7 +4,8 @@ set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 PYTHONPATH="${repo}/ros_ws/src/teleop_core:${repo}/ros_ws/src/teleop_data" \
-  pytest -q \
+  conda run --no-capture-output --name franka-teleop-pico \
+  python -m pytest -q \
     "${repo}/ros_ws/src/teleop_core/test" \
     "${repo}/ros_ws/src/teleop_data/test/test_config.py" \
     "${repo}/ros_ws/src/teleop_data/test/test_timeseries.py"
