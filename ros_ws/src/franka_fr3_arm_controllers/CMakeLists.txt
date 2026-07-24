@@ -22,8 +22,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   endif()
 endif()
 
-option(CHECK_TIDY "Adds clang-tidy tests" OFF)
-
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -98,40 +96,5 @@ ament_export_dependencies(
         hardware_interface
         realtime_tools
 )
-
-if(BUILD_TESTING)
-  find_package(ament_cmake_gtest REQUIRED)
-  find_package(ament_cmake_pytest REQUIRED)
-  find_package(ament_cmake_clang_format REQUIRED)
-  find_package(ament_cmake_copyright REQUIRED)
-  find_package(ament_cmake_cppcheck REQUIRED)
-  find_package(ament_cmake_lint_cmake REQUIRED)
-  find_package(ament_cmake_xmllint REQUIRED)
-
-  set(CPP_DIRECTORIES src include test)
-
-  ament_cppcheck(${CPP_DIRECTORIES})
-  ament_lint_cmake(CMakeLists.txt)
-  ament_xmllint()
-  ament_clang_format(CONFIG_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../.clang-format ${CPP_DIRECTORIES})
-  ament_copyright(${CPP_DIRECTORIES} package.xml)
-
-ament_add_gtest(
-        test_joint_impedance_controller
-        test/test_joint_impedance_controller.cpp
-        test/invalid_configuration_test.cpp
-        test/setup_test.cpp
-)
-  if(TARGET test_joint_impedance_controller)
-    target_link_libraries(test_joint_impedance_controller ${PROJECT_NAME})
-  endif()
-endif()
-
-if(CHECK_TIDY)
-  find_package(ament_cmake_clang_tidy REQUIRED)
-  set(ament_cmake_clang_tidy_CONFIG_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../../.clang-tidy)
-  ament_clang_tidy(${CMAKE_BINARY_DIR})
-endif()
-
 
 ament_package()

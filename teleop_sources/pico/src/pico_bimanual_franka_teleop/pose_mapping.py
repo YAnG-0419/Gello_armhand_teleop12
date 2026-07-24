@@ -4,12 +4,12 @@ import pinocchio as pin
 from .types import Pose
 
 
-# Map PICO/OpenXR headset coordinates into MuJoCo world (Z-up).
-# Empirically: operator right -> world +Y, forward -> world -X, up -> world +Z.
+# PICO/OpenXR: +X right, +Y up, -Z forward.
+# Robot world: +X forward, +Y left, +Z up.
 R_HEADSET_TO_WORLD = np.array(
     [
-        [0.0, 0.0, 1.0],
-        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [-1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
     ]
 )

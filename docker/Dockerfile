@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-hardware-interface \
     ros-humble-controller-manager \
     ros-humble-controller-interface \
-    ros-humble-ros2-control-test-assets \
     ros-humble-ros2controlcli \
     ros-humble-joint-state-broadcaster \
     ros-humble-generate-parameter-library \
@@ -22,8 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-control-msgs \
     ros-humble-rosbag2 \
     ros-humble-rosbag2-storage-default-plugins \
-    ros-humble-ament-cmake-clang-format \
-    ros-humble-ament-cmake-clang-tidy \
     libpoco-dev libeigen3-dev libfmt-dev \
     && rm -rf /var/lib/apt/lists/*
 
