@@ -2,11 +2,12 @@ import time
 
 import numpy as np
 
+from .config import InputConfig
 from .ik import BimanualPinkIK, IKError
 from .pose_mapping import RelativePoseMapper
 from .robot_udp import UdpRobotBackend
 from .types import SIDES
-from .xr_input import MotionTrackerInput
+from .xr_input import create_pico_input
 
 
 class DualFr3HardwareTeleop:
@@ -22,11 +23,7 @@ class DualFr3HardwareTeleop:
         control_rate: float,
         max_joint_speed: float,
         robot_state_wait_timeout: float,
-        tracker_serials: dict[str, str],
-        tracker_to_control: dict[str, dict],
-        tracker_ready_timeout: float,
-        tracker_stale_timeout: float,
-        keyboard_device: str,
+        input_config: InputConfig,
     ) -> None:
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
@@ -38,13 +35,7 @@ class DualFr3HardwareTeleop:
             state_timeout=state_timeout,
         )
         try:
-            self.teleop_input = MotionTrackerInput(
-                serials=tracker_serials,
-                tracker_to_control=tracker_to_control,
-                ready_timeout=tracker_ready_timeout,
-                stale_timeout=tracker_stale_timeout,
-                keyboard_device=keyboard_device,
-            )
+            self.teleop_input = create_pico_input(input_config)
         except BaseException:
             self.robot.close()
             raise

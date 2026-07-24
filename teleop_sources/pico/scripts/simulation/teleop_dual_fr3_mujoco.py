@@ -13,7 +13,7 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
     config = load_config(
-        args.config, require_tracker_serials=not args.mock_xr
+        args.config, allow_unconfigured_trackers=args.mock_xr
     )
     simulation = DualFr3Simulation(
         mock_xr=args.mock_xr,
@@ -21,11 +21,7 @@ def main() -> None:
         rotation_scale=config.host.rotation_scale,
         control_rate=config.host.control_rate,
         max_joint_speed=config.host.max_joint_speed,
-        tracker_serials=config.input.serials,
-        tracker_to_control=config.input.tracker_to_control,
-        tracker_ready_timeout=config.input.ready_timeout,
-        tracker_stale_timeout=config.input.stale_timeout,
-        keyboard_device=config.input.keyboard_device,
+        input_config=config.input,
     )
     simulation.run(duration=args.duration, headless=args.headless)
 

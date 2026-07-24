@@ -5,11 +5,12 @@ import mujoco
 import numpy as np
 import pinocchio as pin
 
+from .config import InputConfig
 from .ik import BimanualPinkIK
 from .paths import MJCF_PATH
 from .pose_mapping import RelativePoseMapper
 from .types import Pose, SIDES
-from .xr_input import MockTeleopInput, MotionTrackerInput
+from .xr_input import MockTeleopInput, create_pico_input
 
 
 class DualFr3Simulation:
@@ -20,11 +21,7 @@ class DualFr3Simulation:
         rotation_scale: float,
         control_rate: float,
         max_joint_speed: float,
-        tracker_serials: dict[str, str],
-        tracker_to_control: dict[str, dict],
-        tracker_ready_timeout: float,
-        tracker_stale_timeout: float,
-        keyboard_device: str,
+        input_config: InputConfig,
     ) -> None:
         if control_rate <= 0.0:
             raise ValueError("Control rate must be positive")
@@ -43,17 +40,10 @@ class DualFr3Simulation:
             )
             for side in SIDES
         }
-        self.teleop_input = (
-            MockTeleopInput()
-            if mock_xr
-            else MotionTrackerInput(
-                serials=tracker_serials,
-                tracker_to_control=tracker_to_control,
-                ready_timeout=tracker_ready_timeout,
-                stale_timeout=tracker_stale_timeout,
-                keyboard_device=keyboard_device,
-            )
-        )
+        if mock_xr:
+            self.teleop_input = MockTeleopInput()
+        else:
+            self.teleop_input = create_pico_input(input_config)
         self.target_mocap = {
             side: self.model.body(f"{side}_target").mocapid[0]
             for side in SIDES

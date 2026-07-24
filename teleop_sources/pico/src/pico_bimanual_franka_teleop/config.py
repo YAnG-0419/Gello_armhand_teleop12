@@ -42,6 +42,13 @@ class HostConfig:
 
 
 @dataclass(frozen=True)
+class ControllerConfig:
+    grip_threshold: float
+    ready_timeout: float
+    stale_timeout: float
+
+
+@dataclass(frozen=True)
 class MotionTrackerConfig:
     serials: dict[str, str]
     tracker_to_control: dict[str, dict]
@@ -51,20 +58,22 @@ class MotionTrackerConfig:
 
 
 @dataclass(frozen=True)
+class InputConfig:
+    type: str
+    controllers: ControllerConfig
+    motion_trackers: MotionTrackerConfig
+
+
+@dataclass(frozen=True)
 class PicoConfig:
     udp: UdpConfig
     host: HostConfig
-    input: MotionTrackerConfig
+    input: InputConfig
 
 
-def load_config(path, require_tracker_serials: bool) -> PicoConfig:
-    config_path = Path(path)
-    with config_path.open(encoding="utf-8") as stream:
-        root = yaml.safe_load(stream)
-    root = _exact_mapping(root, {"udp", "host", "input"}, str(config_path))
-
+def _load_udp(raw) -> UdpConfig:
     udp = _exact_mapping(
-        root["udp"],
+        raw,
         {
             "command_host",
             "command_port",
@@ -82,9 +91,18 @@ def load_config(path, require_tracker_serials: bool) -> PicoConfig:
     state_host = str(udp["state_host"]).strip()
     if not command_host or not state_host:
         raise ValueError("UDP hosts must be non-empty")
+    return UdpConfig(
+        command_host=command_host,
+        command_port=command_port,
+        state_host=state_host,
+        state_port=state_port,
+        state_timeout=_positive(udp["state_timeout"], "udp.state_timeout"),
+    )
 
+
+def _load_host(raw) -> HostConfig:
     host = _exact_mapping(
-        root["host"],
+        raw,
         {
             "translation_scale",
             "rotation_scale",
@@ -94,56 +112,91 @@ def load_config(path, require_tracker_serials: bool) -> PicoConfig:
         },
         "host",
     )
+    return HostConfig(
+        translation_scale=_positive(
+            host["translation_scale"], "host.translation_scale"
+        ),
+        rotation_scale=_positive(host["rotation_scale"], "host.rotation_scale"),
+        control_rate=_positive(host["control_rate"], "host.control_rate"),
+        max_joint_speed=_positive(host["max_joint_speed"], "host.max_joint_speed"),
+        robot_state_wait_timeout=_positive(
+            host["robot_state_wait_timeout"],
+            "host.robot_state_wait_timeout",
+        ),
+    )
 
-    input_config = _exact_mapping(
-        root["input"],
+
+def _load_controllers(raw) -> ControllerConfig:
+    controllers = _exact_mapping(
+        raw,
+        {"grip_threshold", "ready_timeout", "stale_timeout"},
+        "input.controllers",
+    )
+    grip_threshold = float(controllers["grip_threshold"])
+    if not 0 < grip_threshold <= 1:
+        raise ValueError("input.controllers.grip_threshold must be in (0, 1]")
+    return ControllerConfig(
+        grip_threshold=grip_threshold,
+        ready_timeout=_positive(
+            controllers["ready_timeout"], "input.controllers.ready_timeout"
+        ),
+        stale_timeout=_positive(
+            controllers["stale_timeout"], "input.controllers.stale_timeout"
+        ),
+    )
+
+
+def _load_motion_trackers(raw, require_serials: bool) -> MotionTrackerConfig:
+    trackers = _exact_mapping(
+        raw,
         {
-            "type",
             "serials",
             "ready_timeout",
             "stale_timeout",
             "activation",
             "tracker_to_control",
         },
-        "input",
+        "input.motion_trackers",
     )
-    if input_config["type"] != "motion_trackers":
-        raise ValueError("input.type must be motion_trackers")
     serials = _exact_mapping(
-        input_config["serials"], {"left", "right"}, "input.serials"
+        trackers["serials"],
+        {"left", "right"},
+        "input.motion_trackers.serials",
     )
     serials = {side: str(serials[side]).strip() for side in ("left", "right")}
     if any(not serial for serial in serials.values()):
-        raise ValueError("Both input tracker serials must be non-empty")
+        raise ValueError("Both motion tracker serials must be non-empty")
     if serials["left"] == serials["right"]:
-        raise ValueError("Left and right tracker serials must differ")
-    if require_tracker_serials and any(
+        raise ValueError("Left and right motion tracker serials must differ")
+    if require_serials and any(
         serial.startswith("REPLACE_WITH_") for serial in serials.values()
     ):
         raise ValueError(
-            "Motion tracker serials are not configured; run "
-            "scripts/list_pico_trackers.sh and edit config/pico.yaml"
+            "Motion tracker serials are not configured; run the tracker-list "
+            "command documented in docs/HARDWARE_DEPLOY.md"
         )
 
     activation = _exact_mapping(
-        input_config["activation"], {"type", "device"}, "input.activation"
+        trackers["activation"],
+        {"type", "device"},
+        "input.motion_trackers.activation",
     )
     if activation["type"] != "keyboard":
-        raise ValueError("input.activation.type must be keyboard")
+        raise ValueError("input.motion_trackers.activation.type must be keyboard")
     keyboard_device = str(activation["device"]).strip()
     if not keyboard_device:
-        raise ValueError("input.activation.device must be non-empty")
+        raise ValueError("input.motion_trackers.activation.device must be non-empty")
 
     transforms = _exact_mapping(
-        input_config["tracker_to_control"],
+        trackers["tracker_to_control"],
         {"left", "right"},
-        "input.tracker_to_control",
+        "input.motion_trackers.tracker_to_control",
     )
     for side in ("left", "right"):
         transform = _exact_mapping(
             transforms[side],
             {"translation_xyz", "quaternion_xyzw"},
-            f"input.tracker_to_control.{side}",
+            f"input.motion_trackers.tracker_to_control.{side}",
         )
         translation = np.asarray(transform["translation_xyz"], dtype=float)
         quaternion = np.asarray(transform["quaternion_xyzw"], dtype=float)
@@ -154,37 +207,41 @@ def load_config(path, require_tracker_serials: bool) -> PicoConfig:
         if np.linalg.norm(quaternion) <= 1e-8:
             raise ValueError(f"{side} tracker quaternion must be non-zero")
 
+    return MotionTrackerConfig(
+        serials=serials,
+        tracker_to_control=transforms,
+        ready_timeout=_positive(
+            trackers["ready_timeout"], "input.motion_trackers.ready_timeout"
+        ),
+        stale_timeout=_positive(
+            trackers["stale_timeout"], "input.motion_trackers.stale_timeout"
+        ),
+        keyboard_device=keyboard_device,
+    )
+
+
+def load_config(path, allow_unconfigured_trackers: bool) -> PicoConfig:
+    config_path = Path(path)
+    with config_path.open(encoding="utf-8") as stream:
+        root = yaml.safe_load(stream)
+    root = _exact_mapping(root, {"udp", "host", "input"}, str(config_path))
+    input_raw = _exact_mapping(
+        root["input"],
+        {"type", "controllers", "motion_trackers"},
+        "input",
+    )
+    input_type = str(input_raw["type"]).strip()
+    if input_type not in {"controllers", "motion_trackers"}:
+        raise ValueError("input.type must be controllers or motion_trackers")
+    require_serials = input_type == "motion_trackers" and not allow_unconfigured_trackers
     return PicoConfig(
-        udp=UdpConfig(
-            command_host=command_host,
-            command_port=command_port,
-            state_host=state_host,
-            state_port=state_port,
-            state_timeout=_positive(udp["state_timeout"], "udp.state_timeout"),
-        ),
-        host=HostConfig(
-            translation_scale=_positive(
-                host["translation_scale"], "host.translation_scale"
+        udp=_load_udp(root["udp"]),
+        host=_load_host(root["host"]),
+        input=InputConfig(
+            type=input_type,
+            controllers=_load_controllers(input_raw["controllers"]),
+            motion_trackers=_load_motion_trackers(
+                input_raw["motion_trackers"], require_serials
             ),
-            rotation_scale=_positive(host["rotation_scale"], "host.rotation_scale"),
-            control_rate=_positive(host["control_rate"], "host.control_rate"),
-            max_joint_speed=_positive(
-                host["max_joint_speed"], "host.max_joint_speed"
-            ),
-            robot_state_wait_timeout=_positive(
-                host["robot_state_wait_timeout"],
-                "host.robot_state_wait_timeout",
-            ),
-        ),
-        input=MotionTrackerConfig(
-            serials=serials,
-            tracker_to_control=transforms,
-            ready_timeout=_positive(
-                input_config["ready_timeout"], "input.ready_timeout"
-            ),
-            stale_timeout=_positive(
-                input_config["stale_timeout"], "input.stale_timeout"
-            ),
-            keyboard_device=keyboard_device,
         ),
     )

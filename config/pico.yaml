@@ -14,18 +14,23 @@ host:
 
 input:
   type: motion_trackers
-  serials:
-    left: REPLACE_WITH_LEFT_TRACKER_SERIAL
-    right: REPLACE_WITH_RIGHT_TRACKER_SERIAL
-  ready_timeout: 30.0
-  stale_timeout: 0.25
-  activation:
-    type: keyboard
-    device: /dev/tty
-  tracker_to_control:
-    left:
-      translation_xyz: [0.0, 0.0, 0.0]
-      quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
-    right:
-      translation_xyz: [0.0, 0.0, 0.0]
-      quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+  controllers:
+    grip_threshold: 0.9
+    ready_timeout: 30.0
+    stale_timeout: 0.25
+  motion_trackers:
+    serials:
+      left: REPLACE_WITH_LEFT_TRACKER_SERIAL
+      right: REPLACE_WITH_RIGHT_TRACKER_SERIAL
+    ready_timeout: 30.0
+    stale_timeout: 0.25
+    activation:
+      type: keyboard
+      device: /dev/tty
+    tracker_to_control:
+      left:
+        translation_xyz: [0.0, 0.0, 0.0]
+        quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+      right:
+        translation_xyz: [0.0, 0.0, 0.0]
+        quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

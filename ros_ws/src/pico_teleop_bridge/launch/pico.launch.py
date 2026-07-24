@@ -61,11 +61,8 @@ def launch_bridge(context):
         raise ValueError(f"{path}: {'; '.join(details)}")
     required_input = {
         "type",
-        "serials",
-        "ready_timeout",
-        "stale_timeout",
-        "activation",
-        "tracker_to_control",
+        "controllers",
+        "motion_trackers",
     }
     input_fields = set(root["input"])
     if input_fields != required_input:
@@ -75,29 +72,56 @@ def launch_bridge(context):
             f"unknown={sorted(input_fields - required_input)}"
         )
     input_config = root["input"]
-    if input_config["type"] != "motion_trackers":
-        raise ValueError(f"{path}: input.type must be motion_trackers")
+    if input_config["type"] not in {"controllers", "motion_trackers"}:
+        raise ValueError(
+            f"{path}: input.type must be controllers or motion_trackers"
+        )
+    controller_fields = {"grip_threshold", "ready_timeout", "stale_timeout"}
+    controllers = input_config["controllers"]
+    if not isinstance(controllers, dict) or set(controllers) != controller_fields:
+        actual = set(controllers) if isinstance(controllers, dict) else set()
+        raise ValueError(
+            f"{path}: input.controllers fields differ: "
+            f"missing={sorted(controller_fields - actual)}, "
+            f"unknown={sorted(actual - controller_fields)}"
+        )
+    motion_trackers = input_config["motion_trackers"]
+    motion_fields = {
+        "serials",
+        "ready_timeout",
+        "stale_timeout",
+        "activation",
+        "tracker_to_control",
+    }
+    if not isinstance(motion_trackers, dict) or set(motion_trackers) != motion_fields:
+        actual = set(motion_trackers) if isinstance(motion_trackers, dict) else set()
+        raise ValueError(
+            f"{path}: input.motion_trackers fields differ: "
+            f"missing={sorted(motion_fields - actual)}, "
+            f"unknown={sorted(actual - motion_fields)}"
+        )
     nested_fields = {
         "serials": {"left", "right"},
         "activation": {"type", "device"},
         "tracker_to_control": {"left", "right"},
     }
     for name, expected in nested_fields.items():
-        value = input_config[name]
+        value = motion_trackers[name]
         if not isinstance(value, dict) or set(value) != expected:
             actual = set(value) if isinstance(value, dict) else set()
             raise ValueError(
-                f"{path}: input.{name} fields differ: "
+                f"{path}: input.motion_trackers.{name} fields differ: "
                 f"missing={sorted(expected - actual)}, "
                 f"unknown={sorted(actual - expected)}"
             )
     transform_fields = {"translation_xyz", "quaternion_xyzw"}
     for side in ("left", "right"):
-        transform = input_config["tracker_to_control"][side]
+        transform = motion_trackers["tracker_to_control"][side]
         if not isinstance(transform, dict) or set(transform) != transform_fields:
             actual = set(transform) if isinstance(transform, dict) else set()
             raise ValueError(
-                f"{path}: input.tracker_to_control.{side} fields differ: "
+                f"{path}: input.motion_trackers.tracker_to_control.{side} "
+                "fields differ: "
                 f"missing={sorted(transform_fields - actual)}, "
                 f"unknown={sorted(actual - transform_fields)}"
             )

@@ -11,12 +11,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-    config = load_config(args.config, require_tracker_serials=False)
+    config = load_config(args.config, allow_unconfigured_trackers=True)
 
     import xrobotoolkit_sdk as xrt
 
     xrt.init()
-    deadline = time.monotonic() + config.input.ready_timeout
+    deadline = time.monotonic() + config.input.motion_trackers.ready_timeout
     try:
         print("Move one tracker at a time to identify its serial; Ctrl-C exits.")
         while True:
@@ -31,7 +31,10 @@ def main() -> None:
                         f"{position[1]:+.3f}, {position[2]:+.3f}]"
                     )
                 print("\r" + " | ".join(parts) + " " * 8, end="", flush=True)
-                deadline = time.monotonic() + config.input.ready_timeout
+                deadline = (
+                    time.monotonic()
+                    + config.input.motion_trackers.ready_timeout
+                )
             elif time.monotonic() >= deadline:
                 raise TimeoutError("No PICO motion tracker data was received")
             time.sleep(0.2)

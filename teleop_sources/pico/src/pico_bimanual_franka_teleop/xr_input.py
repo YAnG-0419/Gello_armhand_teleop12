@@ -7,8 +7,113 @@ import tty
 import numpy as np
 import pinocchio as pin
 
+from .config import InputConfig
 from .pose_mapping import is_valid_xr_pose, xr_pose_to_world
 from .types import Pose, SIDES, TeleopSample
+
+
+class ControllerInput:
+    def __init__(
+        self,
+        grip_threshold: float,
+        ready_timeout: float,
+        stale_timeout: float,
+    ) -> None:
+        import xrobotoolkit_sdk as xrt
+
+        if not 0 < grip_threshold <= 1:
+            raise ValueError("Controller grip threshold must be in (0, 1]")
+        if ready_timeout <= 0 or stale_timeout <= 0:
+            raise ValueError("Controller ready and stale timeouts must be positive")
+        self.xrt = xrt
+        self.grip_threshold = float(grip_threshold)
+        self.stale_timeout = float(stale_timeout)
+        self.blocked = {side: True for side in SIDES}
+        self.last_timestamp: int | None = None
+        self.last_update_at: float | None = None
+        try:
+            self.xrt.init()
+            self._wait_until_ready(float(ready_timeout))
+        except BaseException:
+            self.close()
+            raise
+
+    def _snapshot(self):
+        for _ in range(3):
+            timestamp_before = int(self.xrt.get_time_stamp_ns())
+            poses = {
+                "left": np.asarray(self.xrt.get_left_controller_pose(), dtype=float),
+                "right": np.asarray(
+                    self.xrt.get_right_controller_pose(), dtype=float
+                ),
+            }
+            grips = {
+                "left": float(self.xrt.get_left_grip()),
+                "right": float(self.xrt.get_right_grip()),
+            }
+            timestamp_after = int(self.xrt.get_time_stamp_ns())
+            if timestamp_before > 0 and timestamp_before == timestamp_after:
+                break
+        else:
+            return None
+        if not all(is_valid_xr_pose(pose) for pose in poses.values()):
+            return None
+        if any(not np.isfinite(grip) or not 0 <= grip <= 1 for grip in grips.values()):
+            return None
+        return timestamp_after, poses, grips
+
+    def _wait_until_ready(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            snapshot = self._snapshot()
+            if snapshot is not None:
+                timestamp, _, _ = snapshot
+                self.last_timestamp = timestamp
+                self.last_update_at = time.monotonic()
+                return
+            time.sleep(0.05)
+        raise TimeoutError("Timed out waiting for valid PICO controller data")
+
+    def sample(self) -> TeleopSample | None:
+        snapshot = self._snapshot()
+        now = time.monotonic()
+        if snapshot is not None:
+            timestamp, raw_poses, grips = snapshot
+            if timestamp != self.last_timestamp:
+                self.last_timestamp = timestamp
+                self.last_update_at = now
+        if (
+            snapshot is None
+            or self.last_update_at is None
+            or now - self.last_update_at > self.stale_timeout
+        ):
+            self.disable_all("controller data missing or stale")
+            return None
+        _, raw_poses, grips = snapshot
+        activations = {}
+        for side in SIDES:
+            if grips[side] < self.grip_threshold:
+                self.blocked[side] = False
+            activations[side] = (
+                not self.blocked[side] and grips[side] >= self.grip_threshold
+            )
+        return TeleopSample(
+            poses={
+                side: xr_pose_to_world(raw_poses[side])
+                for side in SIDES
+            },
+            activations=activations,
+            timestamp=now,
+        )
+
+    def disable_all(self, _reason: str) -> None:
+        self.blocked = {side: True for side in SIDES}
+
+    def close(self) -> None:
+        if getattr(self, "xrt", None) is not None:
+            xrt = self.xrt
+            self.xrt = None
+            xrt.close()
 
 
 class KeyboardActivation:
@@ -235,6 +340,26 @@ class MotionTrackerInput:
                 keyboard = self.keyboard
                 self.keyboard = None
                 keyboard.close()
+
+
+def create_pico_input(config: InputConfig):
+    if config.type == "controllers":
+        controllers = config.controllers
+        return ControllerInput(
+            grip_threshold=controllers.grip_threshold,
+            ready_timeout=controllers.ready_timeout,
+            stale_timeout=controllers.stale_timeout,
+        )
+    if config.type == "motion_trackers":
+        trackers = config.motion_trackers
+        return MotionTrackerInput(
+            serials=trackers.serials,
+            tracker_to_control=trackers.tracker_to_control,
+            ready_timeout=trackers.ready_timeout,
+            stale_timeout=trackers.stale_timeout,
+            keyboard_device=trackers.keyboard_device,
+        )
+    raise ValueError(f"Unsupported PICO input type: {config.type}")
 
 
 class MockTeleopInput:
