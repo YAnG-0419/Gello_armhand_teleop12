@@ -9,7 +9,7 @@ from .ik import BimanualPinkIK
 from .paths import MJCF_PATH
 from .pose_mapping import RelativePoseMapper
 from .types import Pose, SIDES
-from .xr_input import MockXrInput, XrInput
+from .xr_input import MockTeleopInput, MotionTrackerInput
 
 
 class DualFr3Simulation:
@@ -18,10 +18,13 @@ class DualFr3Simulation:
         mock_xr: bool,
         translation_scale: float,
         rotation_scale: float,
-        grip_threshold: float,
         control_rate: float,
         max_joint_speed: float,
-        xr_ready_timeout: float,
+        tracker_serials: dict[str, str],
+        tracker_to_control: dict[str, dict],
+        tracker_ready_timeout: float,
+        tracker_stale_timeout: float,
+        keyboard_device: str,
     ) -> None:
         if control_rate <= 0.0:
             raise ValueError("Control rate must be positive")
@@ -37,12 +40,19 @@ class DualFr3Simulation:
             side: RelativePoseMapper(
                 translation_scale=translation_scale,
                 rotation_scale=rotation_scale,
-                grip_threshold=grip_threshold,
             )
             for side in SIDES
         }
-        self.xr = (
-            MockXrInput() if mock_xr else XrInput(ready_timeout=xr_ready_timeout)
+        self.teleop_input = (
+            MockTeleopInput()
+            if mock_xr
+            else MotionTrackerInput(
+                serials=tracker_serials,
+                tracker_to_control=tracker_to_control,
+                ready_timeout=tracker_ready_timeout,
+                stale_timeout=tracker_stale_timeout,
+                keyboard_device=keyboard_device,
+            )
         )
         self.target_mocap = {
             side: self.model.body(f"{side}_target").mocapid[0]
@@ -61,20 +71,20 @@ class DualFr3Simulation:
         ]
 
     def tick(self) -> None:
-        sample = self.xr.sample()
+        sample = self.teleop_input.sample()
         # Hold the last commanded joints so released arms stay suspended.
         q = self.hold_q
         targets = {}
         for side in SIDES:
             current = self.ik.frame_pose(q, side)
             if sample is None:
-                self.mappers[side].update(current, 0.0, current)
+                self.mappers[side].update(current, False, current)
                 target = None
             else:
-                # Arms only move while the corresponding grip is held.
+                # Arms only move while the corresponding input is active.
                 target = self.mappers[side].update(
                     sample.poses[side],
-                    sample.grips[side],
+                    sample.activations[side],
                     current,
                 )
             self._set_target_marker(side, target or current)
@@ -109,4 +119,4 @@ class DualFr3Simulation:
                     if remaining > 0.0:
                         time.sleep(remaining)
         finally:
-            self.xr.close()
+            self.teleop_input.close()

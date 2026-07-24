@@ -6,7 +6,7 @@ from .ik import BimanualPinkIK, IKError
 from .pose_mapping import RelativePoseMapper
 from .robot_udp import UdpRobotBackend
 from .types import SIDES
-from .xr_input import XrInput
+from .xr_input import MotionTrackerInput
 
 
 class DualFr3HardwareTeleop:
@@ -19,14 +19,17 @@ class DualFr3HardwareTeleop:
         state_timeout: float,
         translation_scale: float,
         rotation_scale: float,
-        grip_threshold: float,
         control_rate: float,
         max_joint_speed: float,
-        xr_ready_timeout: float,
         robot_state_wait_timeout: float,
+        tracker_serials: dict[str, str],
+        tracker_to_control: dict[str, dict],
+        tracker_ready_timeout: float,
+        tracker_stale_timeout: float,
+        keyboard_device: str,
     ) -> None:
         self.dt = 1.0 / control_rate
-        self.xr = XrInput(ready_timeout=xr_ready_timeout)
+        self.robot_state_wait_timeout = robot_state_wait_timeout
         self.robot = UdpRobotBackend(
             command_host=command_host,
             command_port=command_port,
@@ -34,24 +37,39 @@ class DualFr3HardwareTeleop:
             state_port=state_port,
             state_timeout=state_timeout,
         )
+        try:
+            self.teleop_input = MotionTrackerInput(
+                serials=tracker_serials,
+                tracker_to_control=tracker_to_control,
+                ready_timeout=tracker_ready_timeout,
+                stale_timeout=tracker_stale_timeout,
+                keyboard_device=keyboard_device,
+            )
+        except BaseException:
+            self.robot.close()
+            raise
         self.ik = BimanualPinkIK(dt=self.dt, max_joint_speed=max_joint_speed)
         self.mappers = {
             side: RelativePoseMapper(
                 translation_scale=translation_scale,
                 rotation_scale=rotation_scale,
-                grip_threshold=grip_threshold,
             )
             for side in SIDES
         }
         self.hold_q: np.ndarray | None = None
 
     def run(self) -> None:
-        self.robot.wait_for_state(timeout=robot_state_wait_timeout)
         try:
+            self.robot.wait_for_state(timeout=self.robot_state_wait_timeout)
             while True:
                 started_at = time.monotonic()
                 q = self.robot.receive_state()
                 if q is None:
+                    self.teleop_input.disable_all(
+                        "robot state missing or stale"
+                    )
+                    for mapper in self.mappers.values():
+                        mapper.reset()
                     self.robot.send_command(
                         self.hold_q if self.hold_q is not None else self.ik.configuration.q,
                         (),
@@ -60,16 +78,16 @@ class DualFr3HardwareTeleop:
                     continue
                 if self.hold_q is None:
                     self.hold_q = np.asarray(q, dtype=float).copy()
-                sample = self.xr.sample()
+                sample = self.teleop_input.sample()
                 targets = {}
                 for side in SIDES:
                     current = self.ik.frame_pose(self.hold_q, side)
                     if sample is None:
-                        self.mappers[side].update(current, 0.0, current)
+                        self.mappers[side].update(current, False, current)
                         continue
                     target = self.mappers[side].update(
                         sample.poses[side],
-                        sample.grips[side],
+                        sample.activations[side],
                         current,
                     )
                     if target is not None:
@@ -86,5 +104,7 @@ class DualFr3HardwareTeleop:
                 if remaining > 0.0:
                     time.sleep(remaining)
         finally:
-            self.robot.close()
-            self.xr.close()
+            try:
+                self.robot.close()
+            finally:
+                self.teleop_input.close()

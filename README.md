@@ -1,14 +1,14 @@
 # Franka Upper Body Teleop
 
-PICO teleoperation, recording, conversion, and replay for the mounted dual
-Franka FR3 workcell.
+PICO motion-tracker teleoperation, recording, conversion, and replay for the
+mounted dual Franka FR3 workcell.
 
 ## Structure
 
 ```text
-PICO -> host IK -> UDP -> ROS adapter -> command gateway -> FR3 controllers
-                          ^
-                       replay
+PICO trackers -> host IK -> UDP -> ROS adapter -> command gateway -> FR3 controllers
+                                   ^
+                                replay
 ```
 
 All live and future input methods publish the same `ArmCommand` interface.
@@ -45,7 +45,7 @@ Every setting has one owner; there are no environment or code fallbacks:
 
 - `docker/.env`: data mount, ROS domain, CPU set, and selected workcell file
 - `config/current_workcell.yaml`: both real FR3 connections
-- `config/pico.yaml`: PICO UDP endpoints, scale, timeout, and rate
+- `config/pico.yaml`: tracker serials/transforms, keyboard activation, UDP, and motion parameters
 - `config/teleop_control.yaml`: command gateway limits and allowed sources
 - `ros_ws/src/teleop_data/config/recording.yaml`: recording, conversion, and replay
 - `ros_ws/src/franka_fr3_arm_controllers/config/initial_pose.yaml`: captured reset pose

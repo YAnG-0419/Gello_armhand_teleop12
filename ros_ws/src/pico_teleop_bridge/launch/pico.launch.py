@@ -11,7 +11,7 @@ def launch_bridge(context):
         root = yaml.safe_load(config_file)
     if not isinstance(root, dict):
         raise ValueError(f"{path}: expected a mapping")
-    expected_sections = {"udp", "host"}
+    expected_sections = {"udp", "host", "input"}
     sections = set(root)
     if sections != expected_sections:
         missing = sorted(expected_sections - sections)
@@ -22,8 +22,8 @@ def launch_bridge(context):
         if unknown:
             details.append(f"unknown sections: {', '.join(unknown)}")
         raise ValueError(f"{path}: {'; '.join(details)}")
-    if not isinstance(root["udp"], dict) or not isinstance(root["host"], dict):
-        raise ValueError(f"{path}: udp and host must be mappings")
+    if any(not isinstance(root[section], dict) for section in expected_sections):
+        raise ValueError(f"{path}: udp, host, and input must be mappings")
     udp = root["udp"]
     required = {
         "command_host",
@@ -45,10 +45,8 @@ def launch_bridge(context):
     required_host = {
         "translation_scale",
         "rotation_scale",
-        "grip_threshold",
         "control_rate",
         "max_joint_speed",
-        "xr_ready_timeout",
         "robot_state_wait_timeout",
     }
     host_fields = set(root["host"])
@@ -61,6 +59,48 @@ def launch_bridge(context):
         if unknown_host:
             details.append(f"unknown host keys: {', '.join(unknown_host)}")
         raise ValueError(f"{path}: {'; '.join(details)}")
+    required_input = {
+        "type",
+        "serials",
+        "ready_timeout",
+        "stale_timeout",
+        "activation",
+        "tracker_to_control",
+    }
+    input_fields = set(root["input"])
+    if input_fields != required_input:
+        raise ValueError(
+            f"{path}: input fields differ: "
+            f"missing={sorted(required_input - input_fields)}, "
+            f"unknown={sorted(input_fields - required_input)}"
+        )
+    input_config = root["input"]
+    if input_config["type"] != "motion_trackers":
+        raise ValueError(f"{path}: input.type must be motion_trackers")
+    nested_fields = {
+        "serials": {"left", "right"},
+        "activation": {"type", "device"},
+        "tracker_to_control": {"left", "right"},
+    }
+    for name, expected in nested_fields.items():
+        value = input_config[name]
+        if not isinstance(value, dict) or set(value) != expected:
+            actual = set(value) if isinstance(value, dict) else set()
+            raise ValueError(
+                f"{path}: input.{name} fields differ: "
+                f"missing={sorted(expected - actual)}, "
+                f"unknown={sorted(actual - expected)}"
+            )
+    transform_fields = {"translation_xyz", "quaternion_xyzw"}
+    for side in ("left", "right"):
+        transform = input_config["tracker_to_control"][side]
+        if not isinstance(transform, dict) or set(transform) != transform_fields:
+            actual = set(transform) if isinstance(transform, dict) else set()
+            raise ValueError(
+                f"{path}: input.tracker_to_control.{side} fields differ: "
+                f"missing={sorted(transform_fields - actual)}, "
+                f"unknown={sorted(actual - transform_fields)}"
+            )
     return [
         Node(
             package="pico_teleop_bridge",

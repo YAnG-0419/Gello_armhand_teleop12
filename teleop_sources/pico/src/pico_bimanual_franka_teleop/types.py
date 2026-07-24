@@ -25,16 +25,15 @@ class Pose:
 
 
 @dataclass(frozen=True)
-class XrSample:
+class TeleopSample:
     poses: dict[str, Pose]
-    grips: dict[str, float]
+    activations: dict[str, bool]
     timestamp: float
 
     def __post_init__(self) -> None:
-        if set(self.poses) != set(SIDES) or set(self.grips) != set(SIDES):
-            raise ValueError("XR sample must contain left and right controllers")
+        if set(self.poses) != set(SIDES) or set(self.activations) != set(SIDES):
+            raise ValueError("Teleop sample must contain left and right inputs")
         if not np.isfinite(self.timestamp):
-            raise ValueError("XR timestamp is not finite")
-        for grip in self.grips.values():
-            if not np.isfinite(grip) or grip < 0.0 or grip > 1.0:
-                raise ValueError("Grip values must be in [0, 1]")
+            raise ValueError("Teleop timestamp is not finite")
+        if any(not isinstance(active, bool) for active in self.activations.values()):
+            raise ValueError("Teleop activations must be booleans")

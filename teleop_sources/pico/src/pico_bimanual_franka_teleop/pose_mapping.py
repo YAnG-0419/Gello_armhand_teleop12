@@ -47,36 +47,36 @@ class RelativePoseMapper:
         self,
         translation_scale: float,
         rotation_scale: float,
-        grip_threshold: float,
     ) -> None:
         if translation_scale <= 0.0 or rotation_scale <= 0.0:
             raise ValueError("Pose scales must be positive")
-        if not 0.0 < grip_threshold <= 1.0:
-            raise ValueError("Grip threshold must be in (0, 1]")
         self.translation_scale = float(translation_scale)
         self.rotation_scale = float(rotation_scale)
-        self.grip_threshold = float(grip_threshold)
-        self.controller_anchor: Pose | None = None
+        self.input_anchor: Pose | None = None
         self.robot_anchor: Pose | None = None
 
     @property
     def active(self) -> bool:
-        return self.controller_anchor is not None
+        return self.input_anchor is not None
 
-    def update(self, controller: Pose, grip: float, robot_pose: Pose) -> Pose | None:
-        engaged = grip >= self.grip_threshold
-        if not engaged:
-            self.controller_anchor = None
-            self.robot_anchor = None
+    def reset(self) -> None:
+        self.input_anchor = None
+        self.robot_anchor = None
+
+    def update(
+        self, input_pose: Pose, active: bool, robot_pose: Pose
+    ) -> Pose | None:
+        if not active:
+            self.reset()
             return None
-        if self.controller_anchor is None:
-            self.controller_anchor = controller
+        if self.input_anchor is None:
+            self.input_anchor = input_pose
             self.robot_anchor = robot_pose
             return robot_pose
 
         assert self.robot_anchor is not None
-        delta_position = controller.position - self.controller_anchor.position
-        delta_rotation = controller.rotation @ self.controller_anchor.rotation.T
+        delta_position = input_pose.position - self.input_anchor.position
+        delta_rotation = input_pose.rotation @ self.input_anchor.rotation.T
         if self.rotation_scale != 1.0:
             rotation_vector = pin.log3(delta_rotation) * self.rotation_scale
             delta_rotation = pin.exp3(rotation_vector)

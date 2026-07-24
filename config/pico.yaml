@@ -8,8 +8,24 @@ udp:
 host:
   translation_scale: 0.5
   rotation_scale: 1.0
-  grip_threshold: 0.9
   control_rate: 100.0
   max_joint_speed: 0.5
-  xr_ready_timeout: 30.0
   robot_state_wait_timeout: 10.0
+
+input:
+  type: motion_trackers
+  serials:
+    left: REPLACE_WITH_LEFT_TRACKER_SERIAL
+    right: REPLACE_WITH_RIGHT_TRACKER_SERIAL
+  ready_timeout: 30.0
+  stale_timeout: 0.25
+  activation:
+    type: keyboard
+    device: /dev/tty
+  tracker_to_control:
+    left:
+      translation_xyz: [0.0, 0.0, 0.0]
+      quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+    right:
+      translation_xyz: [0.0, 0.0, 0.0]
+      quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
