@@ -14,6 +14,7 @@ VALIDATED_COMMAND_TOPIC = "/teleop/validated_arm_commands"
 ARM_COMMAND_TOPIC = "/target_robot/joint_commands"
 ARM_STATE_TOPIC = "/{side}/franka/joint_states"
 CONTROLLER_COMMAND_TOPIC = "/{side}/gello/joint_states"
+RESET_ACTIVE_TOPIC = "/reset_to_initial_pose/active"
 
 
 def command_names(active_sides):

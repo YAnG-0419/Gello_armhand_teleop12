@@ -3,4 +3,4 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "${repo}/docker"
-TELEOP_OUTPUT_ENABLED=true docker compose up teleop-control pico-bridge
+exec docker compose run --rm tools ros2 run teleop_data operator "$@"

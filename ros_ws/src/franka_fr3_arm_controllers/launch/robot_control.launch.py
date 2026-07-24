@@ -44,5 +44,11 @@ def generate_launch_description():
     )
 
     ld.add_action(franka_controllers_launch)
+    ld.add_action(Node(
+        package="franka_fr3_arm_controllers",
+        executable="reset_to_initial_pose.py",
+        name="reset_to_initial_pose",
+        output="screen",
+    ))
     ld.add_action(set_bi_collision_behavior_node)
     return ld

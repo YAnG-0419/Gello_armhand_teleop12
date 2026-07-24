@@ -78,7 +78,9 @@ install(
 )
 
 install(
-  PROGRAMS scripts/set_bi_collision_behavior.py
+  PROGRAMS
+    scripts/reset_to_initial_pose.py
+    scripts/set_bi_collision_behavior.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

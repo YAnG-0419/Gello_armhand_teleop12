@@ -39,9 +39,7 @@ ROS_DOMAIN_ID=0 ./scripts/start_franka.sh
 Terminal 2:
 
 ```bash
-FRANKA_TELEOP_ENABLE=I_UNDERSTAND \
-ROS_DOMAIN_ID=0 \
-./scripts/start_pico_enabled.sh
+ROS_DOMAIN_ID=0 ./scripts/start_pico_enabled.sh
 ```
 
 Terminal 3:
@@ -63,16 +61,24 @@ PICO motion maps to robot world as follows:
 On the first run after a mapping change, engage one arm at a time and use a
 small translation before testing rotation or bimanual motion.
 
-## Record and replay
+## Operator, recording, and reset
 
-While the pipeline is running:
+Open another terminal:
 
 ```bash
-./scripts/record.sh
-record> start
-record> stop
-record> save
+./scripts/operator.sh
 ```
+
+Useful commands are:
+
+- `/capture`: read both measured joint-state topics and save them as the reset pose
+- `/reset`: smoothly return both arms to the saved pose
+- `/record`, `/stop`, `/save`, `/discard`: manage an episode
+- `/status`: show joint-state and reset-service availability
+
+`/capture` does not publish a robot command. Before `/reset`, release both
+PICO grips. The reset temporarily suppresses teleoperation commands while it
+interpolates both arms at `0.15 rad/s`.
 
 Stop `run_pico.sh` before replay:
 

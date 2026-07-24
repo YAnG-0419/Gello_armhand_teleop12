@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "record = teleop_data.recorder:main",
+            "operator = teleop_data.operator_cli:main",
             "convert = teleop_data.converter:main",
             "replay = teleop_data.replay:main",
         ]

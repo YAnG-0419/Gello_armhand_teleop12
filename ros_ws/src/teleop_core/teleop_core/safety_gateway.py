@@ -3,14 +3,21 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool
 from teleop_interfaces.msg import ArmCommand
 
 from .arbitration import SourceArbiter
 from .contract import (
     ARM_COMMAND_TOPIC,
     ARM_STATE_TOPIC,
+    RESET_ACTIVE_TOPIC,
     SOURCE_COMMAND_TOPIC,
     VALIDATED_COMMAND_TOPIC,
 )
@@ -43,6 +50,7 @@ class SafetyGateway(Node):
         self.state = {"left": None, "right": None}
         self.state_at = {"left": None, "right": None}
         self.rejected = 0
+        self.reset_active = False
 
         for side in ("left", "right"):
             self.create_subscription(
@@ -52,6 +60,12 @@ class SafetyGateway(Node):
                 qos_profile_sensor_data,
             )
         self.create_subscription(ArmCommand, SOURCE_COMMAND_TOPIC, self._command, 10)
+        reset_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(Bool, RESET_ACTIVE_TOPIC, self._reset_state, reset_qos)
         self.validated_publisher = self.create_publisher(
             JointState, VALIDATED_COMMAND_TOPIC, 10
         )
@@ -60,6 +74,11 @@ class SafetyGateway(Node):
         )
         mode = "ENABLED" if self.enabled else "DRY-RUN"
         self.get_logger().info(f"Teleoperation safety gateway mode={mode}.")
+
+    def _reset_state(self, message):
+        self.reset_active = bool(message.data)
+        self.arbiter.reset()
+        self.gate.reset()
 
     def _state(self, side, message):
         try:
@@ -83,6 +102,8 @@ class SafetyGateway(Node):
             self.get_logger().warn(f"Rejected command: {reason}")
 
     def _command(self, message):
+        if self.reset_active:
+            return
         now = time.monotonic()
         measured = self._measured(now)
         if measured is None:

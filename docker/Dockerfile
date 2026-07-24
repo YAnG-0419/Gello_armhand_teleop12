@@ -8,10 +8,11 @@ SHELL ["/bin/bash", "-c"]
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git wget \
-    python3-pip python3-yaml python3-numpy \
+    python3-pip python3-yaml python3-numpy python3-prompt-toolkit \
     ros-humble-hardware-interface \
     ros-humble-controller-manager \
     ros-humble-controller-interface \
+    ros-humble-ros2-control-test-assets \
     ros-humble-ros2controlcli \
     ros-humble-joint-state-broadcaster \
     ros-humble-generate-parameter-library \

@@ -41,13 +41,16 @@ For the real workcell, follow [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md)
 
 ## Data
 
-Record an episode:
+The interactive operator provides completion, live status, recording, initial
+pose capture, and reset:
 
 ```bash
-./scripts/record.sh
-record> start
-record> stop
-record> save
+./scripts/operator.sh
+teleop> /capture
+teleop> /record
+teleop> /stop
+teleop> /save
+teleop> /reset
 ```
 
 Convert and replay:
