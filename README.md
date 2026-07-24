@@ -39,6 +39,22 @@ Run the simulation smoke check:
 
 For the real workcell, follow [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md).
 
+## Configuration
+
+Every setting has one owner; there are no environment or code fallbacks:
+
+- `docker/.env`: data mount, ROS domain, CPU set, and selected workcell file
+- `config/current_workcell.yaml`: both real FR3 connections
+- `config/pico.yaml`: PICO UDP endpoints, scale, timeout, and rate
+- `config/teleop_control.yaml`: command gateway limits and allowed sources
+- `ros_ws/src/teleop_data/config/recording.yaml`: recording, conversion, and replay
+- `ros_ws/src/franka_fr3_arm_controllers/config/initial_pose.yaml`: captured reset pose
+
+Start with `cp docker/.env.example docker/.env`. All scripts using Docker go
+through `scripts/compose.sh`, which reads only that file and rejects missing,
+empty, duplicate, unknown, or malformed entries. YAML readers likewise reject
+missing and unknown fields.
+
 ## Data
 
 The interactive operator provides completion, live status, recording, initial

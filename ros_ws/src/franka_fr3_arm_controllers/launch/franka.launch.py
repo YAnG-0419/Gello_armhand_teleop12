@@ -101,29 +101,28 @@ def generate_robot_nodes(context):
 def generate_launch_description():
     launch_args = [
         DeclareLaunchArgument(
-            "arm_id", default_value="", description="ID of the type of arm used"
+            "arm_id", description="Required robot arm type"
         ),
-        DeclareLaunchArgument("arm_prefix", default_value="", description="Prefix for arm topics"),
+        DeclareLaunchArgument("arm_prefix", description="Required arm topic prefix"),
         DeclareLaunchArgument(
-            "namespace", default_value="", description="Namespace for the robot"
+            "namespace", description="Required robot namespace"
         ),
         DeclareLaunchArgument(
             "controller_cpus",
             description="Host CPU set dedicated to this arm's ros2_control process",
         ),
         DeclareLaunchArgument(
-            "urdf_file", default_value="fr3/fr3.urdf.xacro", description="Path to URDF file"
+            "urdf_file", description="Required path to the robot URDF"
         ),
         DeclareLaunchArgument(
             "robot_ip",
-            default_value="172.16.0.3",
-            description="Hostname or IP address of the robot",
+            description="Required robot hostname or IP address",
         ),
         DeclareLaunchArgument(
-            "use_fake_hardware", default_value="false", description="Use fake hardware"
+            "use_fake_hardware", description="Required fake-hardware mode"
         ),
         DeclareLaunchArgument(
-            "fake_sensor_commands", default_value="false", description="Fake sensor commands"
+            "fake_sensor_commands", description="Required fake-sensor command mode"
         ),
     ]
 

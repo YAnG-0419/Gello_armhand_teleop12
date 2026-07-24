@@ -16,6 +16,8 @@ from teleop_core.contract import (
 from teleop_core.joint_state import ordered_arm_positions
 from teleop_interfaces.msg import ArmCommand
 
+from .config import load_config
+
 
 def smootherstep(value):
     value = np.clip(value, 0.0, 1.0)
@@ -36,8 +38,9 @@ def preposition_trajectory(start, target, speed, rate):
 
 
 class ReplayPublisher(Node):
-    def __init__(self):
+    def __init__(self, state_timeout):
         super().__init__("teleop_replay")
+        self.state_timeout = state_timeout
         self.publisher = self.create_publisher(ArmCommand, SOURCE_COMMAND_TOPIC, 10)
         self.state = {"left": None, "right": None}
         self.state_at = {"left": None, "right": None}
@@ -58,7 +61,10 @@ class ReplayPublisher(Node):
     def measured(self):
         if any(self.state[side] is None for side in ("left", "right")):
             return None
-        if any(time.monotonic() - self.state_at[side] > 0.25 for side in ("left", "right")):
+        if any(
+            time.monotonic() - self.state_at[side] > self.state_timeout
+            for side in ("left", "right")
+        ):
             return None
         return np.concatenate((self.state["left"], self.state["right"]))
 
@@ -104,25 +110,25 @@ def load_episode(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("episode", type=Path)
-    parser.add_argument("--speed", type=float, default=1.0)
-    parser.add_argument("--preposition-speed", type=float, default=0.1)
-    parser.add_argument("--rate", type=float, default=100.0)
+    parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
-    if args.speed <= 0:
-        raise ValueError("Replay speed must be positive.")
+    config = load_config(args.config)
     timestamp, action, active = load_episode(args.episode)
     rclpy.init()
-    node = ReplayPublisher()
+    node = ReplayPublisher(config.replay_state_timeout)
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + config.replay_discovery_timeout
         while node.measured() is None and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)
         measured = node.measured()
         if measured is None:
             raise TimeoutError("No fresh dual-FR3 state was received.")
-        period = 1.0 / args.rate
+        period = 1.0 / config.replay_rate
         for target in preposition_trajectory(
-            measured, action[0], args.preposition_speed, args.rate
+            measured,
+            action[0],
+            config.replay_preposition_speed,
+            config.replay_rate,
         ):
             started = time.monotonic()
             rclpy.spin_once(node, timeout_sec=0)
@@ -132,7 +138,7 @@ def main():
             time.sleep(max(0.0, period - (time.monotonic() - started)))
         started = time.monotonic()
         for frame_time, target, active_mask in zip(timestamp, action, active):
-            deadline = started + frame_time / args.speed
+            deadline = started + frame_time / config.replay_speed
             while time.monotonic() < deadline:
                 rclpy.spin_once(node, timeout_sec=min(0.01, deadline - time.monotonic()))
             if node.measured() is None:

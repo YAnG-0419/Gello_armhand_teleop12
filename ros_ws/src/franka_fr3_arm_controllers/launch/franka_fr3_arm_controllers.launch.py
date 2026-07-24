@@ -31,6 +31,55 @@ def load_yaml(file_path):
         return yaml.safe_load(file)
 
 
+WORKCELL_SIDES = {"LEFT", "RIGHT"}
+WORKCELL_FIELDS = {
+    "arm_id",
+    "arm_prefix",
+    "controller_cpus",
+    "fake_sensor_commands",
+    "namespace",
+    "robot_ip",
+    "urdf_file",
+    "use_fake_hardware",
+}
+
+
+def validate_workcell(configs, path):
+    if not isinstance(configs, dict):
+        raise ValueError(f"{path}: expected a mapping")
+    sides = set(configs)
+    if sides != WORKCELL_SIDES:
+        missing = sorted(WORKCELL_SIDES - sides)
+        unknown = sorted(sides - WORKCELL_SIDES)
+        details = []
+        if missing:
+            details.append(f"missing arms: {', '.join(missing)}")
+        if unknown:
+            details.append(f"unknown arms: {', '.join(unknown)}")
+        raise ValueError(f"{path}: {'; '.join(details)}")
+    for side in sorted(WORKCELL_SIDES):
+        config = configs[side]
+        if not isinstance(config, dict):
+            raise ValueError(f"{path}: {side} must be a mapping")
+        fields = set(config)
+        missing = sorted(WORKCELL_FIELDS - fields)
+        unknown = sorted(fields - WORKCELL_FIELDS)
+        if missing or unknown:
+            details = []
+            if missing:
+                details.append(f"missing keys: {', '.join(missing)}")
+            if unknown:
+                details.append(f"unknown keys: {', '.join(unknown)}")
+            raise ValueError(f"{path}: {side}: {'; '.join(details)}")
+        for field in WORKCELL_FIELDS:
+            if not isinstance(config[field], str) or not config[field].strip():
+                raise ValueError(f"{path}: {side}.{field} must be a non-empty string")
+        for field in ("use_fake_hardware", "fake_sensor_commands"):
+            if config[field] not in {"true", "false"}:
+                raise ValueError(f"{path}: {side}.{field} must be 'true' or 'false'")
+    return configs
+
+
 def generate_robot_nodes(context):
     config_file_name = LaunchConfiguration("robot_config_file").perform(context)
     if os.path.isabs(config_file_name):
@@ -40,7 +89,7 @@ def generate_robot_nodes(context):
             "franka_fr3_arm_controllers"
         ).perform(context)
         config_file = os.path.join(package_config_dir, "config", config_file_name)
-    configs = load_yaml(config_file)
+    configs = validate_workcell(load_yaml(config_file), config_file)
     nodes = []
     for item_name, config in configs.items():
         namespace = config["namespace"]

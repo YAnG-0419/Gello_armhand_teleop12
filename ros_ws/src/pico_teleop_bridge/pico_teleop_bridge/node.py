@@ -5,6 +5,7 @@ import uuid
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from teleop_core.contract import (
@@ -25,16 +26,11 @@ from teleop_interfaces.msg import ArmCommand
 class PicoTeleopBridge(Node):
     def __init__(self):
         super().__init__("pico_teleop_bridge")
-        self.declare_parameter("listen_host", "127.0.0.1")
-        self.declare_parameter("command_port", 5560)
-        self.declare_parameter("feedback_host", "127.0.0.1")
-        self.declare_parameter("feedback_port", 5561)
-        self.declare_parameter("state_timeout", 0.25)
-        listen_host = str(self.get_parameter("listen_host").value)
-        command_port = int(self.get_parameter("command_port").value)
-        feedback_host = str(self.get_parameter("feedback_host").value)
-        feedback_port = int(self.get_parameter("feedback_port").value)
-        self.state_timeout = float(self.get_parameter("state_timeout").value)
+        listen_host = str(self._required_parameter("listen_host"))
+        command_port = int(self._required_parameter("command_port"))
+        feedback_host = str(self._required_parameter("feedback_host"))
+        feedback_port = int(self._required_parameter("feedback_port"))
+        self.state_timeout = float(self._required_parameter("state_timeout"))
         if self.state_timeout <= 0:
             raise ValueError("State timeout must be positive.")
 
@@ -64,6 +60,12 @@ class PicoTeleopBridge(Node):
         self.get_logger().info(
             f"PICO adapter listening on udp://{listen_host}:{command_port}."
         )
+
+    def _required_parameter(self, name):
+        parameter = self.declare_parameter(name)
+        if parameter.type_ == Parameter.Type.NOT_SET:
+            raise ValueError(f"Required parameter '{name}' is missing")
+        return parameter.value
 
     def _state(self, side, message):
         try:

@@ -11,6 +11,7 @@ dependencies = [
     "mujoco==3.10.0",
     "numpy>=2.0,<2.4",
     "pin-pink==3.1.0",
+    "PyYAML>=6,<7",
     "quadprog==0.1.13",
 ]
 

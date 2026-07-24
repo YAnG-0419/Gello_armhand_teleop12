@@ -3,6 +3,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import (
     DurabilityPolicy,
     QoSProfile,
@@ -28,24 +29,19 @@ from .safety import CommandSafetyGate
 class SafetyGateway(Node):
     def __init__(self):
         super().__init__("teleop_safety_gateway")
-        self.declare_parameter("enabled", False)
-        self.declare_parameter("allowed_sources", ["pico", "replay"])
-        self.declare_parameter("state_timeout", 0.25)
-        self.declare_parameter("command_timeout", 0.25)
-        self.declare_parameter("max_joint_speed", 0.5)
-        self.declare_parameter("max_initial_delta", 0.05)
-
-        self.enabled = bool(self.get_parameter("enabled").value)
-        self.state_timeout = float(self.get_parameter("state_timeout").value)
-        command_timeout = float(self.get_parameter("command_timeout").value)
+        self.enabled = bool(self._required_parameter("enabled"))
+        allowed_sources = self._required_parameter("allowed_sources")
+        self.state_timeout = float(self._required_parameter("state_timeout"))
+        command_timeout = float(self._required_parameter("command_timeout"))
         if self.state_timeout <= 0 or command_timeout <= 0:
             raise ValueError("State and command timeouts must be positive.")
         self.arbiter = SourceArbiter(
-            self.get_parameter("allowed_sources").value, command_timeout
+            allowed_sources, command_timeout
         )
         self.gate = CommandSafetyGate(
-            max_joint_speed=float(self.get_parameter("max_joint_speed").value),
-            max_initial_delta=float(self.get_parameter("max_initial_delta").value),
+            max_joint_speed=float(self._required_parameter("max_joint_speed")),
+            max_initial_delta=float(self._required_parameter("max_initial_delta")),
+            nominal_dt=float(self._required_parameter("nominal_dt")),
         )
         self.state = {"left": None, "right": None}
         self.state_at = {"left": None, "right": None}
@@ -74,6 +70,12 @@ class SafetyGateway(Node):
         )
         mode = "ENABLED" if self.enabled else "DRY-RUN"
         self.get_logger().info(f"Teleoperation safety gateway mode={mode}.")
+
+    def _required_parameter(self, name):
+        parameter = self.declare_parameter(name)
+        if parameter.type_ == Parameter.Type.NOT_SET:
+            raise ValueError(f"Required parameter '{name}' is missing")
+        return parameter.value
 
     def _reset_state(self, message):
         self.reset_active = bool(message.data)

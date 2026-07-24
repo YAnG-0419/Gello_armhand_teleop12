@@ -9,7 +9,7 @@ from .types import Pose, XrSample
 
 
 class XrInput:
-    def __init__(self, ready_timeout: float = 30.0) -> None:
+    def __init__(self, ready_timeout: float) -> None:
         import xrobotoolkit_sdk as xrt
 
         if ready_timeout <= 0.0:

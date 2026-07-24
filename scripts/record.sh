@@ -2,5 +2,7 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-cd "${repo}/docker"
-exec docker compose run --rm tools ros2 run teleop_data record "$@"
+exec "${repo}/scripts/compose.sh" run --rm tools ros2 run teleop_data record \
+  "$@" \
+  --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml \
+  --qos /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording_qos.yaml

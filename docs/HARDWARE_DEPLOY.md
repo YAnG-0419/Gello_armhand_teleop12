@@ -19,6 +19,12 @@ cp docker/.env.example docker/.env
 ./scripts/setup_pico_env.sh
 ```
 
+Review all four entries in `docker/.env`, especially
+`FRANKA_ROBOT_CONFIG`. Runtime shell variables do not override this file.
+Robot addresses come only from that selected workcell YAML; PICO networking
+and motion scale come only from `config/pico.yaml`. Startup stops with an
+error if required configuration is absent or misspelled.
+
 Before each session, activate both arms and FCI in Franka Desk, then check:
 
 ```bash

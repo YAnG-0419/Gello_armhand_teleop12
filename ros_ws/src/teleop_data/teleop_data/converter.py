@@ -10,6 +10,7 @@ from teleop_core.contract import (
 )
 from teleop_core.joint_state import ordered_arm_positions
 
+from .config import load_config
 from .timeseries import TimeSeries, fixed_rate_times
 
 
@@ -108,6 +109,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
-    print(convert(args.input, args.output, args.fps))
+    config = load_config(args.config)
+    print(convert(args.input, args.output, config.conversion_fps))

@@ -4,17 +4,17 @@ x-runtime: &runtime
   ipc: host
   volumes:
     - ..:/workspace/franka_upper_body_teleop
-    - ${TELEOP_DATA_ROOT:?Set TELEOP_DATA_ROOT in docker/.env}:/data
+    - ${TELEOP_DATA_ROOT:?Missing TELEOP_DATA_ROOT in docker/.env}:/data
   environment:
     - ROS_LOCALHOST_ONLY=0
-    - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:-0}
+    - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
   working_dir: /workspace/franka_upper_body_teleop
 
 services:
   franka-control:
     <<: *runtime
     privileged: true
-    cpuset: ${FRANKA_CPUSET:-16-23}
+    cpuset: ${FRANKA_CPUSET:?Missing FRANKA_CPUSET in docker/.env}
     ulimits:
       rtprio: 99
       rttime: -1
@@ -27,7 +27,25 @@ services:
       - launch
       - franka_fr3_arm_controllers
       - robot_control.launch.py
-      - robot_config:=${FRANKA_ROBOT_CONFIG:-/workspace/franka_upper_body_teleop/config/current_workcell.yaml}
+      - robot_config:=${FRANKA_ROBOT_CONFIG:?Missing FRANKA_ROBOT_CONFIG in docker/.env}
+
+  fake-franka-control:
+    <<: *runtime
+    privileged: true
+    cpuset: ${FRANKA_CPUSET:?Missing FRANKA_CPUSET in docker/.env}
+    ulimits:
+      rtprio: 99
+      rttime: -1
+      memlock: -1
+    volumes:
+      - ..:/workspace/franka_upper_body_teleop
+      - /dev:/dev
+    command:
+      - ros2
+      - launch
+      - franka_fr3_arm_controllers
+      - robot_control.launch.py
+      - robot_config:=/workspace/franka_upper_body_teleop/config/fake_workcell.yaml
 
   teleop-control:
     <<: *runtime
@@ -36,7 +54,18 @@ services:
       - launch
       - teleop_core
       - control.launch.py
-      - enabled:=${TELEOP_OUTPUT_ENABLED:-false}
+      - config:=/workspace/franka_upper_body_teleop/config/teleop_control.yaml
+      - enabled:=true
+
+  teleop-control-dry-run:
+    <<: *runtime
+    command:
+      - ros2
+      - launch
+      - teleop_core
+      - control.launch.py
+      - config:=/workspace/franka_upper_body_teleop/config/teleop_control.yaml
+      - enabled:=false
 
   pico-bridge:
     <<: *runtime
@@ -45,6 +74,7 @@ services:
       - launch
       - pico_teleop_bridge
       - pico.launch.py
+      - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
 
   tools:
     <<: *runtime

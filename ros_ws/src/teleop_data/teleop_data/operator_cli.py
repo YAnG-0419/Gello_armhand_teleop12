@@ -4,7 +4,6 @@ import time
 from pathlib import Path
 
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from std_srvs.srv import Trigger
 
 from .command_shell import run_command_shell
@@ -76,11 +75,9 @@ def print_help():
 
 
 def parse_args():
-    config_dir = Path(get_package_share_directory("teleop_data")) / "config"
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=config_dir / "recording.yaml")
-    parser.add_argument("--data-root", type=Path)
-    parser.add_argument("--qos", type=Path, default=config_dir / "recording_qos.yaml")
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--qos", type=Path, required=True)
     return parser.parse_args()
 
 
@@ -90,7 +87,7 @@ def main():
     rclpy.init()
     node = EpisodeRecorder(
         options.config,
-        options.data_root or config.data_root,
+        config.data_root,
         options.qos,
     )
     operator = Operator(node)

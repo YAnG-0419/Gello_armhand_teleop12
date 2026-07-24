@@ -46,8 +46,8 @@ class RelativePoseMapper:
     def __init__(
         self,
         translation_scale: float,
-        rotation_scale: float = 1.0,
-        grip_threshold: float = 0.9,
+        rotation_scale: float,
+        grip_threshold: float,
     ) -> None:
         if translation_scale <= 0.0 or rotation_scale <= 0.0:
             raise ValueError("Pose scales must be positive")

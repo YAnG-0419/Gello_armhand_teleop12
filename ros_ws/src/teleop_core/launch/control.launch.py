@@ -6,17 +6,23 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    enabled = DeclareLaunchArgument("enabled", default_value="false")
+    config = DeclareLaunchArgument(
+        "config", description="Required teleoperation-control configuration file"
+    )
+    enabled = DeclareLaunchArgument(
+        "enabled", description="Required hardware-output mode"
+    )
     gateway = Node(
         package="teleop_core",
         executable="safety_gateway",
         output="screen",
         parameters=[
+            LaunchConfiguration("config"),
             {
                 "enabled": ParameterValue(
                     LaunchConfiguration("enabled"), value_type=bool
                 )
-            }
+            },
         ],
     )
     splitter = Node(
@@ -24,4 +30,4 @@ def generate_launch_description():
         executable="joint_splitter",
         output="screen",
     )
-    return LaunchDescription([enabled, gateway, splitter])
+    return LaunchDescription([config, enabled, gateway, splitter])

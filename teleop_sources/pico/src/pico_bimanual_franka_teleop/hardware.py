@@ -12,28 +12,41 @@ from .xr_input import XrInput
 class DualFr3HardwareTeleop:
     def __init__(
         self,
-        command_host: str = "127.0.0.1",
-        command_port: int = 5560,
-        state_port: int = 5561,
-        translation_scale: float = 0.5,
-        control_rate: float = 100.0,
+        command_host: str,
+        command_port: int,
+        state_host: str,
+        state_port: int,
+        state_timeout: float,
+        translation_scale: float,
+        rotation_scale: float,
+        grip_threshold: float,
+        control_rate: float,
+        max_joint_speed: float,
+        xr_ready_timeout: float,
+        robot_state_wait_timeout: float,
     ) -> None:
         self.dt = 1.0 / control_rate
-        self.xr = XrInput()
+        self.xr = XrInput(ready_timeout=xr_ready_timeout)
         self.robot = UdpRobotBackend(
             command_host=command_host,
             command_port=command_port,
+            state_host=state_host,
             state_port=state_port,
+            state_timeout=state_timeout,
         )
-        self.ik = BimanualPinkIK(dt=self.dt, max_joint_speed=0.5)
+        self.ik = BimanualPinkIK(dt=self.dt, max_joint_speed=max_joint_speed)
         self.mappers = {
-            side: RelativePoseMapper(translation_scale=translation_scale)
+            side: RelativePoseMapper(
+                translation_scale=translation_scale,
+                rotation_scale=rotation_scale,
+                grip_threshold=grip_threshold,
+            )
             for side in SIDES
         }
         self.hold_q: np.ndarray | None = None
 
     def run(self) -> None:
-        self.robot.wait_for_state(timeout=10.0)
+        self.robot.wait_for_state(timeout=robot_state_wait_timeout)
         try:
             while True:
                 started_at = time.monotonic()

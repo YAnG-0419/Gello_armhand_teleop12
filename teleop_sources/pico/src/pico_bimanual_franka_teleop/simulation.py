@@ -15,9 +15,13 @@ from .xr_input import MockXrInput, XrInput
 class DualFr3Simulation:
     def __init__(
         self,
-        mock_xr: bool = False,
-        translation_scale: float = 1.0,
-        control_rate: float = 100.0,
+        mock_xr: bool,
+        translation_scale: float,
+        rotation_scale: float,
+        grip_threshold: float,
+        control_rate: float,
+        max_joint_speed: float,
+        xr_ready_timeout: float,
     ) -> None:
         if control_rate <= 0.0:
             raise ValueError("Control rate must be positive")
@@ -28,12 +32,18 @@ class DualFr3Simulation:
         self.data.ctrl[:] = self.data.qpos
         mujoco.mj_forward(self.model, self.data)
         self.hold_q = self.data.qpos.copy()
-        self.ik = BimanualPinkIK(dt=self.dt)
+        self.ik = BimanualPinkIK(dt=self.dt, max_joint_speed=max_joint_speed)
         self.mappers = {
-            side: RelativePoseMapper(translation_scale=translation_scale)
+            side: RelativePoseMapper(
+                translation_scale=translation_scale,
+                rotation_scale=rotation_scale,
+                grip_threshold=grip_threshold,
+            )
             for side in SIDES
         }
-        self.xr = MockXrInput() if mock_xr else XrInput()
+        self.xr = (
+            MockXrInput() if mock_xr else XrInput(ready_timeout=xr_ready_timeout)
+        )
         self.target_mocap = {
             side: self.model.body(f"{side}_target").mocapid[0]
             for side in SIDES

@@ -10,11 +10,11 @@ from teleop_core.protocol import JointPacket, decode_packet, encode_packet
 class UdpRobotBackend:
     def __init__(
         self,
-        command_host: str = "127.0.0.1",
-        command_port: int = 5560,
-        state_host: str = "127.0.0.1",
-        state_port: int = 5561,
-        state_timeout: float = 0.25,
+        command_host: str,
+        command_port: int,
+        state_host: str,
+        state_port: int,
+        state_timeout: float,
     ) -> None:
         self.command_address = (command_host, command_port)
         self.state_timeout = float(state_timeout)

@@ -22,7 +22,7 @@ class ValidatedCommand:
 
 
 class CommandSafetyGate:
-    def __init__(self, max_joint_speed=0.5, max_initial_delta=0.05, nominal_dt=0.01):
+    def __init__(self, max_joint_speed, max_initial_delta, nominal_dt):
         if max_joint_speed <= 0 or max_initial_delta <= 0 or nominal_dt <= 0:
             raise ValueError("Safety limits must be positive.")
         self.max_joint_speed = float(max_joint_speed)

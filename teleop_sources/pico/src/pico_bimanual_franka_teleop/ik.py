@@ -22,7 +22,7 @@ class IKError(RuntimeError):
 
 
 class BimanualPinkIK:
-    def __init__(self, dt: float = 0.01, max_joint_speed: float = 0.5) -> None:
+    def __init__(self, dt: float, max_joint_speed: float) -> None:
         if dt <= 0.0 or max_joint_speed <= 0.0:
             raise ValueError("IK timestep and joint speed must be positive")
         self.dt = float(dt)
