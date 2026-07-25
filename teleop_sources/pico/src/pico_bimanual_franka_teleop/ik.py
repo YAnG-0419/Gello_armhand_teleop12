@@ -54,7 +54,12 @@ class BimanualPinkIK:
         # home. The cost was swept: 0.2 is too weak to pull the elbow back and
         # drift reached 2.3 rad, while 1.0 returned the configuration to within
         # 0.000 rad after ten adversarial loops at a worst-case tracking cost of
-        # 1.5 mm at a 30 cm displacement; 3.0 already costs 12 mm.
+        # 1.5 mm at a 30 cm displacement; 3.0 already costs 12 mm. The same
+        # equilibrium holds a 90-degree orientation step to within 0.875 deg,
+        # measured, against 0.232 deg at cost 0.5 whose drift protection fails.
+        # The attractor is a constant pull, so unlike the speed limit and the
+        # damping task it does trade a sub-perceptual amount of steady-state
+        # accuracy for a bounded elbow.
         self.posture_task = PostureTask(cost=1.0)
         self.posture_reference: np.ndarray | None = None
         self.damping_task = DampingTask(cost=10.0)
