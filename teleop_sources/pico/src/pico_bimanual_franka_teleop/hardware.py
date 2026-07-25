@@ -83,6 +83,9 @@ class DualFr3HardwareTeleop:
                     continue
                 if self.hold_q is None:
                     self.hold_q = np.asarray(q, dtype=float).copy()
+                    # Anchor the IK null-space attractor at the pose the session
+                    # started from, normally the captured hardware home.
+                    self.ik.set_posture_reference(self.hold_q)
                 sample = self.teleop_input.sample()
                 targets = {}
                 for side in SIDES:
