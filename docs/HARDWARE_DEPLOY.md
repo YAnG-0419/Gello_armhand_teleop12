@@ -416,6 +416,89 @@ flips both sides if a differently wired hand ever needs it, and
 - `initial_speed` also raises the force the fingers apply before the firmware
   backs off. Lower it when grasping something fragile.
 
+## Arm and hands together
+
+One process must own the XRoboToolkit client, so the arm process reads the hand
+skeletons too. It does not retarget them. Retargeting both hands costs about 17 ms
+and holds the GIL, and doing it inside the arm process was measured to turn a
+steady 100 Hz loop into one that missed its deadline on 23% of ticks:
+
+```text
+                        period median   p99      max      ticks over 15 ms
+arms only                    10.07 ms  10.20 ms  10.37 ms   0.0%
+arms + retarget in-process   10.09 ms  29.16 ms  42.82 ms  23.3%
+arms + forwarding only       10.07 ms  10.25 ms  10.60 ms   0.0%
+```
+
+So the split is at the skeleton. The arm process forwards raw skeletons, which
+costs well under a millisecond, and a separate process retargets them with its own
+interpreter. Only the arm process opens an SDK client, so the one-client rule
+holds.
+
+```text
+teleop_dual_fr3.py --hands        owns the SDK, arms at 100 Hz
+  -> udp 5571 raw skeletons
+hand_retarget_service.py          retargeting, its own GIL
+  -> udp 5570 L20 joint poses
+linker_hand_bridge                0..255, watchdog, slew limit
+  -> /cb_{side}_hand_control_cmd -> vendor driver -> CAN
+```
+
+Four terminals. Start the hand chain first so nothing is dropped while the arms
+come up.
+
+Terminal 1, hands. Everything from `hands.launch.py` as above:
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop
+source /opt/ros/jazzy/setup.bash && source host_ws/install/setup.bash
+ros2 launch linker_hand_bridge hands.launch.py
+```
+
+Terminal 2, retargeting:
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/hardware/hand_retarget_service.py
+```
+
+Terminal 3, the FR3 stack, exactly as for arms alone:
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose up franka-control
+# and in another shell
+docker compose up teleop-control pico-bridge
+```
+
+Terminal 4, the operator process, which now drives both:
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
+  --config config/pico.yaml --input motion-trackers --hands
+```
+
+`--hands` requires `--input motion-trackers`. Holding a controller occupies the
+operator's hand, so the optical skeleton cannot describe a grasp.
+
+The arms still start disengaged and need the keyboard to acquire; the hands begin
+following as soon as tracking locks. The two are independent in both directions by
+design. Losing the optical skeleton never disengages an arm, because a wrist
+tracker can be perfectly healthy while the cameras lose sight of the fingers, and a
+stale robot state stops the arms without stopping the hands. Nothing in the hand
+path can raise into the arm loop.
+
+Hand options are CLI arguments rather than YAML, matching how `--input` works:
+`--hand-rate`, `--hand-sides` and `--hand-port` on the operator process, and
+`--iterations`, `--stale-timeout` and `--frozen-timeout` on the retargeting
+service. Existing configuration files are unchanged.
+
+To shut down, stop terminal 4 first. The bridge watchdog then holds each hand where
+it is, and the arms hold position.
+
 ## Shutdown
 
 Disengage both arms, stop the PICO process, then stop Terminal 2 and Terminal

@@ -25,6 +25,7 @@ class DualFr3HardwareTeleop:
         robot_state_wait_timeout: float,
         input_config: InputConfig,
         input_type: str,
+        hand_sender_factory=None,
     ) -> None:
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
@@ -50,7 +51,16 @@ class DualFr3HardwareTeleop:
         }
         self.hold_q: np.ndarray | None = None
 
+        # The hand pipeline shares this process's single SDK client but runs on its
+        # own thread: retargeting one hand costs most of the arm's 10 ms tick.
+        # Constructing it must never prevent the arms from running.
+        self.hands = None
+        if hand_sender_factory is not None:
+            self.hands = hand_sender_factory(self.teleop_input.xrt)
+
     def run(self) -> None:
+        if self.hands is not None:
+            self.hands.start()
         try:
             self.robot.wait_for_state(timeout=self.robot_state_wait_timeout)
             while True:
@@ -96,7 +106,12 @@ class DualFr3HardwareTeleop:
                 if remaining > 0.0:
                     time.sleep(remaining)
         finally:
+            # Stop the hand thread before closing the SDK client it reads from.
             try:
-                self.robot.close()
+                if self.hands is not None:
+                    self.hands.stop()
             finally:
-                self.teleop_input.close()
+                try:
+                    self.robot.close()
+                finally:
+                    self.teleop_input.close()
