@@ -209,7 +209,8 @@ def test_motion_input_disengages_on_frozen_pose(monkeypatch) -> None:
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp += 20_000_000
     assert tracker_input.sample() is not None
-    tracker_input.last_pose_changed_at["left"] -= 2.0
+    tracker_input.last_position_changed_at["left"] -= 2.0
+    tracker_input.last_rotation_changed_at["left"] -= 2.0
     fake_xrt.timestamp += 20_000_000
 
     assert tracker_input.sample() is None
@@ -222,7 +223,8 @@ def test_inactive_frozen_tracker_does_not_stop_active_side(monkeypatch) -> None:
     monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": False, "right": True}
-    tracker_input.last_pose_changed_at["left"] -= 2.0
+    tracker_input.last_position_changed_at["left"] -= 2.0
+    tracker_input.last_rotation_changed_at["left"] -= 2.0
     fake_xrt.timestamp += 20_000_000
     fake_xrt.poses[0][0] += 0.01
 
@@ -230,3 +232,45 @@ def test_inactive_frozen_tracker_does_not_stop_active_side(monkeypatch) -> None:
 
     assert sample is not None
     assert sample.activations == {"left": False, "right": True}
+
+
+def test_frozen_position_with_live_rotation_disengages(monkeypatch) -> None:
+    # The failure recorded on 2026-07-25: the tracker lost its optical fix, so
+    # position updated 37 times in 45 s while the IMU kept streaming rotation
+    # on 84% of ticks. A combined alive-if-anything-moves clock never faulted
+    # and the arms tracked a sub-hertz position stream for half a minute.
+    # Position and rotation liveness must be judged independently.
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": True, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    # Rotation keeps jittering, position never moves, and the position clock
+    # has aged past the frozen timeout.
+    tracker_input.last_position_changed_at["left"] -= 2.0
+    fake_xrt.poses[1][3] += 0.01  # IMU wiggle on the left tracker's quaternion
+    fake_xrt.timestamp += 20_000_000
+
+    assert tracker_input.sample() is None
+    assert tracker_input.keyboard.active == {"left": False, "right": False}
+
+
+def test_live_position_with_frozen_rotation_disengages(monkeypatch) -> None:
+    # The mirror failure: a dead IMU with a live optical fix must fault too.
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": True, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    tracker_input.last_rotation_changed_at["left"] -= 2.0
+    fake_xrt.poses[1][0] += 0.005  # position moves, under the jump limit
+    fake_xrt.timestamp += 20_000_000
+
+    assert tracker_input.sample() is None
+    assert tracker_input.keyboard.active == {"left": False, "right": False}
