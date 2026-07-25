@@ -6,8 +6,7 @@ dependencies:
   - pip
   - pybind11
   - pyyaml
-  # Hand retargeting: scipy provides L-BFGS-B, pybullet provides the URDF
-  # forward kinematics and analytic Jacobians the objective needs.
+  # Hand retargeting: scipy provides L-BFGS-B. Forward kinematics and frame
+  # Jacobians come from pinocchio, which pin-pink in pyproject.toml already
+  # pulls in for the arm IK.
   - scipy
-  - pip:
-      - pybullet==3.2.7
