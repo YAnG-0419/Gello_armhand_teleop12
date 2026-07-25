@@ -1,44 +1,43 @@
-"""Forward PICO hand skeletons out of the arm process.
+"""Retarget PICO hand skeletons inline and send hand commands to the bridge.
 
-The arm process owns the only XRoboToolkit client, so it is the only place the hand
-skeletons can be read. It is also a 100 Hz real-time loop with a 10 ms budget, and
-retargeting a hand costs 8 to 11 ms while holding the GIL. Measured here, doing that
-work on a thread inside this process pushed the arm loop from a p99 of 10.18 ms to
-29 ms, late on 23% of ticks. Retargeting therefore happens in another process; this
-only reads and forwards, which costs well under a millisecond.
+One synchronous object, ticked from whichever loop owns the SDK client. No thread
+and no second process: since the pinocchio rewrite a one-hand solve costs about
+1.5 ms, and the pipeline solves at most one side per tick, so the worst a tick
+can cost is one solve. That fits inside the arm loop's 10 ms budget, which the
+jitter benchmark in the deployment notes verifies. The earlier design forwarded
+skeletons to a separate retargeting process because a solve then cost 8-11 ms
+while holding the GIL; that constraint is gone and the process with it.
 
-Forwarding runs on its own thread anyway, so the arm loop never waits on a socket,
-and every failure is contained: nothing here raises into the arm loop, and losing an
-optical skeleton never disengages an arm. The two are independent signals, and a
-wrist tracker can be perfectly healthy while the cameras lose sight of the fingers.
-
-Skeletons are forwarded raw rather than as landmarks, including `isActive`, so the
-receiver applies the same validation and liveness rules it would apply to a live
-client. Inactive frames are forwarded too: the receiver needs to see tracking drop
-in order to stop commanding, and silence alone cannot be distinguished from a dead
-sender.
+Failure is contained in both directions. `tick` never raises, and losing an
+optical skeleton never disengages an arm: they are independent signals, and a
+wrist tracker can be perfectly healthy while the cameras lose sight of the
+fingers. When a side becomes unusable this simply stops sending for it, the
+bridge's watchdog stops publishing, the hand holds position, and the retargeter's
+filter history is dropped so reacquisition cannot jump.
 """
 
 from __future__ import annotations
 
 import socket
-import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from .hand_skeleton_stream import encode_skeleton_packet
+from .hand_input import HandSkeletonReader
+from .hand_stream import build_hand_packet
 from .types import SIDES
 
 
 @dataclass
 class HandSideStatus:
-    forwarded: int = 0
-    active: bool = False
-    last_active_at: float | None = None
+    sending: bool = False
+    fault: str | None = None
+    sent: int = 0
+    solve_seconds: float = 0.0
 
 
 @dataclass
-class HandForwardStatus:
+class HandStatus:
     sides: dict[str, HandSideStatus] = field(
         default_factory=lambda: {side: HandSideStatus() for side in SIDES}
     )
@@ -46,117 +45,117 @@ class HandForwardStatus:
     last_error: str | None = None
 
 
-class HandSkeletonForwarder:
-    """Read both hand skeletons from the shared SDK client and send them on."""
+class HandPipeline:
+    """Read, retarget and send both hands, at most one solve per tick."""
 
     def __init__(
         self,
         xrt,
         *,
+        assets_dir: Path,
         host: str,
         port: int,
-        rate: float,
+        rate: float = 30.0,
         sides: tuple[str, ...] = SIDES,
-        stream_id: str = "pico-skeleton",
+        stale_timeout: float = 0.25,
+        frozen_timeout: float = 1.0,
+        max_iterations: int = 20,
     ) -> None:
         if xrt is None:
-            raise ValueError("HandSkeletonForwarder requires an initialized SDK module")
-        if not 0.0 < rate <= 120.0:
-            raise ValueError("Hand forward rate must be in (0, 120] Hz")
+            raise ValueError("HandPipeline requires an initialized SDK module")
+        if not 0.0 < rate <= 60.0:
+            raise ValueError("Hand send rate must be in (0, 60] Hz")
         if not sides or set(sides).difference(SIDES):
             raise ValueError(f"Invalid hand sides: {sides}")
 
-        self.xrt = xrt
+        # Import here so arm-only runs never pay for pinocchio.
+        from .hand_retarget import L20Retargeter
+
+        assets = Path(assets_dir)
+        self.retargeters = {}
+        for side in sides:
+            urdf = assets / side / f"linkerhand_l20_{side}.urdf"
+            if not urdf.is_file():
+                raise FileNotFoundError(f"Hand URDF not found: {urdf}")
+            self.retargeters[side] = L20Retargeter(
+                urdf, side, max_iterations=max_iterations
+            )
+
+        self.reader = HandSkeletonReader(
+            xrt, stale_timeout=stale_timeout, frozen_timeout=frozen_timeout
+        )
         self.address = (str(host), int(port))
         self.interval = 1.0 / float(rate)
         self.sides = tuple(sides)
-        self.stream_id = str(stream_id)
+        self.status = HandStatus()
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sequence = {side: 0 for side in sides}
+        self._next_due = {side: 0.0 for side in sides}
+        # Round-robin start point, so one side cannot starve the other when both
+        # come due on the same tick.
+        self._preferred = 0
 
-        self.status = HandForwardStatus()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._lock = threading.Lock()
-
-    def start(self) -> None:
-        if self._thread is not None:
-            raise RuntimeError("Hand forwarder is already running")
-        self._thread = threading.Thread(
-            target=self._run, name="hand-forward", daemon=True
-        )
-        self._thread.start()
-
-    def stop(self, timeout: float = 3.0) -> None:
-        self._stop.set()
-        thread = self._thread
-        self._thread = None
-        if thread is not None:
-            thread.join(timeout=timeout)
-
-    def snapshot(self) -> HandForwardStatus:
-        with self._lock:
-            return HandForwardStatus(
-                sides={
-                    side: HandSideStatus(
-                        forwarded=status.forwarded,
-                        active=status.active,
-                        last_active_at=status.last_active_at,
-                    )
-                    for side, status in self.status.sides.items()
-                },
-                errors=self.status.errors,
-                last_error=self.status.last_error,
-            )
-
-    def _note_error(self, message: str) -> None:
-        with self._lock:
-            self.status.errors += 1
-            self.status.last_error = message
-
-    def _read(self, side: str):
-        if side == "left":
-            return (
-                self.xrt.get_left_hand_tracking_state(),
-                int(self.xrt.get_left_hand_is_active()),
-            )
-        return (
-            self.xrt.get_right_hand_tracking_state(),
-            int(self.xrt.get_right_hand_is_active()),
-        )
-
-    def _run(self) -> None:
-        sock: socket.socket | None = None
-        sequence = {side: 0 for side in self.sides}
+    def tick(self, now: float | None = None) -> None:
+        """Advance the hand pipeline by at most one solve. Never raises."""
+        moment = time.monotonic() if now is None else float(now)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            while not self._stop.is_set():
+            samples = self.reader.sample(now=moment)
+        except Exception as error:  # noqa: BLE001 - must not reach the arm loop
+            self.status.errors += 1
+            self.status.last_error = f"hand sample failed: {error}"
+            return
+
+        for side in self.sides:
+            status = self.status.sides[side]
+            if samples.get(side) is None:
+                if status.sending:
+                    # Send nothing; the bridge watchdog holds the hand, and
+                    # dropping filter history keeps reacquisition smooth.
+                    self.retargeters[side].reset()
+                status.sending = False
+                status.fault = self.reader.faults[side]
+
+        # Solve at most one side per tick so a tick never costs two solves.
+        order = [
+            self.sides[(self._preferred + offset) % len(self.sides)]
+            for offset in range(len(self.sides))
+        ]
+        for side in order:
+            sample = samples.get(side)
+            if sample is None or moment < self._next_due[side]:
+                continue
+            status = self.status.sides[side]
+            try:
                 started = time.monotonic()
-                for side in self.sides:
-                    try:
-                        joints, is_active = self._read(side)
-                        payload = encode_skeleton_packet(
-                            self.stream_id,
-                            sequence[side],
-                            time.time(),
-                            side,
-                            is_active,
-                            joints,
-                        )
-                        sock.sendto(payload, self.address)
-                    except Exception as error:  # noqa: BLE001 - contain per side
-                        self._note_error(f"{side} skeleton forward failed: {error}")
-                        continue
-                    sequence[side] += 1
-                    with self._lock:
-                        status = self.status.sides[side]
-                        status.forwarded += 1
-                        status.active = is_active == 1
-                        if is_active == 1:
-                            status.last_active_at = started
-                remaining = self.interval - (time.monotonic() - started)
-                if remaining > 0.0:
-                    self._stop.wait(remaining)
-        except Exception as error:  # noqa: BLE001 - the thread must not kill the arm
-            self._note_error(f"hand forward thread stopped: {error}")
-        finally:
-            if sock is not None:
-                sock.close()
+                qpos, _ = self.retargeters[side].retarget(sample.landmarks)
+                elapsed = time.monotonic() - started
+                self._socket.sendto(
+                    build_hand_packet(
+                        f"pico-hand-{side}",
+                        self._sequence[side],
+                        time.time(),
+                        side,
+                        self.retargeters[side].joint_names,
+                        qpos,
+                    ),
+                    self.address,
+                )
+            except Exception as error:  # noqa: BLE001 - contain per side
+                self.status.errors += 1
+                self.status.last_error = f"{side} hand retargeting failed: {error}"
+                status.sending = False
+                status.fault = str(error)
+                return
+            self._sequence[side] += 1
+            self._next_due[side] = moment + self.interval
+            self._preferred = (self.sides.index(side) + 1) % len(self.sides)
+            status.sending = True
+            status.fault = None
+            status.sent += 1
+            status.solve_seconds = elapsed
+            return
+
+    def close(self) -> None:
+        self._socket.close()
+        for retargeter in self.retargeters.values():
+            retargeter.close()

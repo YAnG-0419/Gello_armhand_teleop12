@@ -51,16 +51,15 @@ class DualFr3HardwareTeleop:
         }
         self.hold_q: np.ndarray | None = None
 
-        # The hand pipeline shares this process's single SDK client but runs on its
-        # own thread: retargeting one hand costs most of the arm's 10 ms tick.
+        # The hand pipeline shares this process's single SDK client and is ticked
+        # synchronously from the loop below: a solve costs about 1.5 ms and the
+        # pipeline runs at most one per tick, so it fits the arm's 10 ms budget.
         # Constructing it must never prevent the arms from running.
         self.hands = None
         if hand_sender_factory is not None:
             self.hands = hand_sender_factory(self.teleop_input.xrt)
 
     def run(self) -> None:
-        if self.hands is not None:
-            self.hands.start()
         try:
             self.robot.wait_for_state(timeout=self.robot_state_wait_timeout)
             while True:
@@ -76,6 +75,10 @@ class DualFr3HardwareTeleop:
                         self.hold_q if self.hold_q is not None else self.ik.configuration.q,
                         (),
                     )
+                    # A stale robot state stops the arms, not the hands: the two
+                    # are independent signals by design.
+                    if self.hands is not None:
+                        self.hands.tick()
                     time.sleep(self.dt)
                     continue
                 if self.hold_q is None:
@@ -102,14 +105,18 @@ class DualFr3HardwareTeleop:
                     raise
                 active_sides = tuple(side for side in SIDES if side in targets)
                 self.robot.send_command(self.hold_q, active_sides)
+                # Hands go after the arm command so the deadline-critical work
+                # is never queued behind a hand solve.
+                if self.hands is not None:
+                    self.hands.tick()
                 remaining = self.dt - (time.monotonic() - started_at)
                 if remaining > 0.0:
                     time.sleep(remaining)
         finally:
-            # Stop the hand thread before closing the SDK client it reads from.
+            # Close the hand pipeline before the SDK client it reads from.
             try:
                 if self.hands is not None:
-                    self.hands.stop()
+                    self.hands.close()
             finally:
                 try:
                     self.robot.close()

@@ -9,10 +9,9 @@ from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Dual FR3 teleoperation from PICO. Add --hands to also forward the "
-            "optical hand skeletons to hand_retarget_service.py, which must be "
-            "running. Retargeting happens in that separate process because doing "
-            "it here holds the GIL long enough to wreck the 100 Hz arm loop."
+            "Dual FR3 teleoperation from PICO. Add --hands to also drive the "
+            "Linker Hands from optical hand tracking, retargeted inline in this "
+            "process and sent to linker_hand_bridge."
         )
     )
     parser.add_argument("--config", required=True)
@@ -27,20 +26,21 @@ def main() -> None:
     parser.add_argument(
         "--hands",
         action="store_true",
-        help="also forward optical hand skeletons to hand_retarget_service.py",
+        help="also retarget optical hand tracking to the Linker Hands",
     )
     parser.add_argument("--hand-host", default="127.0.0.1")
     parser.add_argument(
         "--hand-port",
         type=int,
-        default=5571,
-        help="where hand_retarget_service.py listens (default: 5571)",
+        default=5570,
+        help="where linker_hand_bridge listens (default: 5570)",
     )
     parser.add_argument(
         "--hand-rate",
         type=float,
         default=30.0,
-        help="skeleton datagrams per second per side (default: 30)",
+        help="hand commands per second per side; the vendor driver drops "
+        "commands above about 100 Hz (default: 30)",
     )
     parser.add_argument(
         "--hand-sides",
@@ -57,11 +57,12 @@ def main() -> None:
                 "occupies the operator's hand, so the optical skeleton cannot "
                 "describe a grasp"
             )
-        from pico_bimanual_franka_teleop.hand_teleop import HandSkeletonForwarder
+        from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
 
         sides = ("left", "right") if args.hand_sides == "both" else (args.hand_sides,)
         hand_sender_factory = partial(
-            HandSkeletonForwarder,
+            HandPipeline,
+            assets_dir=Path(__file__).resolve().parents[4] / "assets" / "linkerhand_l20",
             host=args.hand_host,
             port=args.hand_port,
             rate=args.hand_rate,

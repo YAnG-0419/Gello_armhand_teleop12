@@ -418,36 +418,26 @@ flips both sides if a differently wired hand ever needs it, and
 
 ## Arm and hands together
 
-One process must own the XRoboToolkit client, so the arm process reads the hand
-skeletons too. It does not retarget them. Retargeting both hands costs about 17 ms
-and holds the GIL, and doing it inside the arm process was measured to turn a
-steady 100 Hz loop into one that missed its deadline on 23% of ticks:
+One process owns the XRoboToolkit client and drives both: the arms through the
+existing 100 Hz loop, the hands through an inline pipeline ticked from that same
+loop. No thread and no second process. This became possible when the pinocchio
+rewrite brought a one-hand solve from 8-11 ms down to about 1.5 ms; the pipeline
+solves at most one side per tick, so a tick never pays for more than one solve.
+Measured on the production code path with recorded skeletons:
 
 ```text
                         period median   p99      max      ticks over 15 ms
-arms only                    10.07 ms  10.20 ms  10.37 ms   0.0%
-arms + retarget in-process   10.09 ms  29.16 ms  42.82 ms  23.3%
-arms + forwarding only       10.07 ms  10.25 ms  10.60 ms   0.0%
+arms only                    10.07 ms  10.17 ms  10.37 ms   0.0%
+arms + inline hands          10.05 ms  12.71 ms  13.34 ms   0.0%
+the rejected thread design   10.09 ms  29.16 ms  42.82 ms  23.3%
 ```
 
-So the split is at the skeleton. The arm process forwards raw skeletons, which
-costs well under a millisecond, and a separate process retargets them with its own
-interpreter. Only the arm process opens an SDK client, so the one-client rule
-holds.
+The p99 grows by exactly one solve and never stacks. Hand commands go straight
+from this process to `linker_hand_bridge` on udp 5570.
 
-```text
-teleop_dual_fr3.py --hands        owns the SDK, arms at 100 Hz
-  -> udp 5571 raw skeletons
-hand_retarget_service.py          retargeting, its own GIL
-  -> udp 5570 L20 joint poses
-linker_hand_bridge                0..255, watchdog, slew limit
-  -> /cb_{side}_hand_control_cmd -> vendor driver -> CAN
-```
+Start the hand chain first, then the FR3 stack, then the operator process.
 
-Four terminals. Start the hand chain first so nothing is dropped while the arms
-come up.
-
-Terminal 1, hands. Everything from `hands.launch.py` as above:
+Terminal 1, hands, from `hands.launch.py` as above:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
@@ -455,15 +445,7 @@ source /opt/ros/jazzy/setup.bash && source host_ws/install/setup.bash
 ros2 launch linker_hand_bridge hands.launch.py
 ```
 
-Terminal 2, retargeting:
-
-```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/hardware/hand_retarget_service.py
-```
-
-Terminal 3, the FR3 stack, exactly as for arms alone:
+Terminal 2, the FR3 stack, exactly as for arms alone:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop/docker
@@ -472,7 +454,7 @@ docker compose up franka-control
 docker compose up teleop-control pico-bridge
 ```
 
-Terminal 4, the operator process, which now drives both:
+Terminal 3, the operator process, which drives both:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
@@ -485,19 +467,18 @@ conda run --no-capture-output --name franka-teleop-pico \
 operator's hand, so the optical skeleton cannot describe a grasp.
 
 The arms still start disengaged and need the keyboard to acquire; the hands begin
-following as soon as tracking locks. The two are independent in both directions by
-design. Losing the optical skeleton never disengages an arm, because a wrist
-tracker can be perfectly healthy while the cameras lose sight of the fingers, and a
-stale robot state stops the arms without stopping the hands. Nothing in the hand
-path can raise into the arm loop.
+following as soon as tracking locks. The two are independent in both directions
+by design. Losing the optical skeleton never disengages an arm, because a wrist
+tracker can be perfectly healthy while the cameras lose sight of the fingers, and
+a stale robot state stops the arms without stopping the hands. Nothing in the
+hand pipeline can raise into the arm loop.
 
 Hand options are CLI arguments rather than YAML, matching how `--input` works:
-`--hand-rate`, `--hand-sides` and `--hand-port` on the operator process, and
-`--iterations`, `--stale-timeout` and `--frozen-timeout` on the retargeting
-service. Existing configuration files are unchanged.
+`--hand-rate`, `--hand-sides`, `--hand-host` and `--hand-port`. Existing
+configuration files are unchanged.
 
-To shut down, stop terminal 4 first. The bridge watchdog then holds each hand where
-it is, and the arms hold position.
+To shut down, stop terminal 3 first. The bridge watchdog then holds each hand
+where it is, and the arms hold position.
 
 ## Shutdown
 
