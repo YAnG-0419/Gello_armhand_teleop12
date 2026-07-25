@@ -265,7 +265,7 @@ def _bridge_core():
 
     path = (
         REPO_ROOT
-        / "host_ws"
+        / "ros_ws"
         / "src"
         / "linker_hand_bridge"
         / "linker_hand_bridge"

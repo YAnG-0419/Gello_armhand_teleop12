@@ -9,6 +9,7 @@ SHELL ["/bin/bash", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git wget \
     python3-pip python3-yaml python3-numpy python3-prompt-toolkit \
+    iproute2 \
     ros-humble-hardware-interface \
     ros-humble-controller-manager \
     ros-humble-controller-interface \
@@ -24,6 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-rosbag2-storage-default-plugins \
     libpoco-dev libeigen3-dev libfmt-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# The vendored Linker Hand driver needs python-can >= 4 for can.exceptions;
+# the jammy apt package is 3.3.4, so install the same version the host runs.
+RUN python3 -m pip install --no-cache-dir 'python-can==4.3.1'
 
 RUN wget -q \
       "https://github.com/frankarobotics/libfranka/releases/download/${LIBFRANKA_VERSION}/libfranka_${LIBFRANKA_VERSION}_jammy_amd64.deb" \

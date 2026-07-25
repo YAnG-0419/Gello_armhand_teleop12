@@ -191,27 +191,34 @@ candump -t d can0 & sleep 0.4; cansend can0 0FF#C0; sleep 1; kill %1
 ```
 
 The vendor driver is vendored into this repository at
-`host_ws/src/linker_hand_ros2_sdk`, copied from the official SDK at revision
+`ros_ws/src/linker_hand_ros2_sdk`, copied from the official SDK at revision
 `7dea77ee947d5e91fa072a80e31ee777125c8003`. Only the driver package is
 vendored; the GUI and pressure-diagram packages would add a PyQt dependency and
 are not used. Nothing at runtime depends on the sibling `linkerhand-ros2-sdk`
-checkout. Build it together with the bridge:
+checkout.
+
+It runs inside the same Humble container as the rest of the ROS stack. The
+`hand-control` compose service is privileged and shares the host network
+namespace, which is what lets it bind `can0`/`can1` directly; this was verified
+on this machine before adopting it. Build everything with `./scripts/build.sh`,
+which uses `--symlink-install`; that flag is required because the vendored
+package does not install its `LinkerHand/config/*.yaml` into `share/`, so a
+copying install cannot find `setting.yaml` at runtime.
+
+Start both drivers and the bridge together:
 
 ```bash
-./scripts/build_host.sh
-source host_ws/install/setup.bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose up hand-control
 ```
 
-`--symlink-install`, which that script passes, is required. The vendored package
-does not install its `LinkerHand/config/*.yaml` into `share/`, so a copying
-install cannot find `setting.yaml` at runtime.
-
-Start the driver per side. Use `linker_hand_sdk` with `hand_joint:=G20`, which
-is motionless at startup:
+To start a single driver manually instead, use `linker_hand_sdk` with
+`hand_joint:=G20`, which is motionless at startup:
 
 ```bash
-ros2 run linker_hand_ros2_sdk linker_hand_sdk --ros-args \
-  -p hand_type:=left -p hand_joint:=G20 -p can:=can0 -p is_touch:=false
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose run --rm tools ros2 run linker_hand_ros2_sdk linker_hand_sdk \
+  --ros-args -p hand_type:=left -p hand_joint:=G20 -p can:=can0 -p is_touch:=false
 ```
 
 Prefer it over `linker_hand_advanced_g20`, which commands
@@ -258,7 +265,7 @@ and confirm finger clearance to the arm and table before commanding motion.
 ```text
 PICO optical 26-joint skeleton
   -> canonical 21 landmarks
-  -> L20 URDF retargeting on the host, in the franka-teleop-pico Conda env
+  -> L20 URDF retargeting in the operator process, franka-teleop-pico Conda env
   -> hand qpos datagrams on udp://127.0.0.1:5570
   -> linker_hand_bridge, 0..255 projection, watchdog and slew limit
   -> /cb_{side}_hand_control_cmd
@@ -266,15 +273,14 @@ PICO optical 26-joint skeleton
   -> CAN
 ```
 
-The whole hand path runs **on the host**, not in the container. The container is
-ROS 2 Humble while the host is Jazzy, and the vendor driver has to be host-side
-because it needs CAN. Cross-distro DDS between Humble and Jazzy is not a
-supported guarantee, so the hand stream crosses that boundary as UDP rather than
-as ROS topics. The arm stack in the container is unaffected, and losing the
-optical skeleton is an independent event from losing a wrist tracker.
+Everything ROS-side, hand drivers and bridge included, runs in the Humble
+container; only the operator process runs on the host, in the Conda
+environment, because it owns the PICO SDK client. The two are connected by one
+UDP hop on 127.0.0.1:5570, which works because the container shares the host
+network namespace. Losing the optical skeleton is an independent event from
+losing a wrist tracker.
 
-Build with `./scripts/build_host.sh`. `scripts/build.sh` builds the container
-workspace and does not build the hand stack at all.
+Build everything with `./scripts/build.sh`.
 
 Bimanual hand teleoperation takes **two terminals**. Prerequisites: both CAN
 buses up at 1 Mbit/s, both hands powered, the headset app streaming with hand
@@ -286,10 +292,8 @@ they do not collide, and the bridge, which requests a conservative joint speed
 a couple of seconds later:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-source /opt/ros/jazzy/setup.bash
-source host_ws/install/setup.bash
-ros2 launch linker_hand_bridge hands.launch.py
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose up hand-control
 ```
 
 Terminal 2, the operator side, in the Conda environment:
@@ -388,7 +392,8 @@ the vendor code alone can never reveal this.
 URDF and forward kinematics, so replacing the assets or hand-editing the table
 fails the test rather than silently inverting abduction. `abduction_invert:=true`
 flips both sides if a differently wired hand ever needs it, and
-`ros2 run linker_hand_bridge slot_probe` re-runs the single observation.
+`docker compose run --rm tools ros2 run linker_hand_bridge slot_probe` re-runs
+the single observation.
 
 ### Remaining known issues
 
@@ -418,12 +423,19 @@ flips both sides if a differently wired hand ever needs it, and
 
 ## Arm and hands together
 
-One process owns the XRoboToolkit client and drives both: the arms through the
-existing 100 Hz loop, the hands through an inline pipeline ticked from that same
-loop. No thread and no second process. This became possible when the pinocchio
-rewrite brought a one-hand solve from 8-11 ms down to about 1.5 ms; the pipeline
-solves at most one side per tick, so a tick never pays for more than one solve.
-Measured on the production code path with recorded skeletons:
+Two terminals. One process owns the XRoboToolkit client and drives both the
+arms and the hands; everything ROS-side lives in the container.
+
+```text
+terminal 1  docker compose up          franka-control, teleop-control,
+                                       pico-bridge, hand-control
+terminal 2  teleop_dual_fr3.py --hands the operator process: arms at 100 Hz,
+                                       hands retargeted inline
+```
+
+The hands are retargeted inline in the operator process, at most one side per
+tick, which the pinocchio rewrite made affordable. Measured on the production
+code path with recorded skeletons:
 
 ```text
                         period median   p99      max      ticks over 15 ms
@@ -432,29 +444,20 @@ arms + inline hands          10.05 ms  12.71 ms  13.34 ms   0.0%
 the rejected thread design   10.09 ms  29.16 ms  42.82 ms  23.3%
 ```
 
-The p99 grows by exactly one solve and never stacks. Hand commands go straight
-from this process to `linker_hand_bridge` on udp 5570.
+The p99 grows by exactly one solve and never stacks.
 
-Start the hand chain first, then the FR3 stack, then the operator process.
-
-Terminal 1, hands, from `hands.launch.py` as above:
-
-```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-source /opt/ros/jazzy/setup.bash && source host_ws/install/setup.bash
-ros2 launch linker_hand_bridge hands.launch.py
-```
-
-Terminal 2, the FR3 stack, exactly as for arms alone:
+Terminal 1, after Franka Desk has FCI enabled and both hands are powered:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop/docker
-docker compose up franka-control
-# and in another shell
-docker compose up teleop-control pico-bridge
+docker compose up
 ```
 
-Terminal 3, the operator process, which drives both:
+This starts the real workcell services. `fake-franka-control` is behind a
+compose profile, so it never starts implicitly; run it by name when the fake
+workcell is wanted.
+
+Terminal 2, the operator process:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
@@ -466,19 +469,20 @@ conda run --no-capture-output --name franka-teleop-pico \
 `--hands` requires `--input motion-trackers`. Holding a controller occupies the
 operator's hand, so the optical skeleton cannot describe a grasp.
 
-The arms still start disengaged and need the keyboard to acquire; the hands begin
-following as soon as tracking locks. The two are independent in both directions
-by design. Losing the optical skeleton never disengages an arm, because a wrist
-tracker can be perfectly healthy while the cameras lose sight of the fingers, and
-a stale robot state stops the arms without stopping the hands. Nothing in the
-hand pipeline can raise into the arm loop.
+The arms still start disengaged and need the keyboard to acquire; the hands
+begin following as soon as tracking locks. The two are independent in both
+directions by design. Losing the optical skeleton never disengages an arm,
+because a wrist tracker can be perfectly healthy while the cameras lose sight
+of the fingers, and a stale robot state stops the arms without stopping the
+hands. Nothing in the hand pipeline can raise into the arm loop.
 
 Hand options are CLI arguments rather than YAML, matching how `--input` works:
 `--hand-rate`, `--hand-sides`, `--hand-host` and `--hand-port`. Existing
 configuration files are unchanged.
 
-To shut down, stop terminal 3 first. The bridge watchdog then holds each hand
-where it is, and the arms hold position.
+To shut down, stop terminal 2 first. The bridge watchdog then holds each hand
+where it is, and the arms hold position. Then stop terminal 1 and disable FCI
+when the workcell is unattended.
 
 ## Shutdown
 

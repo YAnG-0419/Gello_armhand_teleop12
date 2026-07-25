@@ -31,6 +31,11 @@ services:
 
   fake-franka-control:
     <<: *runtime
+    # Profiled so that a plain `docker compose up` starts the real workcell and
+    # never a second, fake command source next to it. Naming the service
+    # explicitly still works: compose activates a service's profiles when it is
+    # targeted by name.
+    profiles: [fake]
     privileged: true
     cpuset: ${FRANKA_CPUSET:?Missing FRANKA_CPUSET in docker/.env}
     ulimits:
@@ -46,6 +51,20 @@ services:
       - franka_fr3_arm_controllers
       - robot_control.launch.py
       - robot_config:=/workspace/franka_upper_body_teleop/config/fake_workcell.yaml
+
+  hand-control:
+    <<: *runtime
+    # Privileged for SocketCAN: with the host network namespace the container
+    # binds can0/can1 directly, verified on this machine. Both Linker Hand
+    # drivers and the teleoperation bridge run here; the bridge listens for
+    # hand commands on udp 5570, reachable from the host because the network
+    # is shared.
+    privileged: true
+    command:
+      - ros2
+      - launch
+      - linker_hand_bridge
+      - hands.launch.py
 
   teleop-control:
     <<: *runtime
