@@ -16,6 +16,16 @@ The operator has tested motion-tracker control on the real setup and reported
 smooth bimanual motion after the measured robot-base calibration was installed.
 The controller route predates this work and remains supported.
 
+The next concrete target is PICO 4 Ultra optical hand tracking for two Linker
+Hands:
+
+```text
+PICO 26-joint hand skeleton
+  -> human-hand normalization
+  -> model-specific dexterous-hand retargeting
+  -> validated left/right Linker Hand commands
+```
+
 Input selection is explicit and is not stored in YAML:
 
 ```text
@@ -151,6 +161,108 @@ put native diagnostics on readable line boundaries. Re-run
 causes unwanted translation, calibrate the rigid tracker-to-control-point
 transform rather than changing the global XR axis mapping.
 
+## PICO hand-tracking API
+
+The required PICO 4 Ultra hand skeleton already reaches the vendored
+XRoboToolkit binding. Do not add another SDK client. Extend the existing
+controller or motion-tracker input object so arm poses and hand skeletons are
+read through the same `xrt.init()` connection.
+
+Current Python functions:
+
+```python
+left_joints = xrt.get_left_hand_tracking_state()
+right_joints = xrt.get_right_hand_tracking_state()
+left_active = xrt.get_left_hand_is_active()
+right_active = xrt.get_right_hand_is_active()
+frame_timestamp_ns = xrt.get_time_stamp_ns()
+```
+
+Each joint array currently has shape `(26, 7)`. Each row is:
+
+```text
+[x, y, z, qx, qy, qz, qw]
+```
+
+The upstream example describes `isActive` as `0 = low quality` and `1 = high
+quality`. Treat any value other than `1` as invalid until this has been checked
+against live PICO output.
+
+The 26 rows follow the OpenXR `XrHandJointEXT` order:
+
+| Index | Joint |
+|---:|---|
+| 0 | palm |
+| 1 | wrist |
+| 2–5 | thumb metacarpal, proximal, distal, tip |
+| 6–10 | index metacarpal, proximal, intermediate, distal, tip |
+| 11–15 | middle metacarpal, proximal, intermediate, distal, tip |
+| 16–20 | ring metacarpal, proximal, intermediate, distal, tip |
+| 21–25 | little metacarpal, proximal, intermediate, distal, tip |
+
+The official Unity sender calls
+`PXR_HandTracking.GetJointLocations(HandType.HandLeft/HandRight, ...)` and
+serializes this per hand:
+
+```text
+isActive
+count
+scale
+HandJointLocations[i].p   pose: x,y,z,qx,qy,qz,qw
+HandJointLocations[i].s   OpenXR/PICO location-status flags
+HandJointLocations[i].r   joint radius
+```
+
+It attaches a top-level `timeStampNs` to the complete XR frame. There is no
+separate hand timestamp in the current PC binding, so a hand snapshot should
+read the timestamp before and after both hands and accept the sample only when
+both values are equal and positive, as the existing controller/tracker
+snapshot code does.
+
+Do not assume the global coordinate frame of these joint poses merely from
+their field layout. Confirm it once against live data (wrist translation,
+left/right hand identity, and a simple finger flexion) and preserve the raw
+sample in diagnostics. Retargeting from wrist/palm-relative vectors makes the
+finger path independent of both that global origin and the arm controller's
+PICO-to-robot axis mapping.
+
+The current binding is only a starting point and must be hardened before hand
+hardware control:
+
+- it exports pose arrays and `isActive`, but not `count`, hand `scale`,
+  per-joint status, or radius;
+- it parses `scale` internally, but the C++ getter has the wrong integer return
+  type and is not registered with pybind;
+- it does not clear a hand array when a new frame contains fewer joints;
+- it can retain the previous side when the Unity sender fails to obtain a new
+  hand sample; and
+- the binding cannot currently distinguish a valid stationary hand from a
+  stale cached hand using hand data alone.
+
+Fix these limitations by exposing one mutex-protected per-frame hand snapshot
+per side, including timestamp, active flag, count, scale, pose, status, and
+radius. Do not paper over them in the retargeter.
+
+Preserve the raw per-joint location-status flags. Interpret them using the
+PICO/OpenXR definitions and require valid position data for every joint used
+by the retargeting objective; treat untracked or invalid required joints as a
+side-specific hand fault rather than accepting zeros or cached poses.
+
+For retargeting, use positions in a wrist/palm-relative hand frame and
+normalize human bone lengths or use `scale`. This avoids coupling finger
+commands to global headset coordinates or the arm-pose axis mapping. A robust
+palm frame can be constructed from wrist/palm, middle metacarpal, and the
+index-to-little metacarpal direction. Keep left/right handedness explicit.
+Joint quaternions may be useful, but vector/tip-position objectives should not
+depend on undocumented quaternion bone-axis conventions.
+
+Authoritative references used for this section:
+
+- [PICO hand tracking documentation](https://developer.picoxr.com/home-api/document/unity/hand-tracking/)
+- [OpenXR 26-joint enumeration](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrHandJointEXT.html)
+- [XRoboToolkit Unity sender at the inspected revision](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/blob/c9326092ff4d11e8b507b041713194b93470a8e1/Assets/Scripts/TrackingData.cs)
+- [XRoboToolkit Python binding at the inspected revision](https://github.com/XR-Robotics/XRoboToolkit-PC-Service-Pybind/blob/c64ccf6acd577a333e03b66fafe8efeeceb511b1/bindings/py_bindings.cpp)
+
 ## Activation and safety behavior
 
 Controller input starts blocked. After startup or stale data, release a grip
@@ -222,46 +334,108 @@ must both be operator-validated. Disengage PICO before `/reset`.
   live teleoperation.
 - The tracker thresholds in `config/pico.yaml` are operational guards, not a
   formal human-robot safety certification.
-- IK controls the FR3 link-7 frames. There is currently no robot hand, gripper,
-  tactile, or finger-command contract.
+- IK controls the FR3 link-7 frames. PICO hand data is available at the native
+  binding, but there is currently no Linker Hand retargeter, command safety
+  gateway, model, recording schema, or hardware integration in this repo.
 - Reset uses joint interpolation without obstacle avoidance.
 - Real hardware validation remains an operator task; automated tests are
   offline and cannot prove a collision-free workcell.
 
-## Likely next work: hands or grippers
+## Next work: PICO skeleton to Linker Hand
 
-Clarify the hardware and intent before writing code. “Hand” could mean PICO
-optical hand tracking as an input, a simple parallel gripper on each FR3, or a
-multi-joint dexterous robot hand. These require different interfaces and
-safety limits.
+The intended input is now known: PICO 4 Ultra optical hand tracking. Continue
+using the wrist motion trackers for FR3 link-7 pose control; use the optical
+26-joint skeleton only for finger retargeting. Loss of optical hand tracking
+should stop or hold the corresponding Linker Hand command channel without
+unnecessarily disabling a still-valid motion-tracker arm channel.
 
-Preserve the working arm-pose path. Do not replace wrist motion trackers with
-PICO optical hand poses merely to control fingers. Add hand/gripper commands
-as a separate, synchronized channel so arm clutching, arm safety, recording,
-and replay continue to work unchanged.
+The exact Linker Hand model installed on each FR3 still needs to be recorded.
+This is essential because L7, L10, L20, L21, and L25 have different command
+dimensions and semantics.
 
-Before implementation, obtain:
+The inspected official Linker Hand ROS 2 SDK uses:
 
-- hand/gripper model and driver;
-- per-side ROS command and state topics;
-- joint names, limits, velocity/effort limits, and control mode;
-- desired operator input: buttons, analog trigger, gestures, or glove;
-- behavior when an arm is inactive or tracking becomes stale;
-- required tactile/force feedback and fault behavior; and
-- recording and replay schema requirements.
+```text
+command: /cb_left_hand_control_cmd
+         /cb_right_hand_control_cmd
+state:   /cb_left_hand_state
+         /cb_right_hand_state
+type:    sensor_msgs/msg/JointState
+```
 
-A suitable implementation should then:
+Its standard `*_control_cmd` position values are model-specific hardware
+ranges (official examples commonly use `0..255`), despite the `JointState`
+message type. Do not assume radians. Older `*_control_cmd_arc` adapters expose
+radian-oriented topics for some models, but the exact deployed SDK/model must
+be confirmed before choosing an interface.
 
-1. define a device-independent hand/gripper command contract;
-2. add source-specific input mapping under `teleop_sources/`;
-3. add a dedicated safety gateway for hand commands;
-4. extend hardware adapters without giving sources direct hardware access;
-5. add hand state and validated commands to recording/replay;
-6. extend MuJoCo assets and mock input; and
-7. test per-side disengagement, stale data, limits, and arm/hand synchronization.
+Official command ordering:
+
+| Model | Command order |
+|---|---|
+| L7 | thumb flexion, thumb abduction, index/middle/ring/little flexion, thumb rotation |
+| L10 | thumb base, thumb abduction, index/middle/ring/little base, index/ring/little abduction, thumb rotation |
+| L20 | five bases, five abductions, thumb opposition, four reserved, five tips |
+| L21 | five bases, five abductions, thumb roll, four reserved, thumb middle, four reserved, five tips |
+| L25 | five bases, five abductions, thumb roll, four reserved, five middle, five tips |
+
+Use the official driver as a hardware adapter, not as the safety boundary.
+The driver callback accepts the numeric arrays in `JointState` and does not
+provide the strict schema, freshness, source ownership, or slew validation
+used by this repository's arm gateway.
+
+Recommended implementation:
+
+1. Harden the XRoboToolkit hand snapshot API described above.
+2. Add a `HandSample` containing timestamp, per-side validity, scale, status,
+   radius, and the 26 poses. Acquire it from the same SDK client as arm input.
+3. Add the exact Linker Hand URDF/kinematic model and a model-specific config
+   containing command order, limits, neutral pose, maximum slew, and unit/range
+   conversion.
+4. Normalize the human skeleton in a wrist/palm frame.
+5. Retarget with constrained optimization from human fingertip and/or link
+   vectors to the Linker model. `dex-retargeting` is an established reference
+   used by other XR teleoperation stacks, but it is not yet a dependency here
+   and must be evaluated against the chosen Linker model.
+6. Define an arm-independent source command and validated hand command
+   contract. Keep Linker joints out of `ArmCommand`.
+7. Add a hand safety gateway: schema, finite/range checks, source arbitration,
+   fresh PICO skeleton, fresh Linker state, per-joint delta/slew limits, and
+   per-side disable/hold behavior.
+8. On `isActive != 1`, stale timestamp, invalid joint status, implausible bone
+   geometry, or retargeting failure, stop publishing new targets or hold the
+   last validated target. Do not automatically open a grasped hand.
+9. On reacquisition, blend from measured Linker state to the new retargeted
+   target under the same delta/slew limits; never jump directly.
+10. Extend recording/replay with raw PICO skeleton, Linker measured state,
+    source hand command, and validated hand command.
+11. Add Linker models and actuators to MuJoCo before real hardware tests.
+12. Test open/close, pinch, individual fingers, occlusion, out-of-view,
+    timestamp restart, left/right mirroring, and arm-active/hand-inactive
+    combinations.
+
+Before implementing retargeting, add a read-only skeleton diagnostic that
+reports timestamp, side, active flag, count, status validity, scale, and
+wrist-relative joint positions. It may use a short-lived standalone SDK
+client only when the desktop GUI and teleoperation client are closed. During
+teleoperation, diagnostics must consume the already-owned SDK snapshot rather
+than calling `xrt.init()` again. Verify that the headset app can send Object
+Motion Tracking and Hand Tracking together before depending on the combined
+arm-and-finger path.
+
+The retargeting objective should preserve task-relevant geometry rather than
+copying human joint angles one-for-one. At minimum, prioritize thumb-to-finger
+tip vectors and finger flexion; add abduction/opposition objectives only for
+DOFs the selected Linker model can actually command.
 
 Avoid silently appending finger joints to `ArmCommand`: its current arm-only
 joint schema and safety logic deliberately describe only the two FR3 arms.
+
+Linker references inspected for this handover:
+
+- [official Linker Hand ROS 2 SDK](https://github.com/linker-bot/linkerhand-ros2-sdk)
+- [inspected Linker ROS 2 SDK revision](https://github.com/linker-bot/linkerhand-ros2-sdk/tree/7dea77ee947d5e91fa072a80e31ee777125c8003)
+- [dex-retargeting reference used by an XR teleoperation stack](https://github.com/unitreerobotics/xr_teleoperate)
 
 ## Verification before the next hardware session
 
