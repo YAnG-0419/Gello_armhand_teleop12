@@ -29,6 +29,13 @@ def main() -> None:
     # handled: what is being driven is an explicit choice per run, and this keeps
     # existing configuration files valid.
     parser.add_argument(
+        "--debug-log",
+        default=None,
+        help="write one JSONL row per control tick, capturing tracker pose, "
+        "mapped target, commanded and measured state, for offline analysis of "
+        "following quality",
+    )
+    parser.add_argument(
         "--hands",
         action="store_true",
         help="also retarget optical hand tracking to the Linker Hands",
@@ -74,6 +81,13 @@ def main() -> None:
             sides=sides,
         )
 
+    debug_logger = None
+    if args.debug_log:
+        from pico_bimanual_franka_teleop.debug_log import FollowDebugLogger
+
+        debug_logger = FollowDebugLogger(args.debug_log)
+        print(f"debug log -> {args.debug_log}")
+
     config = load_config(args.config)
     teleop = DualFr3HardwareTeleop(
         command_host=config.udp.command_host,
@@ -89,6 +103,7 @@ def main() -> None:
         input_config=config.input,
         input_type=args.input,
         hand_sender_factory=hand_sender_factory,
+        debug_logger=debug_logger,
     )
     teleop.run()
 

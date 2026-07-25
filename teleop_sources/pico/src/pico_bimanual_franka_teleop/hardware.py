@@ -26,6 +26,7 @@ class DualFr3HardwareTeleop:
         input_config: InputConfig,
         input_type: str,
         hand_sender_factory=None,
+        debug_logger=None,
     ) -> None:
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
@@ -58,6 +59,7 @@ class DualFr3HardwareTeleop:
         self.hands = None
         if hand_sender_factory is not None:
             self.hands = hand_sender_factory(self.teleop_input.xrt)
+        self.debug_logger = debug_logger
 
     def run(self) -> None:
         try:
@@ -108,6 +110,19 @@ class DualFr3HardwareTeleop:
                     raise
                 active_sides = tuple(side for side in SIDES if side in targets)
                 self.robot.send_command(self.hold_q, active_sides)
+                if self.debug_logger is not None:
+                    self.debug_logger.record(
+                        time.monotonic(),
+                        q,
+                        self.hold_q,
+                        {} if sample is None else sample.poses,
+                        {} if sample is None else sample.activations,
+                        targets,
+                        {
+                            side: self.ik.frame_pose(self.hold_q, side)
+                            for side in SIDES
+                        },
+                    )
                 # Hands go after the arm command so the deadline-critical work
                 # is never queued behind a hand solve.
                 if self.hands is not None:
@@ -116,6 +131,8 @@ class DualFr3HardwareTeleop:
                 if remaining > 0.0:
                     time.sleep(remaining)
         finally:
+            if self.debug_logger is not None:
+                self.debug_logger.close()
             # Close the hand pipeline before the SDK client it reads from.
             try:
                 if self.hands is not None:
