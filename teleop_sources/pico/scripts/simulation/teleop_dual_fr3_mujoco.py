@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
+
 import argparse
+
+from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process
+
+ensure_ros_free_process()
 
 from pico_bimanual_franka_teleop.config import load_config
 from pico_bimanual_franka_teleop.simulation import DualFr3Simulation

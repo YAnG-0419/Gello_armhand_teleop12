@@ -11,6 +11,7 @@ Recordings come from `scripts/hardware/inspect_hand_tracking.py --log`.
 """
 
 import argparse
+
 import json
 import socket
 import sys
@@ -21,6 +22,10 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+
+from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
+
+ensure_ros_free_process()
 
 from pico_bimanual_franka_teleop import hand_landmarks as hl  # noqa: E402
 from pico_bimanual_franka_teleop.hand_retarget import L20Retargeter  # noqa: E402

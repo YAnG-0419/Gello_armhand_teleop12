@@ -13,12 +13,17 @@ automatic return-home.
 """
 
 import argparse
+
 import sys
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+
+from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
+
+ensure_ros_free_process()
 
 from pico_bimanual_franka_teleop.hand_teleop import HandPipeline  # noqa: E402
 
