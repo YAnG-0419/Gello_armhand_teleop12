@@ -3,6 +3,7 @@ import os
 import termios
 import time
 import tty
+from pathlib import Path
 
 import numpy as np
 import pinocchio as pin
@@ -10,6 +11,21 @@ import pinocchio as pin
 from .config import InputConfig
 from .pose_mapping import is_valid_xr_pose, xr_pose_to_world
 from .types import Pose, SIDES, TeleopSample
+
+
+def desktop_gui_pids() -> list[int]:
+    """PIDs of the running XRoboToolkit desktop GUI, if any."""
+    pids = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            command = (process / "cmdline").read_bytes().replace(b"\0", b" ")
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if b"RobotLinuxDemo.x86_64" in command:
+            pids.append(int(process.name))
+    return sorted(pids)
 
 
 class ControllerInput:
@@ -460,6 +476,21 @@ class MotionTrackerInput:
 
 
 def create_pico_input(config: InputConfig, input_type: str):
+    # The desktop GUI and the Python SDK compete for the PC Service feedback
+    # stream; whichever connects last can leave the other client open but no
+    # longer receiving fresh poses. A recorded teleop session with the GUI in
+    # use showed exactly that: tracker positions updating at sub-hertz in our
+    # client while the GUI displayed them moving accurately. Every diagnostic
+    # script already refuses to start next to the GUI; teleoperation, the one
+    # place where degraded input moves hardware, must refuse too.
+    gui_pids = desktop_gui_pids()
+    if gui_pids:
+        raise RuntimeError(
+            "The desktop RobotLinuxDemo GUI is running "
+            f"(PID(s): {gui_pids}) and would compete for the PC Service "
+            "stream. Close only the desktop GUI; keep RoboticsService and "
+            "the headset app running."
+        )
     if input_type == "controllers":
         controllers = config.controllers
         return ControllerInput(

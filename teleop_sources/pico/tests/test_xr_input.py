@@ -274,3 +274,23 @@ def test_live_position_with_frozen_rotation_disengages(monkeypatch) -> None:
 
     assert tracker_input.sample() is None
     assert tracker_input.keyboard.active == {"left": False, "right": False}
+
+
+def test_create_pico_input_refuses_next_to_the_desktop_gui(monkeypatch) -> None:
+    # The GUI and the Python SDK compete for the PC Service feedback stream; a
+    # recorded session with the GUI in use degraded tracker positions to
+    # sub-hertz while the GUI showed them moving accurately. Teleoperation is
+    # where degraded input moves hardware, so it must refuse to start.
+    monkeypatch.setattr(xr_input, "desktop_gui_pids", lambda: [4242])
+
+    class _Config:
+        controllers = None
+        motion_trackers = None
+
+    try:
+        xr_input.create_pico_input(_Config(), "motion-trackers")
+    except RuntimeError as error:
+        assert "RobotLinuxDemo" in str(error)
+        assert "4242" in str(error)
+    else:
+        raise AssertionError("expected create_pico_input to refuse")
