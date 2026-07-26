@@ -62,6 +62,7 @@ def launch_bridge(context):
     required_input = {
         "controllers",
         "motion_trackers",
+        "hand_roots",
     }
     input_fields = set(root["input"])
     if input_fields != required_input:
@@ -125,6 +126,32 @@ def launch_bridge(context):
                 f"missing={sorted(transform_fields - actual)}, "
                 f"unknown={sorted(actual - transform_fields)}"
             )
+    hand_roots = input_config["hand_roots"]
+    hand_root_fields = {
+        "ready_timeout",
+        "stale_timeout",
+        "frozen_timeout",
+        "max_position_jump",
+        "max_rotation_jump",
+        "smoothing_time_constant",
+        "activation",
+    }
+    if not isinstance(hand_roots, dict) or set(hand_roots) != hand_root_fields:
+        actual = set(hand_roots) if isinstance(hand_roots, dict) else set()
+        raise ValueError(
+            f"{path}: input.hand_roots fields differ: "
+            f"missing={sorted(hand_root_fields - actual)}, "
+            f"unknown={sorted(actual - hand_root_fields)}"
+        )
+    hand_activation = hand_roots["activation"]
+    activation_fields = {"type", "device"}
+    if not isinstance(hand_activation, dict) or set(hand_activation) != activation_fields:
+        actual = set(hand_activation) if isinstance(hand_activation, dict) else set()
+        raise ValueError(
+            f"{path}: input.hand_roots.activation fields differ: "
+            f"missing={sorted(activation_fields - actual)}, "
+            f"unknown={sorted(actual - activation_fields)}"
+        )
     return [
         Node(
             package="pico_teleop_bridge",

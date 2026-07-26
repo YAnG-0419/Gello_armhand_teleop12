@@ -6,10 +6,7 @@ udp:
   state_timeout: 0.25
 
 host:
-  # 1.0 maps operator displacement one-to-one onto the end effector. The
-  # previous 0.5 favoured precision but halved reach: the operator ran out of
-  # arm before the robot ran out of workspace, while IK itself converges to
-  # 0.0 mm on reachable targets.
+  # Map operator displacement one-to-one onto the end effector.
   translation_scale: 1.0
   rotation_scale: 1.0
   control_rate: 100.0
@@ -42,3 +39,19 @@ input:
       right:
         translation_xyz: [0.0, 0.0, 0.0]
         quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+  hand_roots:
+    ready_timeout: 30.0
+    stale_timeout: 0.25
+    frozen_timeout: 1.0
+    # Per-changed-sample deltas, not speeds: the skeleton refreshes at ~52 Hz,
+    # so 0.20 m per step is far above any real hand motion but well below the
+    # 0.906 m whole-skeleton teleport measured in hand_coexistence.jsonl.
+    max_position_jump: 0.20
+    max_rotation_jump: 1.5
+    # EMA time constant in seconds. Measured on hand_coexistence.jsonl the raw
+    # wrist carries 18-37 mm rms noise; 0.1 s keeps median smoothing lag under
+    # ~7 mm while cutting most of it. Raise for smoother, laggier following.
+    smoothing_time_constant: 0.10
+    activation:
+      type: keyboard
+      device: /dev/tty

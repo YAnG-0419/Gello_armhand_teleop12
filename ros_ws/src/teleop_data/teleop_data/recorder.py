@@ -10,6 +10,7 @@ from rclpy.node import Node
 from .config import load_config, validate_topics
 from .storage import (
     BagRecorder,
+    bag_topic_counts,
     next_episode_path,
     pending_path,
     remove_path,
@@ -65,6 +66,16 @@ class EpisodeRecorder(Node):
         self.stop()
         if self.pending is None:
             raise RuntimeError("There is no pending episode.")
+        counts = bag_topic_counts(self.pending)
+        empty = [
+            spec.topic
+            for spec in self.config.topics
+            if spec.required and counts.get(spec.topic, 0) == 0
+        ]
+        if empty:
+            raise RuntimeError(
+                "Required topics contain no recorded messages: " + ", ".join(empty)
+            )
         destination = next_episode_path(self.data_root)
         self.pending.rename(destination)
         write_manifest(
@@ -73,6 +84,7 @@ class EpisodeRecorder(Node):
                 "schema_version": self.config.schema_version,
                 "created_utc": datetime.now(timezone.utc).isoformat(),
                 "recording_config": str(self.config_path),
+                "topic_message_counts": counts,
             },
         )
         self.pending = None

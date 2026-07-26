@@ -23,7 +23,9 @@ setup(
             "record = teleop_data.recorder:main",
             "operator = teleop_data.operator_cli:main",
             "convert = teleop_data.converter:main",
+            "export_lerobot = teleop_data.export_lerobot:main",
             "replay = teleop_data.replay:main",
+            "replay_camera = teleop_data.camera_replay:main",
         ]
     },
 )

@@ -5,11 +5,40 @@ from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process
 
 ensure_ros_free_process()
 
+import subprocess
 from functools import partial
 from pathlib import Path
 
 from pico_bimanual_franka_teleop.config import load_config
 from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def invoke_reset() -> tuple[bool, str]:
+    """Call /reset_to_initial_pose through the container, blocking until done.
+
+    The operator process is deliberately ROS-free (env_guard), so the reset goes
+    through the same `docker compose run` path the runbook documents. The
+    trajectory itself can take ~20 s for large displacements, plus container
+    startup; the timeout is generous because killing the call does not stop the
+    controller-side trajectory anyway.
+    """
+    completed = subprocess.run(
+        [
+            "docker", "compose", "run", "--rm", "tools",
+            "ros2", "service", "call",
+            "/reset_to_initial_pose", "std_srvs/srv/Trigger", "{}",
+        ],
+        cwd=REPO_ROOT / "docker",
+        capture_output=True,
+        text=True,
+        timeout=120.0,
+    )
+    output = (completed.stdout + completed.stderr).strip()
+    succeeded = completed.returncode == 0 and "success=True" in completed.stdout
+    return succeeded, output[-400:]
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -23,7 +52,7 @@ def main() -> None:
     parser.add_argument(
         "--input",
         required=True,
-        choices=("controllers", "motion-trackers"),
+        choices=("controllers", "motion-trackers", "hand-roots"),
     )
     # Hand options are CLI arguments rather than YAML, matching how --input is
     # handled: what is being driven is an explicit choice per run, and this keeps
@@ -63,18 +92,18 @@ def main() -> None:
 
     hand_sender_factory = None
     if args.hands:
-        if args.input != "motion-trackers":
+        if args.input == "controllers":
             parser.error(
-                "--hands requires --input motion-trackers: holding a controller "
-                "occupies the operator's hand, so the optical skeleton cannot "
-                "describe a grasp"
+                "--hands cannot be combined with --input controllers: holding "
+                "a controller occupies the operator's hand, so the optical "
+                "skeleton cannot describe a grasp"
             )
         from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
 
         sides = ("left", "right") if args.hand_sides == "both" else (args.hand_sides,)
         hand_sender_factory = partial(
             HandPipeline,
-            assets_dir=Path(__file__).resolve().parents[4] / "assets" / "linkerhand_l20",
+            assets_dir=REPO_ROOT / "assets" / "linkerhand_l20",
             host=args.hand_host,
             port=args.hand_port,
             rate=args.hand_rate,
@@ -104,6 +133,7 @@ def main() -> None:
         input_type=args.input,
         hand_sender_factory=hand_sender_factory,
         debug_logger=debug_logger,
+        reset_invoker=invoke_reset,
     )
     teleop.run()
 

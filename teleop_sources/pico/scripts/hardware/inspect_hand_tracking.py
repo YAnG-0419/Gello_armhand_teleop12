@@ -113,6 +113,20 @@ def _bone_lengths(poses: np.ndarray) -> dict[str, float]:
     return lengths
 
 
+def _chain_bend(poses: np.ndarray, chain: tuple[int, ...]) -> float:
+    """Total unsigned angle between consecutive finger segments."""
+    points = _positions(poses)[list(chain)]
+    segments = np.diff(points, axis=0)
+    lengths = np.linalg.norm(segments, axis=1)
+    if np.any(lengths < 1e-8):
+        return float("nan")
+    directions = segments / lengths[:, None]
+    cosines = np.clip(
+        np.sum(directions[:-1] * directions[1:], axis=1), -1.0, 1.0
+    )
+    return float(np.sum(np.arccos(cosines)))
+
+
 class SideStats:
     def __init__(self) -> None:
         self.updates = 0
@@ -126,6 +140,9 @@ class SideStats:
         self.wrist_positions: list[np.ndarray] = []
         self.chirality_values: list[float] = []
         self.quaternion_norms: list[float] = []
+        self.finger_bends: dict[str, list[float]] = {
+            finger: [] for finger in FINGER_CHAINS
+        }
         self.frames_with_pose = 0
         self.polls = 0
 
@@ -153,6 +170,10 @@ class SideStats:
         self.quaternion_norms.append(
             float(np.mean(np.linalg.norm(poses[:, 3:7], axis=1)))
         )
+        for finger, chain in FINGER_CHAINS.items():
+            bend = _chain_bend(poses, chain)
+            if np.isfinite(bend):
+                self.finger_bends[finger].append(bend)
         return changed
 
 
@@ -191,6 +212,16 @@ def _summarize_side(side: str, stats: SideStats, duration: float) -> None:
     )
     quats = np.asarray(stats.quaternion_norms)
     print(f"    mean quaternion norm  : min={quats.min():.4f} max={quats.max():.4f}")
+    for finger, samples in stats.finger_bends.items():
+        if not samples:
+            continue
+        bends = np.asarray(samples)
+        percentiles = np.percentile(bends, [5, 50, 95])
+        print(
+            f"    {finger:6s} bend (rad) : "
+            f"p05={percentiles[0]:.3f} median={percentiles[1]:.3f} "
+            f"p95={percentiles[2]:.3f} max={bends.max():.3f}"
+        )
     if stats.chirality_values:
         chirality = np.asarray(stats.chirality_values)
         sign = "positive" if chirality.mean() > 0 else "negative"
@@ -534,13 +565,16 @@ def main() -> int:
         print("  both hands inside the headset cameras during the window.")
         verdict = 1
     elif both_share >= 0.80:
-        print(f"  COEXIST: YES. Both signals were simultaneously fresh for")
+        print("  COEXIST: YES. Both signals were simultaneously fresh for")
         print(f"  {100.0 * both_share:.1f}% of the window. The planned architecture holds:")
         print("  wrist trackers can drive the arms while the optical skeleton drives")
         print("  the hands, through this single SDK client.")
         verdict = 0
     elif both_share >= 0.20:
-        print(f"  COEXIST: PARTIAL ({100.0 * both_share:.1f}% both live while a hand was available).")
+        print(
+            f"  COEXIST: PARTIAL ({100.0 * both_share:.1f}% both live while "
+            "a hand was available)."
+        )
         print("  Out-of-view time is already excluded, so this is not simply the")
         print("  operator's hands leaving the cameras. Check the competition number")
         print("  above: if 'hand live but motion stale' is near zero the two streams")
@@ -548,7 +582,10 @@ def main() -> int:
         print("  contention. Re-run holding both hands steadily in view throughout.")
         verdict = 3
     else:
-        print(f"  COEXIST: NO ({100.0 * both_share:.1f}% both live while a hand was available).")
+        print(
+            f"  COEXIST: NO ({100.0 * both_share:.1f}% both live while "
+            "a hand was available)."
+        )
         print("  Each signal appeared, but almost never together even after excluding")
         print("  out-of-view time, so enabling one appears to starve the other. The")
         print("  two-signal design is not viable as planned; fall back to deriving the")

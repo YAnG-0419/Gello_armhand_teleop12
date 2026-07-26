@@ -130,8 +130,9 @@ def test_pipeline_respects_the_send_rate(sink):
     for message in messages:
         per_side[message["side"]] += 1
     for side, count in per_side.items():
-        # 30 Hz nominal; allow scheduling slack but catch runaway sending.
-        assert 20 <= count <= 35, (side, count)
+        # Preserve the fractional 33.3 ms deadline on a 10 ms owner loop.
+        # Re-basing every deadline on the current tick silently produced 25 Hz.
+        assert 29 <= count <= 31, (side, count)
 
 
 def test_inactive_side_stops_sending_and_reports_a_fault(sink):
@@ -168,6 +169,64 @@ def test_sdk_failure_is_contained(sink):
         status = pipeline.status.sides[side]
         assert status.sending is False
         assert "SDK read failed" in status.fault
+
+
+def test_disengaged_side_stops_sending(sink):
+    # One keyboard drives arm and hand together: a side whose arm is off must
+    # stop commanding its hand, so the bridge watchdog holds it.
+    pipeline = make_pipeline(FakeXrt(), sink)
+    try:
+        for step in range(40):
+            pipeline.tick(100.0 + step * 0.01, active={"left": False, "right": True})
+        messages = drain(sink)
+    finally:
+        pipeline.close()
+    assert messages, "the engaged side must keep sending"
+    assert all(m["side"] == "right" for m in messages)
+    assert pipeline.status.sides["left"].sending is False
+    assert pipeline.status.sides["left"].fault == "disengaged by operator"
+    assert pipeline.status.sides["right"].sending is True
+
+
+def test_request_open_streams_the_open_pose(sink):
+    pipeline = make_pipeline(FakeXrt(), sink)
+    inactive = {"left": False, "right": False}
+    try:
+        pipeline.request_open(now=100.0, duration=2.0)
+        for step in range(40):
+            pipeline.tick(100.0 + step * 0.01, active=inactive)
+        open_messages = drain(sink)
+        # Past the open deadline nothing may be sent for a disengaged side.
+        for step in range(40):
+            pipeline.tick(103.0 + step * 0.01, active=inactive)
+        after_messages = drain(sink)
+    finally:
+        pipeline.close()
+    assert open_messages, "the open pose must be streamed"
+    sides_seen = {m["side"] for m in open_messages}
+    assert sides_seen == {"left", "right"}
+    for message in open_messages:
+        assert message["stream_id"].endswith("-open")
+        assert all(value == 0.0 for value in message["qpos"])
+    assert not after_messages
+
+
+def test_following_supersedes_a_pending_open(sink):
+    pipeline = make_pipeline(FakeXrt(), sink)
+    engaged = {"left": True, "right": True}
+    try:
+        # Warm up until both skeletons are live and following.
+        for step in range(10):
+            pipeline.tick(100.0 + step * 0.01, active=engaged)
+        drain(sink)
+        pipeline.request_open(now=100.2, duration=2.0)
+        for step in range(40):
+            pipeline.tick(100.2 + step * 0.01, active=engaged)
+        messages = drain(sink)
+    finally:
+        pipeline.close()
+    assert messages
+    assert all(not m["stream_id"].endswith("-open") for m in messages)
 
 
 def test_at_most_one_solve_per_tick(sink):

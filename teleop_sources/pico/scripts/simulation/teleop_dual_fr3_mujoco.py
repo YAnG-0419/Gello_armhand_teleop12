@@ -15,7 +15,7 @@ def main() -> None:
     parser.add_argument(
         "--input",
         required=True,
-        choices=("controllers", "motion-trackers", "mock"),
+        choices=("controllers", "motion-trackers", "hand-roots", "mock"),
     )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--duration", type=float)

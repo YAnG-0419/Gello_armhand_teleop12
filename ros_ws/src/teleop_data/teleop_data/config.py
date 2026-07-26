@@ -20,6 +20,7 @@ class RecordingConfig:
     conversion_fps: int
     replay_speed: float
     replay_preposition_speed: float
+    replay_hand_preposition_speed: float
     replay_rate: float
     replay_state_timeout: float
     replay_discovery_timeout: float
@@ -63,6 +64,7 @@ def load_config(path):
     replay_fields = {
         "speed",
         "preposition_speed",
+        "hand_preposition_speed",
         "rate",
         "state_timeout",
         "discovery_timeout",
@@ -70,7 +72,7 @@ def load_config(path):
     if not isinstance(replay, dict) or set(replay) != replay_fields:
         raise ValueError(
             "replay must contain exactly: discovery_timeout, preposition_speed, "
-            "rate, speed, state_timeout."
+            "hand_preposition_speed, rate, speed, state_timeout."
         )
     conversion_fps = int(conversion["fps"])
     replay_values = {key: float(replay[key]) for key in replay_fields}
@@ -109,6 +111,7 @@ def load_config(path):
         conversion_fps,
         replay_values["speed"],
         replay_values["preposition_speed"],
+        replay_values["hand_preposition_speed"],
         replay_values["rate"],
         replay_values["state_timeout"],
         replay_values["discovery_timeout"],

@@ -30,6 +30,8 @@ The only public scripts are:
 
 - `build.sh`: build the Docker image and ROS workspace
 - `setup_pico_env.sh`: create/update the PICO Conda environment
+- `start_orbbec_viewer.sh`: open the compatible SDK v2 Viewer when ROS is stopped
+- `export_lerobot.sh`: export complete arm, hand, and RGB-D bags to LeRobot
 
 Docker services use ordinary Compose commands from `docker/`; Compose reads
 `docker/.env` automatically.
@@ -43,8 +45,9 @@ conda run --no-capture-output --name franka-teleop-pico \
 ```
 
 See [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md) for real PICO and FR3
-commands. See [docs/HANDOVER.md](docs/HANDOVER.md) for the current implementation
-state, safety boundaries, and suggested next work.
+commands, including the three-terminal teleoperation/data-collection workflow,
+LeRobot export, and replay. See [docs/HANDOVER.md](docs/HANDOVER.md) for the
+current implementation state, safety boundaries, and suggested next work.
 
 ## Configuration ownership
 

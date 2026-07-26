@@ -1,23 +1,13 @@
 """Retarget canonical hand landmarks to a LinkerHand L20 URDF pose.
 
-Pinocchio-based, solving five independent per-finger problems. An earlier
-implementation used PyBullet and one 21-DoF optimization.
-The objective, palm-frame canonicalization, per-finger length normalization,
-landmark weights, smoothing and filter constants are unchanged; only how the
-solution is computed changed.
+Pinocchio solves the 16 physical actuators and expands the five URDF mimic
+joints into the vendor-facing 21-name packet. Ordinary fingers use independent
+Cartesian landmark objectives. The heterogeneous thumb fixes its coupled flex
+actuator first, then solves CMC orientation from position, segment direction,
+local-frame, and activated fingertip-distance terms.
 
-Two measured facts drove the rewrite. First, the old evaluation called
-`pb.calculateJacobian` once per target point, 380 times per solve, and each call
-recomputed the whole hand's kinematics; those calls were 36% of a 7.45 ms solve
-and pure Python bookkeeping was the rest. Here one `computeJointJacobians` pass
-per evaluation serves every target through cheap frame lookups. Second, the
-problem is block diagonal by construction and by measurement: no target's
-Jacobian has any support outside its own finger (0 of 20 leak), so solving five
-4-5 DoF problems converges in fewer, cheaper iterations than one 21-DoF problem
-and cannot change the answer, only reach it better.
-
-The public surface is unchanged from the previous implementation, so the
-scripts, the service and the test suite are unaffected.
+Each optimization changes one finger block. The thumb runs last so proximity
+terms use the final ordinary-finger positions.
 """
 
 from __future__ import annotations
@@ -25,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from xml.etree import ElementTree
 
 import numpy as np
 import pinocchio as pin
@@ -64,6 +55,14 @@ DISTAL_TIP_OFFSETS = {
 # Landmark weights along each finger chain: base, middle, distal, tip.
 CHAIN_WEIGHTS = (1.0, 1.0, 1.25, 2.5)
 
+# Constraint weights follow somehand's L20 vector-retargeting configuration.
+# They are applied only to the thumb solve; the four ordinary fingers retain
+# the faster Cartesian landmark objective.
+THUMB_VECTOR_WEIGHTS = (1.0, 1.0, 0.9)
+THUMB_FRAME_WEIGHTS = (2.0, 1.8)
+THUMB_DISTANCE_WEIGHTS = (2000.0, 1500.0, 1000.0, 800.0)
+THUMB_DISTANCE_THRESHOLD = 0.04
+
 # Canonical landmark indices used by the palm frame.
 _INDEX_BASE = 5
 _MIDDLE_BASE = 9
@@ -84,6 +83,39 @@ def _normalize(vector: np.ndarray, name: str) -> np.ndarray:
     if norm < 1e-8:
         raise ValueError(f"Cannot construct palm frame: {name} has near-zero length")
     return vector / norm
+
+
+def _orthonormal_axes(
+    primary_vector: np.ndarray,
+    secondary_vector: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    primary = _normalize(primary_vector, "thumb-frame primary vector")
+    rejected = secondary_vector - primary * np.dot(secondary_vector, primary)
+    secondary = _normalize(rejected, "thumb-frame secondary vector")
+    return primary, secondary
+
+
+def chain_bend_angle(points: np.ndarray) -> float:
+    """Return total unsigned bend across a four-landmark finger chain.
+
+    A straight chain is zero. For the thumb this is the sum of its anatomical
+    MCP and IP bend. Angles are invariant to hand pose, scale, and segment
+    length, which makes this a better correspondence for the G20's single
+    coupled thumb-flexion actuator than forcing unlike human and robot thumb
+    linkages to reach identical Cartesian points.
+    """
+    chain = np.asarray(points, dtype=np.float64)
+    if chain.shape != (4, 3):
+        raise ValueError(f"Expected a four-point finger chain, got {chain.shape}")
+    segments = np.diff(chain, axis=0)
+    lengths = np.linalg.norm(segments, axis=1)
+    if np.any(lengths < 1e-8):
+        raise ValueError("Cannot measure finger bend from a zero-length segment")
+    directions = segments / lengths[:, None]
+    cosines = np.clip(
+        np.sum(directions[:-1] * directions[1:], axis=1), -1.0, 1.0
+    )
+    return float(np.sum(np.arccos(cosines)))
 
 
 def orthonormal_palm_frame(points: np.ndarray) -> np.ndarray:
@@ -115,7 +147,7 @@ class L20Retargeter:
         side: str,
         *,
         smooth_weight: float = 2.5e-3,
-        filter_alpha: float = 0.35,
+        filter_alpha: float = 0.7,
         max_iterations: int = 20,
         normalize_finger_length: bool = True,
     ) -> None:
@@ -123,35 +155,83 @@ class L20Retargeter:
             raise ValueError(f"side must be 'left' or 'right', got {side!r}")
         if not 0.0 < filter_alpha <= 1.0:
             raise ValueError("filter_alpha must be in (0, 1]")
-
         self.side = side
         self.normalize_finger_length = bool(normalize_finger_length)
         self.urdf_path = Path(urdf_path).resolve()
         if not self.urdf_path.is_file():
             raise FileNotFoundError(f"L20 URDF not found: {self.urdf_path}")
 
-        self.model = pin.buildModelFromUrdf(str(self.urdf_path))
+        # Keep the established 21-name packet contract and its limits, but solve
+        # the actual 16-DoF mechanism. Without mimic=True Pinocchio treats each
+        # declared follower as independent. In practice that let the optimizer
+        # put nearly all thumb curl into the distal joint while leaving MCP
+        # almost straight; the G20 has only one motor for that pair, so the
+        # mapper's normalized average then cut the physical curl roughly in half.
+        packet_model = pin.buildModelFromUrdf(str(self.urdf_path))
+        packet_entries = sorted(
+            (packet_model.joints[joint_id].idx_q, packet_model.names[joint_id])
+            for joint_id in range(1, packet_model.njoints)
+        )
+        self.joint_names: list[str] = [name for _, name in packet_entries]
+        self.lower = np.asarray(
+            packet_model.lowerPositionLimit, dtype=np.float64
+        ).copy()
+        self.upper = np.asarray(
+            packet_model.upperPositionLimit, dtype=np.float64
+        ).copy()
 
-        # Joint bookkeeping in q order. Every joint is revolute with nq of one,
-        # verified below, so idx_q equals idx_v and one index serves both.
-        entries = []
+        self.model = pin.buildModelFromUrdf(str(self.urdf_path), True)
+        active_entries = []
         for joint_id in range(1, self.model.njoints):
             joint = self.model.joints[joint_id]
+            if joint.nq == 0 and joint.nv == 0:
+                continue
             if joint.nq != 1 or joint.nv != 1:
                 raise ValueError(
                     f"Expected single-DoF revolute L20 joints, got nq={joint.nq} "
                     f"for {self.model.names[joint_id]}"
                 )
-            entries.append((joint.idx_q, self.model.names[joint_id]))
-        entries.sort()
-        self.joint_names: list[str] = [name for _, name in entries]
-        self.lower = np.asarray(self.model.lowerPositionLimit, dtype=np.float64)
-        self.upper = np.asarray(self.model.upperPositionLimit, dtype=np.float64)
+            active_entries.append((joint.idx_q, self.model.names[joint_id]))
+        active_entries.sort()
+        self._active_joint_names = [name for _, name in active_entries]
+        self._active_output_indices = np.asarray(
+            [self.joint_names.index(name) for name in self._active_joint_names],
+            dtype=int,
+        )
+        self._active_lower = np.asarray(
+            self.model.lowerPositionLimit, dtype=np.float64
+        )
+        self._active_upper = np.asarray(
+            self.model.upperPositionLimit, dtype=np.float64
+        )
+
+        root = ElementTree.parse(self.urdf_path).getroot()
+        self._mimics: dict[str, tuple[str, float, float]] = {}
+        for element in root.findall("joint"):
+            mimic = element.find("mimic")
+            if mimic is None:
+                continue
+            self._mimics[element.attrib["name"]] = (
+                mimic.attrib["joint"],
+                float(mimic.attrib.get("multiplier", "1")),
+                float(mimic.attrib.get("offset", "0")),
+            )
+        thumb_distal = "thumb_ip" if side == "left" else "thumb_dip"
+        thumb_source, self._thumb_mimic_multiplier, thumb_offset = self._mimics[
+            thumb_distal
+        ]
+        if thumb_source != "thumb_mcp" or thumb_offset != 0.0:
+            raise ValueError(
+                "Expected the distal thumb joint to mimic thumb_mcp with zero offset"
+            )
+        self._thumb_mcp_index = self._active_joint_names.index("thumb_mcp")
 
         self._finger_joints: dict[str, np.ndarray] = {}
         for finger in CANONICAL_FINGERS:
             indices = [
-                i for i, name in enumerate(self.joint_names) if name.startswith(finger)
+                i
+                for i, name in enumerate(self._active_joint_names)
+                if name.startswith(finger)
             ]
             if not indices:
                 raise ValueError(f"URDF has no joints for finger {finger!r}")
@@ -184,15 +264,29 @@ class L20Retargeter:
                 self._targets_by_finger[finger].append(len(self.targets))
                 self.targets.append(TargetPoint(landmark, frame_id, weight))
         self.data = self.model.createData()
+        self._frame_by_landmark = {
+            target.landmark_index: target.frame_id for target in self.targets
+        }
 
         self.smooth_weight = float(smooth_weight)
         self.filter_alpha = float(filter_alpha)
         self.max_iterations = int(max_iterations)
-        self.last_qpos = np.clip(np.zeros(self.dof), self.lower, self.upper)
+        self.last_qpos = np.clip(
+            np.zeros(self.model.nq), self._active_lower, self._active_upper
+        )
         self.filtered_qpos: np.ndarray | None = None
         self._q_current = self.last_qpos.copy()
 
         self.robot_finger_lengths = self._robot_finger_lengths()
+        (
+            self._thumb_bend_samples,
+            self._thumb_q_samples,
+        ) = self._build_thumb_bend_lookup()
+        (
+            self._thumb_frame_id,
+            self._thumb_local_primary_axis,
+            self._thumb_local_secondary_axis,
+        ) = self._build_thumb_frame_reference()
         (
             self.robot_frame,
             self.robot_centroid,
@@ -217,7 +311,26 @@ class L20Retargeter:
         pin.updateFramePlacements(self.model, self.data)
 
     def _reset_joints(self, qpos: Iterable[float]) -> None:
-        self._q_current = np.asarray(list(qpos), dtype=np.float64).copy()
+        values = np.asarray(list(qpos), dtype=np.float64)
+        if values.shape == (self.dof,):
+            values = values[self._active_output_indices]
+        elif values.shape != (self.model.nq,):
+            raise ValueError(
+                f"Expected qpos shape {(self.dof,)} or {(self.model.nq,)}, "
+                f"got {values.shape}"
+            )
+        self._q_current = values.copy()
+
+    def _expand_qpos(self, active_qpos: np.ndarray) -> np.ndarray:
+        """Expand the 16 actuated coordinates into the stable 21-name packet."""
+        output = np.zeros(self.dof, dtype=np.float64)
+        output[self._active_output_indices] = active_qpos
+        by_name = dict(zip(self.joint_names, output))
+        for name, (source, multiplier, offset) in self._mimics.items():
+            value = multiplier * by_name[source] + offset
+            output[self.joint_names.index(name)] = value
+            by_name[name] = value
+        return np.clip(output, self.lower, self.upper)
 
     def robot_landmarks(self) -> np.ndarray:
         """Canonical landmark positions from FK at the current joint pose.
@@ -241,6 +354,60 @@ class L20Retargeter:
             )
             for finger, chain in CANONICAL_FINGERS.items()
         }
+
+    def _build_thumb_bend_lookup(self) -> tuple[np.ndarray, np.ndarray]:
+        """Tabulate the robot thumb's observable bend versus its one actuator."""
+        q_samples = np.linspace(
+            self._active_lower[self._thumb_mcp_index],
+            self._active_upper[self._thumb_mcp_index],
+            257,
+        )
+        bends = []
+        qpos = np.zeros(self.model.nq, dtype=np.float64)
+        chain = list(CANONICAL_FINGERS["thumb"])
+        for value in q_samples:
+            qpos[self._thumb_mcp_index] = value
+            self._reset_joints(qpos)
+            bends.append(chain_bend_angle(self.robot_landmarks()[chain]))
+
+        # Near the straight mechanical stop, fixed link-frame offsets can make
+        # the unsigned angle dip slightly before it rises. The physical command
+        # still has one direction, so use its monotonic envelope for inversion.
+        monotonic = np.maximum.accumulate(np.asarray(bends, dtype=np.float64))
+        keep = np.concatenate(([True], np.diff(monotonic) > 1e-10))
+        self._reset_joints(self.last_qpos)
+        return monotonic[keep], q_samples[keep]
+
+    def _thumb_q_for_bend(self, bend: float) -> float:
+        """Invert the robot-specific thumb bend curve with endpoint clipping."""
+        return float(
+            np.interp(
+                bend,
+                self._thumb_bend_samples,
+                self._thumb_q_samples,
+                left=self._thumb_q_samples[0],
+                right=self._thumb_q_samples[-1],
+            )
+        )
+
+    def _build_thumb_frame_reference(
+        self,
+    ) -> tuple[int, np.ndarray, np.ndarray]:
+        """Build the neutral robot-local thumb frame used by somehand."""
+        self._reset_joints(np.zeros(self.model.nq, dtype=np.float64))
+        points = self.robot_landmarks()
+        frame_id = self._frame_by_landmark[1]
+        rotation = self.data.oMf[frame_id].rotation
+        primary, secondary = _orthonormal_axes(
+            points[2] - points[1],
+            points[5] - points[1],
+        )
+        self._reset_joints(self.last_qpos)
+        return (
+            frame_id,
+            rotation.T @ primary,
+            rotation.T @ secondary,
+        )
 
     def _robot_reference(self) -> tuple[np.ndarray, np.ndarray, float]:
         points = self.robot_landmarks()
@@ -315,14 +482,48 @@ class L20Retargeter:
     ) -> tuple[np.ndarray, dict[str, float | int | bool]]:
         """Solve for the joint pose matching one canonical landmark frame."""
         target_positions = self.target_positions(landmarks)
-        start = np.clip(self.last_qpos, self.lower, self.upper)
+        raw_landmarks = np.asarray(landmarks, dtype=np.float64)
+        wanted_by_landmark = {
+            target.landmark_index: target_positions[index]
+            for index, target in enumerate(self.targets)
+        }
+        start = np.clip(self.last_qpos, self._active_lower, self._active_upper)
         solution = start.copy()
         total_loss = 0.0
         total_iterations = 0
         total_evaluations = 0
         success = True
 
-        for finger, joint_indices in self._finger_joints.items():
+        # Determine and fix the physical flex actuator before solving CMC
+        # orientation, so the CMC solution remains consistent with emitted MCP.
+        thumb_chain = np.asarray(landmarks, dtype=np.float64)[
+            list(CANONICAL_FINGERS["thumb"])
+        ]
+        thumb_bend = chain_bend_angle(thumb_chain)
+        thumb_flex = np.clip(
+            self._thumb_q_for_bend(thumb_bend),
+            self._active_lower[self._thumb_mcp_index],
+            self._active_upper[self._thumb_mcp_index],
+        )
+        thumb_flex_fraction = float(
+            (thumb_flex - self._active_lower[self._thumb_mcp_index])
+            / (
+                self._active_upper[self._thumb_mcp_index]
+                - self._active_lower[self._thumb_mcp_index]
+            )
+        )
+        solution[self._thumb_mcp_index] = thumb_flex
+
+        # Solve the ordinary fingers first. The thumb then sees their final tip
+        # locations for the activated thumb-to-fingertip distance constraints.
+        solve_order = ("index", "middle", "ring", "pinky", "thumb")
+        for finger in solve_order:
+            all_joint_indices = self._finger_joints[finger]
+            joint_indices = (
+                all_joint_indices[all_joint_indices != self._thumb_mcp_index]
+                if finger == "thumb"
+                else all_joint_indices
+            )
             target_indices = self._targets_by_finger[finger]
             frame_ids = [self.targets[t].frame_id for t in target_indices]
             weights = np.asarray(
@@ -332,8 +533,88 @@ class L20Retargeter:
             anchor = self.last_qpos[joint_indices]
             q_work = solution.copy()
 
+            thumb_direction_constraints = []
+            thumb_frame_targets = None
+            thumb_distance_constraints = []
+            thumb_orientation_activation = 0.0
+            if finger == "thumb":
+                thumb_landmarks = CANONICAL_FINGERS["thumb"]
+                for pair, weight in zip(
+                    zip(thumb_landmarks[:-1], thumb_landmarks[1:]),
+                    THUMB_VECTOR_WEIGHTS,
+                ):
+                    origin_landmark, target_landmark = pair
+                    desired = _normalize(
+                        wanted_by_landmark[target_landmark]
+                        - wanted_by_landmark[origin_landmark],
+                        f"thumb segment {origin_landmark}->{target_landmark}",
+                    )
+                    thumb_direction_constraints.append(
+                        (
+                            self._frame_by_landmark[origin_landmark],
+                            self._frame_by_landmark[target_landmark],
+                            desired,
+                            weight,
+                        )
+                    )
+
+                thumb_frame_targets = _orthonormal_axes(
+                    wanted_by_landmark[2] - wanted_by_landmark[1],
+                    wanted_by_landmark[5] - wanted_by_landmark[1],
+                )
+                middle_chain = CANONICAL_FINGERS["middle"]
+                human_middle_length = sum(
+                    float(
+                        np.linalg.norm(
+                            raw_landmarks[middle_chain[index + 1]]
+                            - raw_landmarks[middle_chain[index]]
+                        )
+                    )
+                    for index in range(3)
+                )
+                thumb_distance_scale = (
+                    self.robot_finger_lengths["middle"]
+                    / max(human_middle_length, 1e-8)
+                )
+                proximity_activation = 0.0
+                for tip_landmark, distance_weight in zip(
+                    (8, 12, 16, 20),
+                    THUMB_DISTANCE_WEIGHTS,
+                ):
+                    raw_distance = float(
+                        np.linalg.norm(
+                            raw_landmarks[4] - raw_landmarks[tip_landmark]
+                        )
+                    )
+                    desired_distance = raw_distance * thumb_distance_scale
+                    activation = max(
+                        0.0,
+                        1.0 - raw_distance / THUMB_DISTANCE_THRESHOLD,
+                    )
+                    proximity_activation = max(proximity_activation, activation)
+                    thumb_distance_constraints.append(
+                        (
+                            self._frame_by_landmark[4],
+                            self._frame_by_landmark[tip_landmark],
+                            desired_distance,
+                            distance_weight * activation,
+                        )
+                    )
+                # The somehand direction/frame terms are useful during curl and
+                # opposition, but applying them at full weight to an extended
+                # heterogeneous thumb makes CMC pitch compensate for morphology
+                # and visibly bends the physical thumb at rest. Fade them in
+                # with actual flexion, while a close fingertip activates them
+                # immediately for pinch.
+                thumb_orientation_activation = max(
+                    thumb_flex_fraction * thumb_flex_fraction,
+                    proximity_activation,
+                )
+
             def objective(finger_q: np.ndarray) -> tuple[float, np.ndarray]:
                 q_work[joint_indices] = finger_q
+                if finger == "thumb":
+                    q_work[self._thumb_mcp_index] = thumb_flex
                 self._update(q_work, jacobians=True)
                 loss = 0.0
                 gradient = np.zeros(len(joint_indices))
@@ -347,6 +628,122 @@ class L20Retargeter:
                         pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
                     )[:3, joint_indices]
                     gradient += 2.0 * weights[row] * (jacobian.T @ residual)
+
+                if finger == "thumb":
+                    # Match the three segment directions. Direction objectives
+                    # transfer articulation without assuming that human and
+                    # robot thumb link lengths or joint locations coincide.
+                    for (
+                        origin_id,
+                        target_id,
+                        desired_direction,
+                        direction_weight,
+                    ) in thumb_direction_constraints:
+                        vector = (
+                            self.data.oMf[target_id].translation
+                            - self.data.oMf[origin_id].translation
+                        )
+                        length = float(np.linalg.norm(vector))
+                        if length < 1e-8:
+                            continue
+                        direction = vector / length
+                        cosine = float(np.dot(direction, desired_direction))
+                        effective_weight = (
+                            direction_weight * thumb_orientation_activation
+                        )
+                        loss += effective_weight * (1.0 - cosine)
+                        jac_target = pin.getFrameJacobian(
+                            self.model,
+                            self.data,
+                            target_id,
+                            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+                        )[:3, joint_indices]
+                        jac_origin = pin.getFrameJacobian(
+                            self.model,
+                            self.data,
+                            origin_id,
+                            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+                        )[:3, joint_indices]
+                        derivative = -(
+                            desired_direction - cosine * direction
+                        ) / length
+                        gradient += effective_weight * (
+                            derivative @ (jac_target - jac_origin)
+                        )
+
+                    # Match the thumb-metacarpal local frame using the same
+                    # primary/secondary construction as somehand.
+                    desired_primary, desired_secondary = thumb_frame_targets
+                    rotation = self.data.oMf[self._thumb_frame_id].rotation
+                    angular_jacobian = pin.getFrameJacobian(
+                        self.model,
+                        self.data,
+                        self._thumb_frame_id,
+                        pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+                    )[3:, joint_indices]
+                    for local_axis, desired_axis, frame_weight in (
+                        (
+                            self._thumb_local_primary_axis,
+                            desired_primary,
+                            THUMB_FRAME_WEIGHTS[0],
+                        ),
+                        (
+                            self._thumb_local_secondary_axis,
+                            desired_secondary,
+                            THUMB_FRAME_WEIGHTS[1],
+                        ),
+                    ):
+                        axis = rotation @ local_axis
+                        cosine = float(np.dot(axis, desired_axis))
+                        effective_weight = (
+                            frame_weight * thumb_orientation_activation
+                        )
+                        loss += effective_weight * (1.0 - cosine)
+                        axis_jacobian = np.cross(angular_jacobian.T, axis).T
+                        gradient += -effective_weight * (
+                            desired_axis @ axis_jacobian
+                        )
+
+                    # When the human thumb approaches a fingertip, penalize
+                    # only robot excess distance. Open-hand gestures remain
+                    # unaffected, while pinch/opposition receives a strong cue.
+                    for (
+                        thumb_tip_id,
+                        finger_tip_id,
+                        desired_distance,
+                        distance_weight,
+                    ) in thumb_distance_constraints:
+                        if distance_weight <= 0.0:
+                            continue
+                        vector = (
+                            self.data.oMf[finger_tip_id].translation
+                            - self.data.oMf[thumb_tip_id].translation
+                        )
+                        distance = float(np.linalg.norm(vector))
+                        if distance < 1e-8:
+                            continue
+                        excess = distance - desired_distance
+                        if excess <= 0.0:
+                            continue
+                        loss += distance_weight * excess * excess
+                        jac_thumb = pin.getFrameJacobian(
+                            self.model,
+                            self.data,
+                            thumb_tip_id,
+                            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+                        )[:3, joint_indices]
+                        jac_finger = pin.getFrameJacobian(
+                            self.model,
+                            self.data,
+                            finger_tip_id,
+                            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+                        )[:3, joint_indices]
+                        gradient += (
+                            2.0
+                            * distance_weight
+                            * excess
+                            * ((vector / distance) @ (jac_finger - jac_thumb))
+                        )
                 delta = finger_q - anchor
                 loss += self.smooth_weight * float(delta @ delta)
                 gradient += 2.0 * self.smooth_weight * delta
@@ -357,15 +754,26 @@ class L20Retargeter:
                 start[joint_indices],
                 method="L-BFGS-B",
                 jac=True,
-                bounds=list(zip(self.lower[joint_indices], self.upper[joint_indices])),
+                bounds=list(
+                    zip(
+                        self._active_lower[joint_indices],
+                        self._active_upper[joint_indices],
+                    )
+                ),
                 options={
-                    "maxiter": self.max_iterations,
+                    "maxiter": (
+                        max(40, self.max_iterations)
+                        if finger == "thumb"
+                        else self.max_iterations
+                    ),
                     "ftol": 1e-9,
                     "gtol": 1e-6,
                 },
             )
             solution[joint_indices] = np.clip(
-                result.x, self.lower[joint_indices], self.upper[joint_indices]
+                result.x,
+                self._active_lower[joint_indices],
+                self._active_upper[joint_indices],
             )
             total_loss += float(result.fun)
             total_iterations += int(result.nit)
@@ -386,8 +794,9 @@ class L20Retargeter:
             "loss": total_loss,
             "iterations": total_iterations,
             "function_evaluations": total_evaluations,
+            "thumb_bend": thumb_bend,
         }
-        return self.filtered_qpos.copy(), stats
+        return self._expand_qpos(self.filtered_qpos), stats
 
     # ------------------------------------------------------------------ state
     def set_qpos(self, qpos: np.ndarray) -> None:
@@ -395,13 +804,16 @@ class L20Retargeter:
         if values.shape != (self.dof,):
             raise ValueError(f"Expected qpos shape {(self.dof,)}, got {values.shape}")
         values = np.clip(values, self.lower, self.upper)
-        self.last_qpos = values.copy()
-        self.filtered_qpos = values.copy()
-        self._q_current = values.copy()
+        active = values[self._active_output_indices]
+        self.last_qpos = active.copy()
+        self.filtered_qpos = active.copy()
+        self._q_current = active.copy()
 
     def reset(self) -> None:
         """Forget filter and warm-start history after a tracking dropout."""
-        self.last_qpos = np.clip(np.zeros(self.dof), self.lower, self.upper)
+        self.last_qpos = np.clip(
+            np.zeros(self.model.nq), self._active_lower, self._active_upper
+        )
         self.filtered_qpos = None
         self._q_current = self.last_qpos.copy()
 

@@ -8,6 +8,8 @@ import threading
 import uuid
 from pathlib import Path
 
+import yaml
+
 
 class BagRecorder:
     def __init__(self, output, topics, storage_id, qos_overrides):
@@ -84,3 +86,18 @@ def remove_path(path):
 
 def write_manifest(path, values):
     Path(path).write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
+
+
+def bag_topic_counts(path):
+    metadata_path = Path(path) / "metadata.yaml"
+    if not metadata_path.is_file():
+        raise ValueError(f"Bag metadata is missing: {metadata_path}")
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    try:
+        topics = metadata["rosbag2_bagfile_information"]["topics_with_message_count"]
+        return {
+            item["topic_metadata"]["name"]: int(item["message_count"])
+            for item in topics
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid rosbag metadata: {metadata_path}") from exc

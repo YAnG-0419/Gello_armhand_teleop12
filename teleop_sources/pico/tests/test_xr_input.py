@@ -276,6 +276,167 @@ def test_live_position_with_frozen_rotation_disengages(monkeypatch) -> None:
     assert tracker_input.keyboard.active == {"left": False, "right": False}
 
 
+class _FakeHandXrt:
+    """Serves static-but-valid 26x7 skeletons for both hands."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        base = np.zeros((26, 7))
+        base[:, 6] = 1.0
+        base[:, 0] = np.linspace(0.0, 0.25, 26)
+        base[1, :3] = [0.1, 0.2, 0.3]
+        self.joints = {"left": base.copy(), "right": base.copy()}
+        self.joints["right"][:, 1] += 0.1
+        self.active = {"left": 1, "right": 1}
+
+    def init(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+    def get_left_hand_tracking_state(self):
+        return self.joints["left"].copy()
+
+    def get_left_hand_is_active(self) -> int:
+        return self.active["left"]
+
+    def get_right_hand_tracking_state(self):
+        return self.joints["right"].copy()
+
+    def get_right_hand_is_active(self) -> int:
+        return self.active["right"]
+
+
+def _create_hand_root_input(
+    monkeypatch, fake_xrt, smoothing_time_constant: float = 0.1
+) -> xr_input.HandRootInput:
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
+    return xr_input.HandRootInput(
+        ready_timeout=2.0,
+        stale_timeout=0.25,
+        frozen_timeout=1.0,
+        max_position_jump=0.2,
+        max_rotation_jump=1.5,
+        smoothing_time_constant=smoothing_time_constant,
+        keyboard_device="/dev/null",
+    )
+
+
+def test_pose_ema_seeds_then_blends() -> None:
+    import pinocchio as pin
+
+    ema = xr_input.PoseEma(time_constant=1.0)
+    start = xr_input.Pose(np.zeros(3), np.eye(3))
+    assert ema.update(start, None) is start
+
+    target = xr_input.Pose(
+        np.array([1.0, 0.0, 0.0]), pin.exp3(np.array([0.0, 0.0, 1.0]))
+    )
+    blended = ema.update(target, elapsed=1.0)
+    alpha = 1.0 - np.exp(-1.0)
+    np.testing.assert_allclose(blended.position, [alpha, 0.0, 0.0])
+    np.testing.assert_allclose(
+        pin.log3(blended.rotation), [0.0, 0.0, alpha], atol=1e-12
+    )
+
+    # A gap much longer than the time constant re-seeds onto the new pose.
+    far = xr_input.Pose(np.array([5.0, 5.0, 5.0]), np.eye(3))
+    caught_up = ema.update(far, elapsed=100.0)
+    np.testing.assert_allclose(caught_up.position, far.position, atol=1e-6)
+
+
+def test_hand_root_input_maps_wrist_to_world(monkeypatch) -> None:
+    fake_xrt = _FakeHandXrt()
+    hand_input_source = _create_hand_root_input(monkeypatch, fake_xrt)
+    hand_input_source.keyboard.active = {"left": True, "right": True}
+
+    sample = hand_input_source.sample()
+
+    assert sample is not None
+    # XR (0.1, 0.2, 0.3) maps to robot world (-z, -x, y) = (-0.3, -0.1, 0.2).
+    np.testing.assert_allclose(sample.poses["left"].position, [-0.3, -0.1, 0.2])
+    assert sample.activations == {"left": True, "right": True}
+    hand_input_source.close()
+    assert fake_xrt.closed
+
+
+def test_hand_root_smoothing_lags_a_step(monkeypatch) -> None:
+    fake_xrt = _FakeHandXrt()
+    # Large time constant so the single-step blend is clearly partial no matter
+    # how much wall time the test takes between samples.
+    hand_input_source = _create_hand_root_input(
+        monkeypatch, fake_xrt, smoothing_time_constant=10.0
+    )
+    hand_input_source.keyboard.active = {"left": True, "right": True}
+    before = hand_input_source.sample()
+    assert before is not None
+    old_position = before.poses["left"].position
+
+    fake_xrt.joints["left"][1, 0] += 0.05
+    after = hand_input_source.sample()
+
+    assert after is not None
+    new_raw = xr_input.xr_pose_to_world(fake_xrt.joints["left"][1]).position
+    smoothed = after.poses["left"].position
+    assert np.linalg.norm(smoothed - old_position) < np.linalg.norm(
+        smoothed - new_raw
+    )
+
+
+def test_hand_root_jump_disengages(monkeypatch) -> None:
+    fake_xrt = _FakeHandXrt()
+    hand_input_source = _create_hand_root_input(monkeypatch, fake_xrt)
+    hand_input_source.keyboard.active = {"left": True, "right": True}
+    assert hand_input_source.sample() is not None
+
+    # The 0.906 m skeleton teleport measured in hand_coexistence.jsonl.
+    fake_xrt.joints["left"][1, 0] += 0.9
+
+    assert hand_input_source.sample() is None
+    assert hand_input_source.keyboard.active == {"left": False, "right": False}
+
+
+def test_hand_root_loss_on_engaged_side_disengages(monkeypatch) -> None:
+    fake_xrt = _FakeHandXrt()
+    hand_input_source = _create_hand_root_input(monkeypatch, fake_xrt)
+    hand_input_source.keyboard.active = {"left": True, "right": True}
+    assert hand_input_source.sample() is not None
+
+    fake_xrt.active["right"] = 0
+
+    assert hand_input_source.sample() is None
+    assert hand_input_source.keyboard.active == {"left": False, "right": False}
+
+
+def test_hand_root_loss_on_disengaged_side_is_ignored(monkeypatch) -> None:
+    fake_xrt = _FakeHandXrt()
+    hand_input_source = _create_hand_root_input(monkeypatch, fake_xrt)
+    hand_input_source.keyboard.active = {"left": False, "right": True}
+
+    fake_xrt.active["left"] = 0
+
+    sample = hand_input_source.sample()
+    assert sample is not None
+    assert sample.activations == {"left": False, "right": True}
+    # The lost side still carries its last smoothed pose for the mapper to
+    # ignore.
+    assert sample.poses["left"] is not None
+
+
+def test_hand_root_frozen_skeleton_disengages(monkeypatch) -> None:
+    fake_xrt = _FakeHandXrt()
+    hand_input_source = _create_hand_root_input(monkeypatch, fake_xrt)
+    hand_input_source.keyboard.active = {"left": True, "right": True}
+    assert hand_input_source.sample() is not None
+
+    hand_input_source.liveness["right"].changed_at -= 2.0
+
+    assert hand_input_source.sample() is None
+    assert hand_input_source.keyboard.active == {"left": False, "right": False}
+
+
 def test_create_pico_input_refuses_next_to_the_desktop_gui(monkeypatch) -> None:
     # The GUI and the Python SDK compete for the PC Service feedback stream; a
     # recorded session with the GUI in use degraded tracker positions to

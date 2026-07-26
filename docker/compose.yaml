@@ -84,6 +84,20 @@ services:
       - pico.launch.py
       - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
 
+  orbbec:
+    <<: *runtime
+    command:
+      - ros2
+      - launch
+      - orbbec_camera
+      - gemini435_le.launch.py
+      - enumerate_net_device:=false
+      - net_device_ip:=192.168.1.10
+      - net_device_port:=8090
+      - connection_delay:=1
+      - enable_point_cloud:=false
+      - enable_colored_point_cloud:=false
+
   tools:
     <<: *runtime
     profiles: [tools]

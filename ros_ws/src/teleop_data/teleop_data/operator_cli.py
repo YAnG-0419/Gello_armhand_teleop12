@@ -60,12 +60,19 @@ class Operator:
             recording = "pending"
         else:
             recording = "idle"
-        topics = {name for name, _types in self.node.get_topic_names_and_types()}
+        discovered = dict(self.node.get_topic_names_and_types())
         arms = sum(
-            f"/{side}/franka/joint_states" in topics for side in ("left", "right")
+            f"/{side}/franka/joint_states" in discovered for side in ("left", "right")
+        )
+        required = [spec for spec in self.node.config.topics if spec.required]
+        ready = sum(
+            spec.type_name in discovered.get(spec.topic, []) for spec in required
         )
         reset = "ready" if self.reset_client.service_is_ready() else "offline"
-        return f"{recording} | arms={arms}/2 | reset={reset}"
+        return (
+            f"{recording} | arms={arms}/2 | "
+            f"record_topics={ready}/{len(required)} | reset={reset}"
+        )
 
 
 def print_help():

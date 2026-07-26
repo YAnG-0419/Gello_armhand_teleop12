@@ -6,7 +6,11 @@ import numpy as np
 import pytest
 
 from pico_bimanual_franka_teleop import hand_landmarks as hl
-from pico_bimanual_franka_teleop.hand_retarget import CANONICAL_FINGERS, L20Retargeter
+from pico_bimanual_franka_teleop.hand_retarget import (
+    CANONICAL_FINGERS,
+    L20Retargeter,
+    chain_bend_angle,
+)
 from pico_bimanual_franka_teleop.hand_stream import (
     HandQposPacket,
     build_hand_packet,
@@ -41,6 +45,20 @@ def test_canonical_mapping_covers_wrist_and_thumb():
     # one-to-one onto the canonical thumb landmarks.
     assert hl.CANONICAL_FROM_OPENXR[1:5] == (2, 3, 4, 5)
     assert len(hl.CANONICAL_FROM_OPENXR) == hl.CANONICAL_LANDMARK_COUNT
+
+
+def test_chain_bend_angle_is_length_and_pose_invariant():
+    straight = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
+    )
+    bent = np.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 3.0, 0.0], [0.0, 3.0, 0.0]]
+    )
+    assert chain_bend_angle(straight) == pytest.approx(0.0)
+    assert chain_bend_angle(bent) == pytest.approx(np.pi)
+    assert chain_bend_angle(4.2 * bent + np.array([5.0, -2.0, 9.0])) == pytest.approx(
+        np.pi
+    )
 
 
 def test_validate_skeleton_rejects_bad_input():
@@ -88,7 +106,10 @@ def test_chirality_separates_sides_and_ignores_origin():
 @pytest.mark.parametrize("side", ["left", "right"])
 def test_retargeter_loads_and_reports_21_joints(side):
     with L20Retargeter(urdf_for(side), side) as retargeter:
+        # The packet remains 21 joints for compatibility, while Pinocchio solves
+        # the 16 physical actuators and applies the five URDF mimic constraints.
         assert retargeter.dof == 21
+        assert retargeter.model.nq == 16
         assert np.all(retargeter.lower <= retargeter.upper)
         # A proper rotation, not a reflection.
         assert float(np.linalg.det(retargeter.robot_frame)) == pytest.approx(1.0, abs=1e-9)
@@ -107,6 +128,60 @@ def test_robot_own_landmarks_are_an_exact_fixed_point(side):
         assert np.allclose(targets, expected, atol=1e-12)
         _, stats = retargeter.retarget(own)
         assert stats["loss"] < 1e-6
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_thumb_retargeting_enforces_the_urdf_mimic_joint(side):
+    # Build a reachable curled-thumb target from the robot itself. The old
+    # unconstrained 21-DoF solver could fit this shape with MCP nearly straight
+    # and the distal joint bent, even though one G20 actuator drives both. That
+    # made the mapper's average substantially under-command physical curl.
+    with L20Retargeter(
+        urdf_for(side),
+        side,
+        smooth_weight=0.0,
+        filter_alpha=1.0,
+        max_iterations=100,
+    ) as retargeter:
+        desired = np.zeros(retargeter.dof)
+        desired[retargeter.joint_names.index("thumb_mcp")] = 0.8
+        retargeter._reset_joints(desired)
+        curled_thumb = retargeter.robot_landmarks()
+
+        retargeter.reset()
+        solved, stats = retargeter.retarget(curled_thumb)
+        values = dict(zip(retargeter.joint_names, solved))
+        distal = "thumb_ip" if side == "left" else "thumb_dip"
+
+        assert stats["loss"] < 1e-8
+        assert values["thumb_mcp"] == pytest.approx(0.8, abs=2e-4)
+        assert values[distal] == pytest.approx(
+            1.1619 * values["thumb_mcp"], abs=1e-9
+        )
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_default_filter_reaches_70_percent_of_a_new_pose_in_one_frame(side):
+    # Filtering is gesture smoothing, not the hardware safety slew limiter.
+    # Alpha 0.7 keeps one-frame jitter suppression while avoiding the roughly
+    # 0.2 s response tail of the old alpha 0.35 at the 30 Hz hand update rate.
+    with L20Retargeter(
+        urdf_for(side),
+        side,
+        smooth_weight=0.0,
+        max_iterations=100,
+    ) as retargeter:
+        open_hand = retargeter.robot_landmarks()
+        retargeter.retarget(open_hand)
+
+        desired = np.zeros(retargeter.dof)
+        desired[retargeter.joint_names.index("thumb_mcp")] = 0.8
+        retargeter._reset_joints(desired)
+        curled_thumb = retargeter.robot_landmarks()
+        solved, _ = retargeter.retarget(curled_thumb)
+
+        thumb_mcp = solved[retargeter.joint_names.index("thumb_mcp")]
+        assert thumb_mcp == pytest.approx(0.7 * 0.8, abs=2e-4)
 
 
 @pytest.mark.parametrize("side", ["left", "right"])

@@ -63,9 +63,21 @@ class MotionTrackerConfig:
 
 
 @dataclass(frozen=True)
+class HandRootConfig:
+    ready_timeout: float
+    stale_timeout: float
+    frozen_timeout: float
+    max_position_jump: float
+    max_rotation_jump: float
+    smoothing_time_constant: float
+    keyboard_device: str
+
+
+@dataclass(frozen=True)
 class InputConfig:
     controllers: ControllerConfig
     motion_trackers: MotionTrackerConfig
+    hand_roots: HandRootConfig
 
 
 @dataclass(frozen=True)
@@ -249,6 +261,55 @@ def _load_motion_trackers(raw) -> MotionTrackerConfig:
     )
 
 
+def _load_hand_roots(raw) -> HandRootConfig:
+    section = "input.hand_roots"
+    hand_roots = _exact_mapping(
+        raw,
+        {
+            "ready_timeout",
+            "stale_timeout",
+            "frozen_timeout",
+            "max_position_jump",
+            "max_rotation_jump",
+            "smoothing_time_constant",
+            "activation",
+        },
+        section,
+    )
+    activation = _exact_mapping(
+        hand_roots["activation"],
+        {"type", "device"},
+        f"{section}.activation",
+    )
+    if activation["type"] != "keyboard":
+        raise ValueError(f"{section}.activation.type must be keyboard")
+    keyboard_device = str(activation["device"]).strip()
+    if not keyboard_device:
+        raise ValueError(f"{section}.activation.device must be non-empty")
+    return HandRootConfig(
+        ready_timeout=_positive(
+            hand_roots["ready_timeout"], f"{section}.ready_timeout"
+        ),
+        stale_timeout=_positive(
+            hand_roots["stale_timeout"], f"{section}.stale_timeout"
+        ),
+        frozen_timeout=_positive(
+            hand_roots["frozen_timeout"], f"{section}.frozen_timeout"
+        ),
+        max_position_jump=_positive(
+            hand_roots["max_position_jump"], f"{section}.max_position_jump"
+        ),
+        max_rotation_jump=_positive(
+            hand_roots["max_rotation_jump"], f"{section}.max_rotation_jump"
+        ),
+        smoothing_time_constant=_positive(
+            hand_roots["smoothing_time_constant"],
+            f"{section}.smoothing_time_constant",
+        ),
+        keyboard_device=keyboard_device,
+    )
+
+
 def load_config(path) -> PicoConfig:
     config_path = Path(path)
     with config_path.open(encoding="utf-8") as stream:
@@ -256,7 +317,7 @@ def load_config(path) -> PicoConfig:
     root = _exact_mapping(root, {"udp", "host", "input"}, str(config_path))
     input_raw = _exact_mapping(
         root["input"],
-        {"controllers", "motion_trackers"},
+        {"controllers", "motion_trackers", "hand_roots"},
         "input",
     )
     return PicoConfig(
@@ -265,5 +326,6 @@ def load_config(path) -> PicoConfig:
         input=InputConfig(
             controllers=_load_controllers(input_raw["controllers"]),
             motion_trackers=_load_motion_trackers(input_raw["motion_trackers"]),
+            hand_roots=_load_hand_roots(input_raw["hand_roots"]),
         ),
     )

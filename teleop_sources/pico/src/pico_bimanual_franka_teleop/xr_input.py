@@ -9,6 +9,8 @@ import numpy as np
 import pinocchio as pin
 
 from .config import InputConfig
+from .hand_input import SkeletonLiveness
+from .hand_landmarks import OPENXR_WRIST
 from .pose_mapping import is_valid_xr_pose, xr_pose_to_world
 from .types import Pose, SIDES, TeleopSample
 
@@ -136,6 +138,7 @@ class KeyboardActivation:
     def __init__(self, device: str) -> None:
         self.device = device
         self.active = {side: False for side in SIDES}
+        self.requests = {"open_hands": False, "reset": False}
         self.fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         if not os.isatty(self.fd):
             os.close(self.fd)
@@ -144,7 +147,8 @@ class KeyboardActivation:
         tty.setcbreak(self.fd)
         self._show(
             "Keyboard: [space] toggle both, [l]/[r] toggle one arm, "
-            "[x] disable all, [q] quit"
+            "[x] disable all, [o] open hands, [h] reset to initial pose, "
+            "[q] quit"
         )
         self._show_state()
 
@@ -177,6 +181,10 @@ class KeyboardActivation:
                 elif key == "x":
                     self.active = {side: False for side in SIDES}
                     changed = True
+                elif key == "o":
+                    self.requests["open_hands"] = True
+                elif key == "h":
+                    self.requests["reset"] = True
                 elif key == "q":
                     self.active = {side: False for side in SIDES}
                     self._show_state()
@@ -184,6 +192,12 @@ class KeyboardActivation:
         if changed:
             self._show_state()
         return dict(self.active)
+
+    def take_requests(self) -> dict[str, bool]:
+        """Return and clear the one-shot requests collected by poll()."""
+        taken = self.requests
+        self.requests = {name: False for name in taken}
+        return taken
 
     def disable_all(self, reason: str) -> None:
         if any(self.active.values()):
@@ -458,6 +472,244 @@ class MotionTrackerInput:
         self.last_activations = dict(activations)
         return TeleopSample(poses, activations, now)
 
+    def take_requests(self) -> dict[str, bool]:
+        return self.keyboard.take_requests()
+
+    def disable_all(self, reason: str) -> None:
+        self.keyboard.disable_all(reason)
+        self.last_activations = {side: False for side in SIDES}
+
+    def close(self) -> None:
+        try:
+            if getattr(self, "xrt", None) is not None:
+                xrt = self.xrt
+                self.xrt = None
+                xrt.close()
+        finally:
+            if getattr(self, "keyboard", None) is not None:
+                keyboard = self.keyboard
+                self.keyboard = None
+                keyboard.close()
+
+
+class PoseEma:
+    """First-order low-pass on a pose: EMA on position, geodesic blend on SO(3).
+
+    The gain is derived from elapsed time, alpha = 1 - exp(-elapsed / tau),
+    rather than fixed per sample: the optical skeleton nominally updates at
+    about 52 Hz but stalls and slower stretches happen, and a fixed gain would
+    smooth by a different amount at every rate. A gap much longer than tau
+    drives alpha to 1, so the filter re-seeds itself after a dropout instead of
+    dragging the pre-dropout pose across it.
+    """
+
+    def __init__(self, time_constant: float) -> None:
+        if not np.isfinite(time_constant) or time_constant <= 0:
+            raise ValueError("Smoothing time constant must be positive")
+        self.time_constant = float(time_constant)
+        self.value: Pose | None = None
+
+    def reset(self) -> None:
+        self.value = None
+
+    def update(self, pose: Pose, elapsed: float | None) -> Pose:
+        if self.value is None or elapsed is None or elapsed <= 0.0:
+            self.value = pose
+            return pose
+        alpha = 1.0 - math.exp(-float(elapsed) / self.time_constant)
+        rotation = (
+            pin.exp3(alpha * pin.log3(pose.rotation @ self.value.rotation.T))
+            @ self.value.rotation
+        )
+        self.value = Pose(
+            self.value.position + alpha * (pose.position - self.value.position),
+            rotation,
+        )
+        return self.value
+
+
+class HandRootInput:
+    """Arm teleoperation from the wrist joint of the optical hand skeleton.
+
+    Why this exists: the motion tracker's position comes from the headset
+    cameras seeing the tracker and freezes, then jumps, when the wrist flips
+    into a side-grasp pose, while optical hand tracking of the same hand keeps
+    updating through those exact poses (observed on hardware, 2026-07-25). The
+    skeleton's wrist joint is a full pose in the same XR frame as the trackers,
+    so it can stand in for them, at a measured cost: against
+    hand_coexistence.jsonl the wrist position carries 18-37 mm rms
+    high-frequency noise versus sub-millimetre for a tracker with optical fix,
+    rotation jitters by ~0.1 rad between samples, and the whole skeleton
+    occasionally teleports (0.906 m in a single step in that recording). The
+    EMA absorbs the noise; the per-sample jump guard turns a teleport into a
+    disengage instead of an arm lunge.
+
+    Liveness comes from `SkeletonLiveness`, the same rules the hand pipeline
+    uses: `isActive` must be 1 and the array must keep changing, because
+    plausible pose arrays keep being served after tracking loss. A fault on an
+    ENGAGED side disengages everything, exactly like a tracker fault; a fault
+    on a disengaged side is ignored so one hand leaving the cameras does not
+    stop the other arm.
+    """
+
+    def __init__(
+        self,
+        ready_timeout: float,
+        stale_timeout: float,
+        frozen_timeout: float,
+        max_position_jump: float,
+        max_rotation_jump: float,
+        smoothing_time_constant: float,
+        keyboard_device: str,
+    ) -> None:
+        import xrobotoolkit_sdk as xrt
+
+        limits = (
+            ready_timeout,
+            stale_timeout,
+            frozen_timeout,
+            max_position_jump,
+            max_rotation_jump,
+            smoothing_time_constant,
+        )
+        if any(not np.isfinite(value) or value <= 0 for value in limits):
+            raise ValueError("Hand root timeouts and limits must be positive")
+
+        self.xrt = xrt
+        self.max_position_jump = float(max_position_jump)
+        self.max_rotation_jump = float(max_rotation_jump)
+        self.liveness = {
+            side: SkeletonLiveness(stale_timeout, frozen_timeout) for side in SIDES
+        }
+        self.filters = {
+            side: PoseEma(smoothing_time_constant) for side in SIDES
+        }
+        self.last_raw_wrist: dict[str, np.ndarray | None] = {
+            side: None for side in SIDES
+        }
+        self.last_raw_pose: dict[str, Pose | None] = {side: None for side in SIDES}
+        self.last_observed_at: dict[str, float | None] = {
+            side: None for side in SIDES
+        }
+        self.smoothed: dict[str, Pose | None] = {side: None for side in SIDES}
+        self.last_activations = {side: False for side in SIDES}
+        self.keyboard = KeyboardActivation(keyboard_device)
+        try:
+            self.xrt.init()
+            self._wait_until_ready(float(ready_timeout))
+        except BaseException:
+            self.close()
+            raise
+
+    def _read_raw(self, side: str):
+        if side == "left":
+            return (
+                self.xrt.get_left_hand_tracking_state(),
+                int(self.xrt.get_left_hand_is_active()),
+            )
+        return (
+            self.xrt.get_right_hand_tracking_state(),
+            int(self.xrt.get_right_hand_is_active()),
+        )
+
+    def _forget_raw(self, side: str) -> None:
+        # The smoothed pose is deliberately kept: a disengaged side still needs
+        # a pose in the TeleopSample, and the mapper ignores it while inactive.
+        self.last_raw_wrist[side] = None
+        self.last_raw_pose[side] = None
+        self.last_observed_at[side] = None
+        self.filters[side].reset()
+
+    def _observe(self, side: str, engaged: bool, now: float) -> str | None:
+        """Ingest one poll for one side; return a fault description or None."""
+        state = self.liveness[side]
+        try:
+            raw, is_active = self._read_raw(side)
+        except Exception as error:  # noqa: BLE001 - SDK raises bare exceptions
+            state.fault = f"hand SDK read failed: {error}"
+            state.forget()
+            self._forget_raw(side)
+            return f"{side} {state.fault}"
+        if state.accept(raw, is_active, now) is None:
+            self._forget_raw(side)
+            return f"{side} hand: {state.fault}"
+        wrist = np.asarray(raw, dtype=float)[OPENXR_WRIST]
+        previous_wrist = self.last_raw_wrist[side]
+        if previous_wrist is not None and np.array_equal(previous_wrist, wrist):
+            # No new optical frame this poll; the smoothed pose stands. The
+            # loop polls at 100 Hz but the skeleton updates at ~52 Hz, so this
+            # is the common case, and advancing the EMA on repeats would let
+            # the filter converge onto stale data.
+            return None
+        pose = xr_pose_to_world(wrist)
+        fault = None
+        previous_pose = self.last_raw_pose[side]
+        if engaged and self.last_activations[side] and previous_pose is not None:
+            position_delta = float(
+                np.linalg.norm(pose.position - previous_pose.position)
+            )
+            rotation_delta = float(
+                np.linalg.norm(pin.log3(pose.rotation @ previous_pose.rotation.T))
+            )
+            if position_delta > self.max_position_jump:
+                fault = f"{side} hand root position jumped {position_delta:.3f} m"
+            elif rotation_delta > self.max_rotation_jump:
+                fault = f"{side} hand root rotation jumped {rotation_delta:.3f} rad"
+        previous_at = self.last_observed_at[side]
+        self.last_raw_wrist[side] = np.asarray(wrist, dtype=float).copy()
+        self.last_raw_pose[side] = pose
+        self.last_observed_at[side] = now
+        if fault is not None:
+            # The raw baseline advanced so a persistent re-lock does not trip
+            # the guard forever, but the teleported sample stays out of the
+            # filter.
+            return fault
+        elapsed = None if previous_at is None else now - previous_at
+        self.smoothed[side] = self.filters[side].update(pose, elapsed)
+        return None
+
+    def _wait_until_ready(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.keyboard.poll()
+            now = time.monotonic()
+            for side in SIDES:
+                self._observe(side, False, now)
+            if all(self.smoothed[side] is not None for side in SIDES):
+                self.keyboard.disable_all("hand tracking initialized")
+                return
+            time.sleep(0.05)
+        faults = {side: state.fault for side, state in self.liveness.items()}
+        raise TimeoutError(
+            "Timed out waiting for both optical hand skeletons; per-side "
+            f"status: {faults}"
+        )
+
+    def sample(self) -> TeleopSample | None:
+        activations = self.keyboard.poll()
+        now = time.monotonic()
+        fault = None
+        for side in SIDES:
+            side_fault = self._observe(side, activations[side], now)
+            if side_fault is not None and activations[side]:
+                fault = side_fault
+        if fault is not None:
+            self.disable_all(fault)
+            return None
+        if any(self.smoothed[side] is None for side in SIDES):
+            # Only reachable before _wait_until_ready seeded both sides.
+            self.disable_all("hand root pose not yet available")
+            return None
+        self.last_activations = dict(activations)
+        return TeleopSample(
+            poses={side: self.smoothed[side] for side in SIDES},
+            activations=activations,
+            timestamp=now,
+        )
+
+    def take_requests(self) -> dict[str, bool]:
+        return self.keyboard.take_requests()
+
     def disable_all(self, reason: str) -> None:
         self.keyboard.disable_all(reason)
         self.last_activations = {side: False for side in SIDES}
@@ -519,6 +771,17 @@ def create_pico_input(config: InputConfig, input_type: str):
             max_linear_speed=trackers.max_linear_speed,
             max_angular_speed=trackers.max_angular_speed,
             keyboard_device=trackers.keyboard_device,
+        )
+    if input_type == "hand-roots":
+        hand_roots = config.hand_roots
+        return HandRootInput(
+            ready_timeout=hand_roots.ready_timeout,
+            stale_timeout=hand_roots.stale_timeout,
+            frozen_timeout=hand_roots.frozen_timeout,
+            max_position_jump=hand_roots.max_position_jump,
+            max_rotation_jump=hand_roots.max_rotation_jump,
+            smoothing_time_constant=hand_roots.smoothing_time_constant,
+            keyboard_device=hand_roots.keyboard_device,
         )
     raise ValueError(f"Unsupported PICO input type: {input_type}")
 
