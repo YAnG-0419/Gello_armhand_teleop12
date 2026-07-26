@@ -176,7 +176,7 @@ live pipeline runs the thumb in FIXED-OPPOSITION mode. Kinematic fact behind
 it: at roll 0 the G20 thumb's yaw, pitch, MCP, and IP axes are parallel, so
 (cmc yaw, cmc roll) set the direction of the thumb's curl plane while pitch
 and the coupled MCP/IP flex curl within it. The mode locks
-`THUMB_OPPOSITION_YAW_ROLL` (0.90/0.00 in `hand_retarget.py`) and drives
+`THUMB_OPPOSITION_YAW_ROLL` (operator-tuned to 1.20/0.00 in `hand_retarget.py`) and drives
 pitch + flex together across their FULL ranges from one normalized curl
 signal: the operator's thumb bend mapped linearly over
 `THUMB_CURL_BEND_RANGE` (0.25-1.30 rad, from the operator's measured usage).
