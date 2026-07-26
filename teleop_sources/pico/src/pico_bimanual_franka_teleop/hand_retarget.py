@@ -80,8 +80,8 @@ THUMB_DISTANCE_THRESHOLD = 0.04
 # yet tuned - the mirrored URDF may want a different roll
 # (tune_thumb_opposition.py --side left).
 THUMB_OPPOSITION_YAW_ROLL = {
-    "left": (0.40, 1.20),
-    "right": (0.40, 1.20),
+    "left": (1.10, 0.52),
+    "right": (1.10, 0.52),
 }
 THUMB_CURL_BEND_RANGE = (0.25, 1.30)
 
