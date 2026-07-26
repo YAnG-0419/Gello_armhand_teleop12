@@ -1,20 +1,37 @@
 # Repository handover
 
-State as of the evening of 2026-07-26. Operator commands are in
+State as of the night of 2026-07-26. Operator commands are in
 [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md); camera recovery is in
 [ORBBEC_CAMERA.md](ORBBEC_CAMERA.md).
 
-## Current system
+The operator is satisfied with FR3 arm control; it is settled and should not
+be re-tuned casually. The active research front is the hands. This document
+keeps the operational essentials plus what bears on the hand research; the
+full history of the 2026-07-26 arm-control and jitter work lives in the git
+log (commits `c545a9b`..`7960098`, each self-explanatory).
 
-- Primary arm input: PICO optical hand-root poses (`--input hand-roots`).
-- Optional simultaneous hand input: PICO skeletons retargeted to both
-  LinkerHand G20 hands (`--hands`).
-- `docker compose up` starts arm control, hand control, Orbbec, the PICO ROS
-  bridge, and the teleop safety gateway.
-- Recording requires state and action for both FR3s and both G20 hands, plus
-  RGB, 16-bit depth, and camera calibration.
-- LeRobot export uses 54-dimensional state and action vectors: 14 FR3 joints
-  followed by two 20-slot G20 vectors.
+## Working setup
+
+- Arms: PICO motion trackers (`--input motion-trackers`). Hands: PICO
+  optical skeletons retargeted to both LinkerHand G20s (`--hands`). This
+  combination is hardware-validated end to end, including pressing an
+  electric screwdriver button (with a workaround, see the force section).
+- Tracker vs hand-root tradeoff, measured: the tracker's position is
+  sub-millimetre with optical fix and carries no in-band wander, so the arms
+  are smooth; but its position comes from the headset cameras seeing the
+  tracker, and a wrist occlusion or leaving the view freezes it (the
+  freeze/jump guards then disengage that arm). Current practice: the
+  operator keeps both trackers in view at all times. Hand-root input
+  (`--input hand-roots`) survives occlusion and side-grasps but carries
+  7-31 mrad of session-dependent optical wrist noise in the 0.5-3 Hz band
+  that reaches the end effector as visible tremor; it is the fallback, not
+  the default.
+- Arm-side control state (do not change without reading the git history):
+  franka_ros2 example impedance gains, first-order-hold command
+  interpolation in the 1 kHz controller, 200 Hz state broadcasters, host
+  position EMA 0.20 s / rotation 0.10 s fixed. Dead ends already measured:
+  stronger fixed smoothing, error-adaptive rotation EMA with thresholds
+  below the noise floor, skeleton landmark averaging, re-softened gains.
 
 Hardware:
 
@@ -25,293 +42,186 @@ host        enp6s0: 172.16.0.6/24, 192.168.1.53/24
 Orbbec      192.168.1.10:8090
 can0        left G20,  0x28
 can1        right G20, 0x27
+PICO trackers: left PC2310MLL5060501G, right PC2310MLL5290914G
 ```
 
-Robot-side control, updated 2026-07-26:
-
-- Joint impedance gains are at the franka_ros2 example values
-  (k 600/600/600/600/250/150/50, d 30/30/30/25/25/25/15). The previous halved
-  set left a 20-40 mrad friction deadband on the distal joints, measured as
-  stick-slip; the old values are kept in a comment in `controllers.yaml` for
-  rollback.
-- `JointImpedanceController` first-order-hold interpolates `q_goal` between
-  incoming commands (ramp over the measured command spacing, clamped to
-  1-20 ms, evaluated per 1 kHz cycle). This removes the k-gain-proportional
-  torque step each 100 Hz command used to cause, and smooths the former snap
-  from the move-to-start trajectory onto the live stream. Costs one command
-  period (~10 ms) of target lag.
-- `joint_state_broadcaster` and `franka_robot_state_broadcaster` run at
-  200 Hz. They were 30 Hz, which aliased everything above ~15 Hz in host
-  logs and hid slip transients.
-- Host-side position EMA time constant is 0.20 s (raised from 0.10 after an
-  offline tau sweep; see the jitter section).
-
-## Hardware verification status
-
-Verified:
-
-- Dual-FR3 teleoperation from PICO hand roots.
-- Simultaneous PICO-to-G20 hand teleoperation.
-- Orbbec Viewer and ROS RGB-D streaming; camera traffic caused no packet loss
-  in ping tests to either FR3.
-- Stiffer gains + command interpolation + 200 Hz broadcasters, on recordings
-  20260726_180408/182543/183228: measured/commanded speed variability at
-  parity (0.61-0.65 vs 0.55, was ~1.1), proximal stick-slip roughly halved,
-  no lunges, high-frequency arm gain 0.1-0.35 with no resonance. Operator
-  reports clearly less jerky motion; the initial harshness after the gain
-  change was resolved by the interpolation.
-- `q` in the teleop keyboard flow exits cleanly.
-
-Not yet hardware-validated end to end:
-
-- recording a complete FR3/G20/RGB-D episode;
-- LeRobot export followed by four-device action replay;
-- per-side arm-gates-hand behavior and the `O`/`H` keyboard flows;
-- the latest thumb constraint gating.
-
-Robot replay and `H` reset cause physical motion. Keep PICO disengaged and
-validate the path before using either.
-
-Unresolved incident: on the first run after the 2026-07-26 evening restart,
-the right FR3 made one violent motion at startup and hit a reflex stop; the
-second run was normal. The container logs were lost to `docker compose down`
-before they were read. Whenever a reflex trips, save
-`docker compose logs franka-control` before taking the stack down, and treat
-the first engagement after any restart as suspect until this is explained.
-
-## EE jitter: state of the investigation
-
-Analyzed recordings: `20260726_1712` (fixed and adaptive EMA baselines, soft
-gains), `20260726_180408` (stiff gains + interpolation, arm only),
-`20260726_182543` and `20260726_183228` (same, with `--hands`). Analyzer:
-`teleop_sources/pico/scripts/simulation/analyze_ee_jitter_spectrum.py`
-(wrap-safe: logged world-frame rotation vectors wrap near |r| ~ pi, so windows
-are rebuilt from per-tick geodesic increments before spectral analysis;
-`analyze_follow_log.py` keeps the aggregate following metrics).
-
-Two mechanisms were separated:
-
-1. Robot-side stick-slip and harshness - resolved by the gain/interpolation
-   changes above. j5-j7 retain residual slip events (p95 error up to
-   ~75 mrad in `--hands` sessions); revisit only if it stays visible in
-   practice.
-2. Quiet-band input noise - still open. Raw optical wrist rotation noise
-   (quiet 0.5-3 Hz RMS) varied 7-31 mrad across the four sessions; the EMA
-   only attenuates above ~3 Hz and the arm follows the remainder with gain
-   0.6-0.8, so perceived quiet tremor tracks that session-to-session optical
-   variation (hand position in headset view, pose, lighting), not code
-   changes. Keeping the hand centered in the headset's view helps.
-
-Dead ends, measured, do not repeat:
-
-- Fixed-EMA sweeps: tau 0.10 -> 0.30 removes only ~35% of the quiet wander
-  while tripling moving lag (lag scales with hand speed).
-- The error-adaptive rotation EMA in `config/pico.yaml` failed on hardware
-  because `rotation_error_low` (15 mrad) sits below the measured noise floor,
-  so noise itself switches the filter fast. Its parameters are still active
-  and harmless, but any retuning must put the low threshold above ~30 mrad.
-- Averaging skeleton landmarks (rigid palm fit) does not reduce noise: the
-  skeleton wanders as a whole, per-joint noise is coherent.
-- Do not re-soften robot gains to hide the quiet band; that reintroduces
-  stick-slip.
-
-Remaining levers, in recommended order: speed-adaptive input filtering with
-thresholds above the measured noise floor (One-Euro-style, displacement over a
-~300 ms window, hysteresis), or tracker/skeleton fusion (tracker position is
-sub-millimetre with optical fix but freezes in side-grasp poses, which is why
-hand-roots became primary).
-
-## Jitter instrumentation
+Teleop command (create a FRESH RUN_DIR every session - the logger truncates
+existing files and a reused shell variable has already destroyed two
+recordings):
 
 ```bash
 RUN_DIR=/home/descfly/franka_teleop_data/diagnostics/$(date +%Y%m%d_%H%M%S)
 mkdir -p "$RUN_DIR"
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input hand-roots --hands \
+  --config config/pico.yaml --input motion-trackers --hands \
   --debug-log "$RUN_DIR/ee_jitter.jsonl" \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
 
-`FollowDebugLogger` records at 100 Hz: raw pre-EMA PICO wrist pose, filtered
-pose, mapped target, commanded and measured joints, and FK end-effector poses
-of both. `--hand-debug-log` adds canonical skeleton landmarks, emitted G20
-joints, and thumb fidelity residuals per solved frame; summarize with
-`scripts/simulation/analyze_hand_retarget_log.py`.
+`docker compose up -d` starts everything; `docker compose up -d hand-control`
+brings up only the hands (enough for hand experiments and the thumb tuner).
 
-Useful facts:
+## Hand system: current implementation
 
-- PICO skeletons update at ~52 Hz sample rate but deliver changed wrist
-  samples on ~85% of 100 Hz ticks; the owner loop runs at 100 Hz.
-- `PoseEma` advances only on changed skeleton samples. Position tau 0.20 s;
-  rotation adapts 0.30 s -> 0.075 s between 15 and 80 mrad tracking error
-  (thresholds known-flawed, see above).
-- host and gateway `max_joint_speed` are both 0.5 rad/s; commanded joint
-  speed rides that clamp at p95 during ordinary motion.
-- arm commands pass through `teleop_interfaces/ArmCommand`; only the safety
-  gateway publishes the FR3 command bus.
-- hand retargeting runs after the arm command and at most one hand is solved
-  per owner tick.
+- Skeletons are converted to 21 canonical hand-frame landmarks
+  (`hand_landmarks.py`); this is the seam a different hand-pose source would
+  plug into. The four ordinary fingers go through the per-finger optimizer
+  in `hand_retarget.py`.
+- The thumb runs in fixed-opposition mode: (cmc yaw, roll) locked per side
+  (`THUMB_OPPOSITION_YAW_ROLL`, right hardware-tuned to (1.10, 0.52), left
+  still the copied values), and the operator's thumb bend, normalized over
+  `THUMB_CURL_BEND_RANGE` (0.25-1.30 rad), drives cmc pitch + the coupled
+  MCP/IP flex across their full ranges. Kinematic basis: at roll 0 the G20
+  thumb's yaw, pitch, MCP, and IP axes are parallel. Retune live with
+  `scripts/hardware/tune_thumb_opposition.py --side left|right` (adjusts
+  yaw/roll/curl through the running bridge, prints the constant to paste
+  back). Omitting `thumb_opposition_fixed` restores the full thumb solver.
+- The bridge requests speed 255 and per-finger max torque (thumb 250,
+  fingers 200) at startup; the vendor driver never initializes G20 speed or
+  torque on its own. Lower for fragile objects. Bridge keeps its 250 ms
+  watchdog, 30 Hz cap, 1500 unit/s slew; gesture EMA alpha 0.7.
+- Software latency skeleton-to-emitted-qpos is ~0 ms at 30 Hz solves;
+  perceived finger slowness is downstream (motors, slew ~85 ms per
+  half-swing, 30 Hz send cap).
 
-Keep the arm loop, camera load, and hand retargeting separable during tests:
-measure first with `--hands` disabled, then enabled, on the same gesture.
+## Research agenda
 
-## Current top priorities
+### 1. Hand pose source (PICO skeleton quality is the suspected limit)
 
-1. Quiet-band input noise (see above): adaptive filtering or tracker fusion.
-2. G20 hand behavior: hardware-validate the new fixed-root thumb mode (see
-   Hand retargeting) and tune `THUMB_CMC_POWER_GRASP` for the operator's
-   grips. Finger motion feeling slow was measured to be downstream of the
-   software (input-to-emitted-qpos lag ~0 ms at 30 Hz solves): candidates are
-   the G20 motors themselves, the 1500 unit/s bridge slew (~85 ms per
-   half-swing; launch arg `max_command_rate`), and the 30 Hz send cap
-   (`--hand-rate`, safe up to ~50). PICO thumb-tracking noise was ruled out
-   as the fidelity limit (thumb landmarks jitter ~3 mm, same as the other
-   fingers).
+Operator intends to explore multi-camera vision-based hand tracking (no
+occlusion) or Manus gloves. Measured facts to reuse: PICO skeleton noise is
+a whole-pose coherent wander (7-31 mrad quiet RMS at the wrist, varying by
+session with hand position in the headset view; per-landmark jitter ~3 mm on
+every finger equally, so landmark averaging does not help); tracking quality
+is the input floor for any retargeting improvement.
 
-## Hand retargeting
+Integration: there are two seams, pick per source. The lowest one is the
+hand bridge's UDP qpos packet (`hand_stream.py`, port 5570): anything that
+produces the 21-name URDF joint vector drives the hands directly, bypassing
+our retargeting entirely - the natural path for joint-space sources like
+gloves. The higher seam is the 21 canonical landmarks
+(`hand_landmarks.py`): a vision source that plugs in there reuses the
+existing retargeting unchanged. Either way a liveness signal is required
+(the watchdog stops the hand, nothing more), wrist pose for the arms can
+stay on the motion trackers, and multiple hand-teleop methods can coexist
+as alternative senders to the same bridge.
 
-Thumb mode reworked 2026-07-26 late evening, NOT yet hardware-validated: the
-live pipeline runs the thumb in FIXED-OPPOSITION mode. Kinematic fact behind
-it: at roll 0 the G20 thumb's yaw, pitch, MCP, and IP axes are parallel, so
-(cmc yaw, cmc roll) set the direction of the thumb's curl plane while pitch
-and the coupled MCP/IP flex curl within it. The mode locks
-`THUMB_OPPOSITION_YAW_ROLL` (operator-tuned to 1.20/0.00 in `hand_retarget.py`) and drives
-pitch + flex together across their FULL ranges from one normalized curl
-signal: the operator's thumb bend mapped linearly over
-`THUMB_CURL_BEND_RANGE` (0.25-1.30 rad, from the operator's measured usage).
+### 2. Retargeting fidelity
 
-History that led here, all measured offline (originals of 20260726_183228
-were overwritten by a reused RUN_DIR; replay copies existed in session
-scratch): mimicking the human thumb root is a conflicted objective on this
-heterogeneous mechanism (a reachability oracle showed thumb-index tips can
-touch exactly while the solver's own equilibrium left 16 mm of pinch gap;
-freeing the flex actuator, 20x more iterations, and fading direction terms
-all failed to close it). A first fixed-root attempt locked all three CMC
-joints; the operator rejected it - the root must still bend, and flex alone
-used only a third of its travel. The reworked mapping, replayed on the
-operator's own rejected-session movements: yaw/roll exactly constant, pitch
-and flex both sweep 100% of range, flex-to-bend correlation 0.997.
+Not yet studied carefully for the four fingers; the thumb was studied and
+its solver history should not be repeated: mimicking the human thumb root on
+this heterogeneous mechanism is a conflicted objective (a reachability
+oracle touched thumb-index tips exactly while the converged solver left a
+16 mm pinch gap; freeing the coupled flex, 20x iterations, and fading the
+direction terms all failed - the last made it worse). The fixed-opposition
+mode is the working answer for the thumb; treat any return to full-thumb
+retargeting as research, not a bugfix. Two known confounds to resolve first:
 
-The opposition default was chosen offline (fingers half-curled around a
-tool, curl sweep passes within 7 mm of the index/middle grasp line from
-80 mm open); the operator already reported the previous offline-chosen pose
-felt wrong, so expect to tune `THUMB_OPPOSITION_YAW_ROLL` (and possibly
-`THUMB_CURL_BEND_RANGE`) on hardware. The interactive tuner for this is
-`scripts/hardware/tune_thumb_opposition.py`: it streams the pose through the
-running hand bridge while single keys adjust yaw/roll/curl live, and prints
-the constant to paste back when quitting.
-Constructing `L20Retargeter` without `thumb_opposition_fixed` restores the
-previous full solver (tests cover both).
+- Model identity: the physical hands are G20 (`G20(工业版)` in the vendor
+  SDK, dedicated CAN class) but every kinematic model here and in sibling
+  repos is an L20 URDF; no G20 URDF exists on this machine. Offline
+  model-based pose choices repeatedly disagreed with hardware feel. Get a
+  G20 URDF from the vendor, or verify axis-by-axis with the tuner against
+  the L20 model in `inspect_thumb_configuration.py`.
+- Hand representation: the somehand reference (read-only sibling) uses the
+  same constraint weights but a whole-hand solve over relative directions
+  and hand-scaled distances; our per-finger staged solve with absolute
+  canonical positions is the main structural difference. Any representation
+  change should be validated offline first - the replay harness exists
+  (`hand_fidelity.jsonl` logs are exact retarget inputs;
+  `analyze_hand_retarget_log.py` summarizes; see git history for the replay
+  methodology).
 
-Model-identity finding (2026-07-26 late): the physical hands are LinkerHand
-G20 - the vendor SDK lists `G20(工业版)` as its own model beside L20 and
-drives it with a dedicated `LinkerHandG20Can` class (`hand_joint:=G20` in
-hands.launch.py) - but every kinematic model in this and the sibling repos is
-an L20 URDF (`assets/linkerhand_l20`, confirmed in THIRD_PARTY_NOTICES). No
-G20 URDF exists on this machine, and somehand's l20 vs l20pro model files
-(whose thumbs differ) are not downloaded there either. If the G20 thumb
-differs from L20 the way the operator suspects, all FK-based thumb reasoning
-(canonical landmarks, offline pose scoring) ran on wrong geometry - which
-would explain why offline-chosen opposition poses kept feeling wrong while
-the operator's hardware-tuned (0.40, 1.20) works. The tuned values are
-empirical and unaffected. To resolve: obtain a G20 URDF from the vendor, or
-verify axis-by-axis on hardware (drive one joint at a time with
-tune_thumb_opposition.py and compare against the L20 model in the
-inspect_thumb_configuration.py viewer).
+### 3. Hand force control
 
-- The public packet has 21 joint names; Pinocchio solves the 16 physical
-  actuators and expands the five URDF mimic joints.
-- Thumb MCP/IP flex is one coupled actuator and follows the robot FK bend
-  curve; flex is fixed before solving the three CMC joints.
-- Thumb segment-direction and local-frame constraints are adapted from the
-  read-only `somehand` reference; weights fade in with flexion or fingertip
-  proximity, and thumb-to-fingertip distance terms activate only near pinch.
-- No ordinary teleop log is used as open/closed calibration ground truth.
-- Gesture EMA alpha is 0.7. The bridge retains its 250 ms watchdog, 30 Hz
-  cap, and 1500 vendor-unit/s slew limit.
-- Press force: during the 20260726_204055 button-press session the emitted
-  thumb curl held its position limit (saturated 8.3% of frames), so any
-  missing force is the firmware's torque ceiling, not the command. The
-  bridge now requests `set_max_torque_limits` at startup alongside speed
-  (per-finger: `initial_thumb_torque` default 250, `initial_torque` default 200 for
-  the other four - the vendor command always writes all five; the vendor
-  driver never initializes G20 torque on its own). NOT yet hardware-tested;
-  lower it for fragile objects.
-- `inspect_thumb_configuration.py` visualizes or sends isolated thumb
-  configurations; hardware mode does not send FR3 commands.
+G20 exposes no position-loop gains - the full CAN register map offers only
+position, speed, per-finger torque cap, faults, temperature thresholds, and
+sensor queries. In a stalled contact the press force equals the torque cap
+(measured: during button presses the curl command saturates, so the cap is
+the whole story). Unexplored and promising: the hand has per-finger normal
+force (0x90), tangential force, matrix touch sensors, and motor current
+readback, none of which our stack reads today. A force-controlled press
+(ramp curl until measured normal force reaches a target) is implementable
+against the existing bridge without new hardware. Mechanical fact: press
+force scales as torque/lever-arm - contact near the thumb root is worth
+2-3x over the fingertip.
 
-## Data pipeline
+### 4. Electric screwdriver primitives
 
-Required recording topics cover left/right measured FR3 joint state, executed
-FR3 action, measured G20 state, post-mapping post-slew G20 action, RGB, depth,
-and both camera-info topics. The raw rosbag is the synchronized source of
-truth. Camera-only replay publishes under `/replay/camera`; robot replay is
-separate and prepositions all four devices before sending actions.
+Current manual technique: fixed-opposition grasp, thumb-pad press, plus a
+workaround - the four fingers counter-press from the other side because the
+thumb alone is marginal even at torque 250. Primitive ideas worth
+prototyping: a keyboard-triggered "trigger pulse" (scripted curl press and
+release), grasp presets per tool, and a force-gated press built on the
+touch sensors from item 3. The keyboard request pattern to copy is the
+existing `O`/`H` flow (`take_requests` in the input classes, serviced in
+`hardware.py`); the hand pipeline's `request_open` is the template for a
+scripted hand action.
 
 ## Safety and process invariants
 
-- Do not run `RobotLinuxDemo` beside a Python XRoboToolkit client.
-- `isActive` and array-change detection are required because the SDK can
-  serve plausible cached skeletons after tracking loss.
-- A hand-root fault on an engaged side disengages that arm; skeleton finger
-  loss stops that hand but does not independently disengage an arm.
-- One SDK client owns both arm and hand input.
-- Do not run `teleop_hands.py` and `teleop_dual_fr3.py` together.
-- Do not run OrbbecViewer while the ROS Orbbec service owns the camera.
-- Do not reconfigure `enp6s0` during an active FCI session.
-- The host operator must remain ROS-free; `env_guard.py` scrubs ROS
-  variables.
-- `config/pico.yaml` is validated by both the host parser and
-  `pico_teleop_bridge/launch/pico.launch.py`.
-- Another automation agent (a Cursor sandbox) has been observed inspecting
-  this machine; if services change state unexpectedly, check whether someone
-  else is operating it.
+- Do not run `RobotLinuxDemo` beside a Python XRoboToolkit client; one SDK
+  client owns both arm and hand input.
+- `isActive` and array-change detection stay mandatory: the SDK serves
+  plausible cached skeletons after tracking loss.
+- Do not run `teleop_hands.py` and `teleop_dual_fr3.py` together; the thumb
+  tuner refuses to start beside either.
+- Do not run OrbbecViewer while the ROS Orbbec service owns the camera; do
+  not reconfigure `enp6s0` during an active FCI session.
+- The host process must remain ROS-free (`env_guard.py`); `config/pico.yaml`
+  is validated by both the host parser and the pico bridge launch file.
+- Robot replay and `H` reset cause physical motion; keep PICO disengaged.
+- Unresolved incident: one violent right-arm motion + reflex stop on the
+  first run after a docker restart (2026-07-26 evening); logs were lost to
+  `docker compose down`. Save `docker compose logs franka-control` before
+  taking the stack down after any reflex, and treat the first engagement
+  after a restart as suspect.
+- Another automation agent (a Cursor sandbox) has been seen inspecting this
+  machine; unexplained service state changes may be someone else operating.
 
-## Tests
+## Tests and builds
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
-
 conda run --no-capture-output --name franka-teleop-pico \
-  pytest -q teleop_sources/pico/tests
-
+  pytest -q teleop_sources/pico/tests            # 87
 cd ros_ws/src/linker_hand_bridge
-PYTHONPATH=. python3 -m pytest -q test/test_core.py
+PYTHONPATH=. python3 -m pytest -q test/test_core.py   # 30
 ```
 
-Data tests require the ROS Python environment:
+teleop_data tests (15) run in the tools container; see HARDWARE_DEPLOY.md.
+The workspace is volume-mounted with symlink-install: config and Python
+changes need only a service restart; only the C++ controller needs
+`docker/build_workspace.sh --packages-select franka_fr3_arm_controllers`.
 
-```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
-docker compose run --rm tools bash -lc \
-  'source /opt/ros/humble/setup.bash &&
-   export PYTHONPATH=/workspace/franka_upper_body_teleop/ros_ws/src/teleop_data:/workspace/franka_upper_body_teleop/ros_ws/src/teleop_core:${PYTHONPATH:-} &&
-   python3 -m pytest -q /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/test'
-```
+## Still unvalidated (outside the research agenda)
 
-Expected counts at handover:
-
-```text
-PICO host tests          87
-LinkerHand bridge tests  30
-teleop_data tests        15
-```
-
-The C++ controller rebuilds with
-`docker compose run --rm tools bash /workspace/franka_upper_body_teleop/docker/build_workspace.sh --packages-select franka_fr3_arm_controllers`;
-the workspace is volume-mounted with symlink-install, so config and Python
-changes need no rebuild, only a service restart.
+- Recording a complete FR3/G20/RGB-D episode, LeRobot export, and
+  four-device replay - untouched by the 2026-07-26 work and the largest
+  remaining block before data collection.
+- Left-hand thumb opposition values; the startup torque request's actual
+  effect on press force (motor current is readable live via the
+  `electric_current` setting command while pressing).
+- Per-side arm-gates-hand behavior and the `O`/`H` keyboard flows.
 
 ## Local data
 
+The closed jitter investigation's recordings were deleted 2026-07-26 night.
+What remains, all from the final configuration (trackers + fixed-opposition
+thumb, evening of 2026-07-26):
+
 ```text
-/home/descfly/franka_teleop_data/hand_coexistence.jsonl            PICO skeletons + tracker poses, 10 Hz
-/home/descfly/franka_teleop_data/follow_debug.jsonl                degraded tracker trial (GUI contention)
-/home/descfly/franka_teleop_data/diagnostics/20260726_1712/        fixed + adaptive EMA baselines, soft gains
-/home/descfly/franka_teleop_data/diagnostics/20260726_180408/      stiff gains + interpolation, arm only
-/home/descfly/franka_teleop_data/diagnostics/20260726_182543/      same with --hands (+ hand_fidelity)
-/home/descfly/franka_teleop_data/diagnostics/20260726_183228/      same with --hands (+ hand_fidelity)
+/home/descfly/franka_teleop_data/hand_coexistence.jsonl        PICO skeletons + tracker poses recorded
+                                                               simultaneously, 10 Hz - the only
+                                                               tracker-vs-skeleton dataset
+/home/descfly/franka_teleop_data/diagnostics/20260726_201920/  tracker sessions of increasing length;
+/home/descfly/franka_teleop_data/diagnostics/20260726_204055/  204055 is the 8.7 min screwdriver
+/home/descfly/franka_teleop_data/diagnostics/20260726_210453/  button-press session
+/home/descfly/franka_teleop_data/diagnostics/20260726_212245/
+/home/descfly/franka_teleop_data/diagnostics/20260726_213109/  hand_fidelity_rescued.jsonl was recovered
+                                                               from a mangled RUN_DIR paste
 ```
 
-These are diagnostic recordings, not calibration ground truth.
+Diagnostic recordings, not calibration ground truth. `hand_fidelity*.jsonl`
+files contain exact retarget inputs and are replayable offline.
