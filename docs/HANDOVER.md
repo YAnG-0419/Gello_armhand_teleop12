@@ -171,31 +171,35 @@ measure first with `--hands` disabled, then enabled, on the same gesture.
 
 ## Hand retargeting
 
-Thumb mode changed 2026-07-26 evening, NOT yet hardware-validated: the live
-pipeline now runs the thumb with a FIXED power-grasp root. The three CMC
-actuators hold `THUMB_CMC_POWER_GRASP` (yaw/roll/pitch 1.00/0.00/0.10 in
-`hand_retarget.py`) and only the coupled MCP/IP flex follows the operator's
-thumb curl via the bend curve. Rationale, all measured offline on the
-20260726_183228 recording:
+Thumb mode reworked 2026-07-26 late evening, NOT yet hardware-validated: the
+live pipeline runs the thumb in FIXED-OPPOSITION mode. Kinematic fact behind
+it: at roll 0 the G20 thumb's yaw, pitch, MCP, and IP axes are parallel, so
+(cmc yaw, cmc roll) set the direction of the thumb's curl plane while pitch
+and the coupled MCP/IP flex curl within it. The mode locks
+`THUMB_OPPOSITION_YAW_ROLL` (0.90/0.00 in `hand_retarget.py`) and drives
+pitch + flex together across their FULL ranges from one normalized curl
+signal: the operator's thumb bend mapped linearly over
+`THUMB_CURL_BEND_RANGE` (0.25-1.30 rad, from the operator's measured usage).
 
-- mimicking the human thumb root is a conflicted objective on this
-  heterogeneous mechanism: a reachability oracle showed thumb-index tips can
-  touch exactly, yet the full objective's own equilibrium left 16 mm of pinch
-  gap, and neither freeing the flex actuator, nor 20x more iterations, nor
-  fading the direction terms improved it (the last made it worse);
-- the operator's tasks need opposition plus curl, not human-like root motion,
-  and reports the root rotation was the hard-to-control part;
-- the fixed pose was chosen so that with the fingers half-curled around a
-  tool, sweeping flex carries the thumb tip from 55 mm clear of the
-  index/middle grasp line to within 7 mm of it;
-- replay: root exactly constant, other fingers bit-identical, solve time
-  halved, flex-to-human-bend correlation 0.898. The recording only exercised
-  flex 0.00-0.37 rad of the 1.05 range; if the physical thumb closes too
-  little, the bend-to-flex curve gain is the knob to revisit.
+History that led here, all measured offline (originals of 20260726_183228
+were overwritten by a reused RUN_DIR; replay copies existed in session
+scratch): mimicking the human thumb root is a conflicted objective on this
+heterogeneous mechanism (a reachability oracle showed thumb-index tips can
+touch exactly while the solver's own equilibrium left 16 mm of pinch gap;
+freeing the flex actuator, 20x more iterations, and fading direction terms
+all failed to close it). A first fixed-root attempt locked all three CMC
+joints; the operator rejected it - the root must still bend, and flex alone
+used only a third of its travel. The reworked mapping, replayed on the
+operator's own rejected-session movements: yaw/roll exactly constant, pitch
+and flex both sweep 100% of range, flex-to-bend correlation 0.997.
 
-Tune the pose on hardware with `inspect_thumb_configuration.py`, then update
-`THUMB_CMC_POWER_GRASP` in place. Constructing `L20Retargeter` without
-`thumb_cmc_fixed` restores the previous solver behavior (tests cover it).
+The opposition default was chosen offline (fingers half-curled around a
+tool, curl sweep passes within 7 mm of the index/middle grasp line from
+80 mm open); the operator already reported the previous offline-chosen pose
+felt wrong, so expect to tune `THUMB_OPPOSITION_YAW_ROLL` (and possibly
+`THUMB_CURL_BEND_RANGE`) on hardware with `inspect_thumb_configuration.py`.
+Constructing `L20Retargeter` without `thumb_opposition_fixed` restores the
+previous full solver (tests cover both).
 
 - The public packet has 21 joint names; Pinocchio solves the 16 physical
   actuators and expands the five URDF mimic joints.

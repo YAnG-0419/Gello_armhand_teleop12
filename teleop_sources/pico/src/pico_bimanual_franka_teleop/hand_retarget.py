@@ -63,16 +63,20 @@ THUMB_FRAME_WEIGHTS = (2.0, 1.8)
 THUMB_DISTANCE_WEIGHTS = (2000.0, 1500.0, 1000.0, 800.0)
 THUMB_DISTANCE_THRESHOLD = 0.04
 
-# Fixed power-grasp thumb-root pose (cmc yaw, roll, pitch), used when the
-# retargeter is constructed with thumb_cmc_fixed. Mimicking the human thumb
-# root on this heterogeneous mechanism was measured to be a conflicted
-# objective (matching human segment directions and reaching contact disagree
-# by ~16 mm at pinch on the 2026-07-26 recordings), and the operator's tasks
-# only need the thumb to oppose and curl. Chosen offline: with the four
-# fingers half-curled around a tool, sweeping flex carries the thumb tip from
-# 55 mm clear of the index/middle grasp line to within 7 mm of it. Tune on
-# hardware with inspect_thumb_configuration.py and update in place.
-THUMB_CMC_POWER_GRASP = (1.00, 0.00, 0.10)
+# Fixed-opposition thumb mode. At roll 0 the yaw, pitch, MCP, and IP axes of
+# the G20 thumb are parallel, so (yaw, roll) set the direction of the thumb's
+# curl plane while pitch and the coupled MCP/IP flex curl within it. Locking
+# (yaw, roll) removes the hard-to-control, morphology-conflicted root
+# orientation (mimicking the human root left a measured 16 mm contact gap on
+# the 2026-07-26 recordings) while the root still bends: the operator's thumb
+# bend maps linearly from THUMB_CURL_BEND_RANGE (radians, chosen from the
+# operator's measured 0.18-1.41 rad usage) onto the FULL pitch+flex travel.
+# The opposition default was chosen offline: with the four fingers
+# half-curled around a tool, the curl sweep carries the thumb tip from 80 mm
+# clear of the index/middle grasp line to within 7 mm of it. Tune on hardware
+# with inspect_thumb_configuration.py and update in place.
+THUMB_OPPOSITION_YAW_ROLL = (0.90, 0.00)
+THUMB_CURL_BEND_RANGE = (0.25, 1.30)
 
 # Canonical landmark indices used by the palm frame.
 _INDEX_BASE = 5
@@ -161,7 +165,7 @@ class L20Retargeter:
         filter_alpha: float = 0.7,
         max_iterations: int = 20,
         normalize_finger_length: bool = True,
-        thumb_cmc_fixed: tuple[float, float, float] | None = None,
+        thumb_opposition_fixed: tuple[float, float] | None = None,
     ) -> None:
         if side not in {"left", "right"}:
             raise ValueError(f"side must be 'left' or 'right', got {side!r}")
@@ -238,26 +242,26 @@ class L20Retargeter:
             )
         self._thumb_mcp_index = self._active_joint_names.index("thumb_mcp")
 
-        self.thumb_cmc_fixed: np.ndarray | None = None
-        if thumb_cmc_fixed is not None:
-            values = np.asarray(thumb_cmc_fixed, dtype=np.float64)
-            if values.shape != (3,) or not np.all(np.isfinite(values)):
-                raise ValueError("thumb_cmc_fixed must be three finite values")
-            self._thumb_cmc_indices = np.asarray(
-                [
-                    self._active_joint_names.index(name)
-                    for name in (
-                        "thumb_cmc_yaw",
-                        "thumb_cmc_roll",
-                        "thumb_cmc_pitch",
-                    )
-                ],
-                dtype=int,
+        self.thumb_opposition_fixed: np.ndarray | None = None
+        if thumb_opposition_fixed is not None:
+            values = np.asarray(thumb_opposition_fixed, dtype=np.float64)
+            if values.shape != (2,) or not np.all(np.isfinite(values)):
+                raise ValueError(
+                    "thumb_opposition_fixed must be two finite values (yaw, roll)"
+                )
+            self._thumb_yaw_index = self._active_joint_names.index(
+                "thumb_cmc_yaw"
             )
-            self.thumb_cmc_fixed = np.clip(
+            self._thumb_roll_index = self._active_joint_names.index(
+                "thumb_cmc_roll"
+            )
+            self._thumb_pitch_index = self._active_joint_names.index(
+                "thumb_cmc_pitch"
+            )
+            self.thumb_opposition_fixed = np.clip(
                 values,
-                self._active_lower[self._thumb_cmc_indices],
-                self._active_upper[self._thumb_cmc_indices],
+                self._active_lower[[self._thumb_yaw_index, self._thumb_roll_index]],
+                self._active_upper[[self._thumb_yaw_index, self._thumb_roll_index]],
             )
 
         self._finger_joints: dict[str, np.ndarray] = {}
@@ -548,13 +552,43 @@ class L20Retargeter:
         )
         solution[self._thumb_mcp_index] = thumb_flex
 
+        if self.thumb_opposition_fixed is not None:
+            # Fixed-opposition mode: (yaw, roll) hold the curl plane, and one
+            # normalized curl signal drives root pitch and flex across their
+            # FULL ranges, so the whole thumb wraps rather than only the two
+            # distal joints. The bend-curve flex above is superseded here.
+            bend_low, bend_high = THUMB_CURL_BEND_RANGE
+            curl = float(
+                np.clip((thumb_bend - bend_low) / (bend_high - bend_low), 0.0, 1.0)
+            )
+            thumb_flex = (
+                self._active_lower[self._thumb_mcp_index]
+                + curl
+                * (
+                    self._active_upper[self._thumb_mcp_index]
+                    - self._active_lower[self._thumb_mcp_index]
+                )
+            )
+            thumb_flex_fraction = curl
+            solution[self._thumb_mcp_index] = thumb_flex
+            solution[self._thumb_pitch_index] = (
+                self._active_lower[self._thumb_pitch_index]
+                + curl
+                * (
+                    self._active_upper[self._thumb_pitch_index]
+                    - self._active_lower[self._thumb_pitch_index]
+                )
+            )
+            solution[self._thumb_yaw_index] = self.thumb_opposition_fixed[0]
+            solution[self._thumb_roll_index] = self.thumb_opposition_fixed[1]
+
         # Solve the ordinary fingers first. The thumb then sees their final tip
         # locations for the activated thumb-to-fingertip distance constraints.
-        # With a fixed CMC pose the thumb needs no solve at all: the root is
-        # constant and the curl is the bend-curve flex set above.
+        # In fixed-opposition mode the thumb needs no solve at all: every
+        # thumb joint was assigned above.
         solve_order = (
             ("index", "middle", "ring", "pinky")
-            if self.thumb_cmc_fixed is not None
+            if self.thumb_opposition_fixed is not None
             else ("index", "middle", "ring", "pinky", "thumb")
         )
         thumb_orientation_activation = 0.0
@@ -820,9 +854,6 @@ class L20Retargeter:
             total_iterations += int(result.nit)
             total_evaluations += int(result.nfev)
             success = success and bool(result.success)
-
-        if self.thumb_cmc_fixed is not None:
-            solution[self._thumb_cmc_indices] = self.thumb_cmc_fixed
 
         # The regularizer anchors on the raw solution while the emitted command
         # is filtered, so smoothing never fights the optimizer's own history.
