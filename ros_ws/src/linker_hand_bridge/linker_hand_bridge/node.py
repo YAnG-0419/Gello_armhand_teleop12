@@ -68,6 +68,7 @@ class LinkerHandBridge(Node):
         self.declare_parameter("log_period", 2.0)
         self.declare_parameter("initial_speed", 30)
         self.declare_parameter("initial_torque", 0)
+        self.declare_parameter("initial_thumb_torque", 0)
         self.declare_parameter("abduction_invert", False)
 
         host = str(self.get_parameter("host").value)
@@ -82,11 +83,26 @@ class LinkerHandBridge(Node):
         self.log_period = float(self.get_parameter("log_period").value)
         self.initial_speed = int(self.get_parameter("initial_speed").value)
         self.initial_torque = int(self.get_parameter("initial_torque").value)
+        self.initial_thumb_torque = int(
+            self.get_parameter("initial_thumb_torque").value
+        )
         abduction_invert = bool(self.get_parameter("abduction_invert").value)
         if not 0 <= self.initial_speed <= 255:
             raise ValueError("initial_speed must be in [0, 255]; 0 disables")
         if not 0 <= self.initial_torque <= 255:
             raise ValueError("initial_torque must be in [0, 255]; 0 disables")
+        if not 0 <= self.initial_thumb_torque <= 255:
+            raise ValueError(
+                "initial_thumb_torque must be in [0, 255]; 0 disables"
+            )
+        # The vendor command sets all five fingers in one message, so a
+        # thumb-only request would silently pick a value for the others.
+        if (self.initial_torque > 0) != (self.initial_thumb_torque > 0):
+            raise ValueError(
+                "initial_torque and initial_thumb_torque must be enabled "
+                "together: the vendor set_max_torque_limits command always "
+                "writes all five fingers"
+            )
 
         if sides_value == "both":
             self.sides = ("left", "right")
@@ -205,13 +221,17 @@ class LinkerHandBridge(Node):
                         "setting_cmd": "set_max_torque_limits",
                         "params": {
                             "hand_type": side,
-                            "torque": [self.initial_torque] * 5,
+                            # Vendor finger order: thumb, index, middle,
+                            # ring, little.
+                            "torque": [self.initial_thumb_torque]
+                            + [self.initial_torque] * 4,
                         },
                     }
                 )
                 self.setting_publisher.publish(message)
         self.get_logger().info(
-            f"Requested joint speed {self.initial_speed}/255 and max torque "
+            f"Requested joint speed {self.initial_speed}/255, thumb torque "
+            f"{self.initial_thumb_torque}/255, finger torque "
             f"{self.initial_torque}/255 (0 = not sent) on {list(self.sides)}"
         )
 

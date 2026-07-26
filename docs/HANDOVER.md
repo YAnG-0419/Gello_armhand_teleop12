@@ -234,7 +234,8 @@ inspect_thumb_configuration.py viewer).
   thumb curl held its position limit (saturated 8.3% of frames), so any
   missing force is the firmware's torque ceiling, not the command. The
   bridge now requests `set_max_torque_limits` at startup alongside speed
-  (launch arg `initial_torque`, default 250/255, 0 disables; the vendor
+  (per-finger: `initial_thumb_torque` default 250, `initial_torque` default 200 for
+  the other four - the vendor command always writes all five; the vendor
   driver never initializes G20 torque on its own). NOT yet hardware-tested;
   lower it for fragile objects.
 - `inspect_thumb_configuration.py` visualizes or sends isolated thumb

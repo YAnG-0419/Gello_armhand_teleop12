@@ -60,12 +60,22 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "initial_torque",
+            default_value="200",
+            description=(
+                "Maximum torque 0..255 for the four non-thumb fingers at "
+                "startup; 0 disables (must match initial_thumb_torque's "
+                "enablement). 200 is the vendor's own convention for models "
+                "it does initialize. The vendor driver never initializes G20 "
+                "torque on its own. Lower for fragile objects."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "initial_thumb_torque",
             default_value="250",
             description=(
-                "Per-finger maximum torque 0..255 requested at startup; 0 "
-                "disables. The vendor driver never initializes G20 torque, so "
-                "without this the press force stays at whatever the firmware "
-                "booted with. Lower it when handling fragile objects."
+                "Maximum thumb torque 0..255 at startup; raised above the "
+                "other fingers because the operator's button-press needs the "
+                "thumb pad force (2026-07-26)."
             ),
         ),
         DeclareLaunchArgument(
@@ -113,6 +123,9 @@ def generate_launch_description() -> LaunchDescription:
                 "max_command_rate": LaunchConfiguration("max_command_rate"),
                 "initial_speed": LaunchConfiguration("initial_speed"),
                 "initial_torque": LaunchConfiguration("initial_torque"),
+                "initial_thumb_torque": LaunchConfiguration(
+                    "initial_thumb_torque"
+                ),
                 "abduction_invert": LaunchConfiguration("abduction_invert"),
             }
         ],
