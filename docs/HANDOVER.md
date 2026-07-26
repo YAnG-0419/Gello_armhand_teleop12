@@ -204,6 +204,22 @@ the constant to paste back when quitting.
 Constructing `L20Retargeter` without `thumb_opposition_fixed` restores the
 previous full solver (tests cover both).
 
+Model-identity finding (2026-07-26 late): the physical hands are LinkerHand
+G20 - the vendor SDK lists `G20(工业版)` as its own model beside L20 and
+drives it with a dedicated `LinkerHandG20Can` class (`hand_joint:=G20` in
+hands.launch.py) - but every kinematic model in this and the sibling repos is
+an L20 URDF (`assets/linkerhand_l20`, confirmed in THIRD_PARTY_NOTICES). No
+G20 URDF exists on this machine, and somehand's l20 vs l20pro model files
+(whose thumbs differ) are not downloaded there either. If the G20 thumb
+differs from L20 the way the operator suspects, all FK-based thumb reasoning
+(canonical landmarks, offline pose scoring) ran on wrong geometry - which
+would explain why offline-chosen opposition poses kept feeling wrong while
+the operator's hardware-tuned (0.40, 1.20) works. The tuned values are
+empirical and unaffected. To resolve: obtain a G20 URDF from the vendor, or
+verify axis-by-axis on hardware (drive one joint at a time with
+tune_thumb_opposition.py and compare against the L20 model in the
+inspect_thumb_configuration.py viewer).
+
 - The public packet has 21 joint names; Pinocchio solves the 16 physical
   actuators and expands the five URDF mimic joints.
 - Thumb MCP/IP flex is one coupled actuator and follows the robot FK bend
