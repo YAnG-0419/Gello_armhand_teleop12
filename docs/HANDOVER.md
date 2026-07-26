@@ -197,7 +197,10 @@ The opposition default was chosen offline (fingers half-curled around a
 tool, curl sweep passes within 7 mm of the index/middle grasp line from
 80 mm open); the operator already reported the previous offline-chosen pose
 felt wrong, so expect to tune `THUMB_OPPOSITION_YAW_ROLL` (and possibly
-`THUMB_CURL_BEND_RANGE`) on hardware with `inspect_thumb_configuration.py`.
+`THUMB_CURL_BEND_RANGE`) on hardware. The interactive tuner for this is
+`scripts/hardware/tune_thumb_opposition.py`: it streams the pose through the
+running hand bridge while single keys adjust yaw/roll/curl live, and prints
+the constant to paste back when quitting.
 Constructing `L20Retargeter` without `thumb_opposition_fixed` restores the
 previous full solver (tests cover both).
 
