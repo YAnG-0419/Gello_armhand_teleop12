@@ -67,7 +67,9 @@ class ThumbTuner:
         self.retargeter = retargeter
         self.names = list(retargeter.joint_names)
         self.index = {name: i for i, name in enumerate(self.names)}
-        self.yaw, self.roll = (float(v) for v in THUMB_OPPOSITION_YAW_ROLL)
+        self.yaw, self.roll = (
+            float(v) for v in THUMB_OPPOSITION_YAW_ROLL[retargeter.side]
+        )
         self.curl = 0.5
         self.fingers_curled = False
 
@@ -210,7 +212,10 @@ def main() -> int:
 
     print()
     print("Final values - paste into hand_retarget.py to keep them:")
-    print(f"  THUMB_OPPOSITION_YAW_ROLL = ({tuner.yaw:.2f}, {tuner.roll:.2f})")
+    print(
+        f'  THUMB_OPPOSITION_YAW_ROLL["{args.side}"] entry: '
+        f"({tuner.yaw:.2f}, {tuner.roll:.2f})"
+    )
     print(
         "Stream stopped; the bridge watchdog now stops publishing and the "
         "hand holds its last slewed position."

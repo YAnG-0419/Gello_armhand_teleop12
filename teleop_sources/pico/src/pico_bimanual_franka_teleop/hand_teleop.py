@@ -82,7 +82,7 @@ class HandPipeline:
                 urdf,
                 side,
                 max_iterations=max_iterations,
-                thumb_opposition_fixed=THUMB_OPPOSITION_YAW_ROLL,
+                thumb_opposition_fixed=THUMB_OPPOSITION_YAW_ROLL[side],
             )
 
         self.reader = HandSkeletonReader(

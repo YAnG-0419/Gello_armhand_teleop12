@@ -75,8 +75,14 @@ THUMB_DISTANCE_THRESHOLD = 0.04
 # half-curled around a tool, the curl sweep carries the thumb tip from 80 mm
 # clear of the index/middle grasp line to within 7 mm of it. Tune on hardware
 # with inspect_thumb_configuration.py and update in place.
-# Operator-tuned on hardware 2026-07-26: 0.90 was not enough opposition.
-THUMB_OPPOSITION_YAW_ROLL = (1.20, 0.00)
+# Per-side (yaw, roll). Right was operator-tuned on hardware 2026-07-26 with
+# tune_thumb_opposition.py; the left values are copied from the right and NOT
+# yet tuned - the mirrored URDF may want a different roll
+# (tune_thumb_opposition.py --side left).
+THUMB_OPPOSITION_YAW_ROLL = {
+    "left": (0.40, 1.20),
+    "right": (0.40, 1.20),
+}
 THUMB_CURL_BEND_RANGE = (0.25, 1.30)
 
 # Canonical landmark indices used by the palm frame.
