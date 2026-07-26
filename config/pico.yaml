@@ -20,7 +20,7 @@ input:
     stale_timeout: 0.25
   motion_trackers:
     serials:
-      left: PC2310MLL6020917G
+      left: PC2310MLL5060501G
       right: PC2310MLL5290914G
     ready_timeout: 30.0
     stale_timeout: 0.25
