@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <Eigen/Eigen>
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <exception>
@@ -58,6 +59,18 @@ controller_interface::return_type JointImpedanceController::update(
   if (command->sequence != consumed_command_sequence_) {
     gello_position_values_ = command->positions;
     validateGelloPositions_(command->source_stamp);
+    // Stepping q_goal straight to the new target applies a torque step of
+    // k_gains * delta at every command; ramping over one command interval
+    // keeps the commanded torque continuous. Starting from the goal that was
+    // actually applied (not the previous target) stays smooth when commands
+    // arrive late or a ramp was still in flight.
+    interp_from_ = applied_goal_valid_ ? applied_goal_ : q_;
+    for (int i = 0; i < num_joints; ++i) {
+      interp_to_(i) = gello_position_values_[i];
+    }
+    interp_duration_ = std::clamp(
+        (command->receive_time - last_command_receive_time_).seconds(), 0.001, 0.02);
+    interp_started_at_ = command->receive_time;
     last_command_receive_time_ = command->receive_time;
     consumed_command_sequence_ = command->sequence;
   }
@@ -95,10 +108,13 @@ controller_interface::return_type JointImpedanceController::update(
   if (move_to_start_position_finished_) {
     // After reaching the start position we follow the joint position from the input topic
     // This is the normal operation mode of the controller
-    for (int i = 0; i < num_joints; ++i) {
-      q_goal(i) = gello_position_values_[i];
-    }
+    const double elapsed = (get_node()->now() - interp_started_at_).seconds();
+    const double alpha = std::clamp(elapsed / interp_duration_, 0.0, 1.0);
+    q_goal = interp_from_ + alpha * (interp_to_ - interp_from_);
   }
+
+  applied_goal_ = q_goal;
+  applied_goal_valid_ = true;
 
   tau_d_calculated = calculateTauDGains_(q_goal);
 
@@ -225,6 +241,7 @@ CallbackReturn JointImpedanceController::on_activate(
   motion_generator_initialized_ = false;
   move_to_start_position_finished_ = false;
   gello_position_values_valid_ = false;
+  applied_goal_valid_ = false;
   motion_generator_.reset();
 
   return CallbackReturn::SUCCESS;

@@ -81,6 +81,15 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   std::array<double, 7> gello_position_values_{0, 0, 0, 0, 0, 0, 0};
   rclcpp::Time last_joint_state_time_;
   rclcpp::Time last_command_receive_time_;
+  // First-order-hold interpolation of the command stream: q_goal ramps from
+  // the goal applied when a command arrived (interp_from_) to that command's
+  // target (interp_to_) over interp_duration_, evaluated each 1 kHz cycle.
+  Vector7d interp_from_;
+  Vector7d interp_to_;
+  rclcpp::Time interp_started_at_;
+  double interp_duration_{0.01};
+  Vector7d applied_goal_;
+  bool applied_goal_valid_{false};
 
   Vector7d calculateTauDGains_(const Vector7d& q_goal);
   bool validateGains_(const std::vector<double>& gains, const std::string& gains_name);

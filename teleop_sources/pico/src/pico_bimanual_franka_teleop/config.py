@@ -70,6 +70,10 @@ class HandRootConfig:
     max_position_jump: float
     max_rotation_jump: float
     smoothing_time_constant: float
+    rotation_slow_time_constant: float
+    rotation_fast_time_constant: float
+    rotation_error_low: float
+    rotation_error_high: float
     keyboard_device: str
 
 
@@ -272,6 +276,10 @@ def _load_hand_roots(raw) -> HandRootConfig:
             "max_position_jump",
             "max_rotation_jump",
             "smoothing_time_constant",
+            "rotation_slow_time_constant",
+            "rotation_fast_time_constant",
+            "rotation_error_low",
+            "rotation_error_high",
             "activation",
         },
         section,
@@ -286,6 +294,31 @@ def _load_hand_roots(raw) -> HandRootConfig:
     keyboard_device = str(activation["device"]).strip()
     if not keyboard_device:
         raise ValueError(f"{section}.activation.device must be non-empty")
+    rotation_slow = _positive(
+        hand_roots["rotation_slow_time_constant"],
+        f"{section}.rotation_slow_time_constant",
+    )
+    rotation_fast = _positive(
+        hand_roots["rotation_fast_time_constant"],
+        f"{section}.rotation_fast_time_constant",
+    )
+    rotation_error_low = _positive(
+        hand_roots["rotation_error_low"],
+        f"{section}.rotation_error_low",
+    )
+    rotation_error_high = _positive(
+        hand_roots["rotation_error_high"],
+        f"{section}.rotation_error_high",
+    )
+    if rotation_slow < rotation_fast:
+        raise ValueError(
+            f"{section}.rotation_slow_time_constant must be at least "
+            "rotation_fast_time_constant"
+        )
+    if rotation_error_high <= rotation_error_low:
+        raise ValueError(
+            f"{section}.rotation_error_high must exceed rotation_error_low"
+        )
     return HandRootConfig(
         ready_timeout=_positive(
             hand_roots["ready_timeout"], f"{section}.ready_timeout"
@@ -306,6 +339,10 @@ def _load_hand_roots(raw) -> HandRootConfig:
             hand_roots["smoothing_time_constant"],
             f"{section}.smoothing_time_constant",
         ),
+        rotation_slow_time_constant=rotation_slow,
+        rotation_fast_time_constant=rotation_fast,
+        rotation_error_low=rotation_error_low,
+        rotation_error_high=rotation_error_high,
         keyboard_device=keyboard_device,
     )
 

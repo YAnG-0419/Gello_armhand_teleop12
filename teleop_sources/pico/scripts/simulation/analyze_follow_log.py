@@ -15,11 +15,12 @@ ensure_ros_free_process()
 
 Reads a --debug-log recording and reports, per side and per engaged segment:
 
+  raw -> tracker      optical wrist noise removed by the EMA
   tracker -> target   the mapper; must be exactly one-to-one
   target  -> EE(cmd)  IK and its joint-speed clamp; lag and amplitude loss here
                       mean the commanded motion never asked the arm to go
-  EE(cmd) -> measured the real arm following its command, through the gateway
-                      slew limit and the impedance controller
+  EE(cmd) -> EE(meas) real-arm following through the gateway slew limit and
+                      impedance controller
 
 plus the operator's actual hand speeds, how often the commanded configuration
 moves at the clamp, and how close joints come to their limits.
@@ -68,6 +69,107 @@ def positions(seg, side, key):
     return np.array([row[side][key]["p"] for row in seg], dtype=float)
 
 
+def rotations(seg, side, key):
+    return np.array([row[side][key]["r"] for row in seg], dtype=float)
+
+
+def has_pose(seg, side, key):
+    return all((row.get(side) or {}).get(key) is not None for row in seg)
+
+
+def detrend(values):
+    """Remove constant velocity so residuals expose tremor, not intended motion."""
+    values = np.asarray(values, dtype=float)
+    samples = np.arange(len(values), dtype=float)
+    design = np.column_stack((samples, np.ones(len(samples))))
+    trend = design @ np.linalg.lstsq(design, values, rcond=None)[0]
+    return values - trend
+
+
+def quiet_windows(seg, side, count=10, duration=1.0):
+    """Select non-overlapping seconds with the least filtered-hand movement."""
+    times = np.array([row["t"] for row in seg], dtype=float)
+    dt = np.median(np.diff(times))
+    size = max(10, int(round(duration / dt)))
+    if len(seg) < size:
+        return []
+    tracker = positions(seg, side, "tracker")
+    spans = np.array(
+        [
+            np.linalg.norm(np.ptp(tracker[start : start + size], axis=0))
+            for start in range(len(seg) - size + 1)
+        ]
+    )
+    selected = []
+    for start in np.argsort(spans):
+        if all(abs(int(start) - previous) >= size for previous in selected):
+            selected.append(int(start))
+        if len(selected) >= count:
+            break
+    return [(start, size, spans[start]) for start in sorted(selected)]
+
+
+def report_quiet_jitter(seg, side):
+    windows = quiet_windows(seg, side)
+    if not windows:
+        return
+    print(
+        "        quiet-window filtered-hand span range "
+        f"{min(item[2] for item in windows)*1e3:.1f}-"
+        f"{max(item[2] for item in windows)*1e3:.1f} mm"
+    )
+    for key in ("raw_tracker", "tracker", "target", "ee_cmd", "ee_meas"):
+        if not has_pose(seg, side, key):
+            continue
+        rms = []
+        span = []
+        for start, size, _ in windows:
+            residual = detrend(positions(seg[start : start + size], side, key))
+            rms.append(np.sqrt(np.mean(np.sum(residual**2, axis=1))) * 1e3)
+            span.append(np.linalg.norm(np.ptp(residual, axis=0)) * 1e3)
+        print(
+            f"        quiet {key:<11} detrended RMS p50/p95 "
+            f"{np.median(rms):.2f}/{np.percentile(rms, 95):.2f} mm; "
+            f"span {np.median(span):.2f}/{np.percentile(span, 95):.2f} mm"
+        )
+        angular_rms = []
+        angular_span = []
+        for start, size, _ in windows:
+            # Within a quiet one-second window, detrending the logged rotation
+            # vectors is a stable small-angle tremor estimate.
+            residual = detrend(rotations(seg[start : start + size], side, key))
+            angular_rms.append(
+                np.sqrt(np.mean(np.sum(residual**2, axis=1))) * 1e3
+            )
+            angular_span.append(
+                np.linalg.norm(np.ptp(residual, axis=0)) * 1e3
+            )
+        print(
+            f"        quiet {key:<11} angular RMS p50/p95 "
+            f"{np.median(angular_rms):.2f}/"
+            f"{np.percentile(angular_rms, 95):.2f} mrad; "
+            f"span {np.median(angular_span):.2f}/"
+            f"{np.percentile(angular_span, 95):.2f} mrad"
+        )
+    for key in ("q_cmd", "q_meas"):
+        rms = []
+        span = []
+        for start, size, _ in windows:
+            values = np.array(
+                [row[key] for row in seg[start : start + size]], dtype=float
+            )
+            residual = detrend(values)
+            rms.append(
+                np.max(np.sqrt(np.mean(residual**2, axis=0))) * 1e3
+            )
+            span.append(np.max(np.ptp(residual, axis=0)) * 1e3)
+        print(
+            f"        quiet {key:<11} worst-joint RMS p50/p95 "
+            f"{np.median(rms):.2f}/{np.percentile(rms, 95):.2f} mrad; "
+            f"span {np.median(span):.2f}/{np.percentile(span, 95):.2f} mrad"
+        )
+
+
 def analyze(path, clamp):
     rows = load(path)
     if not rows:
@@ -96,7 +198,8 @@ def analyze(path, clamp):
             t = np.array([row["t"] for row in seg])
             tracker = positions(seg, side, "tracker")
             target = positions(seg, side, "target")
-            ee = positions(seg, side, "ee")
+            ee_cmd_key = "ee_cmd" if has_pose(seg, side, "ee_cmd") else "ee"
+            ee_cmd = positions(seg, side, ee_cmd_key)
 
             hand_v = np.linalg.norm(np.diff(tracker, axis=0), axis=1) / np.diff(t)
             hand_v = hand_v[np.isfinite(hand_v)]
@@ -106,10 +209,13 @@ def analyze(path, clamp):
             target_delta = target - target[0]
             mapper_err = np.linalg.norm(tracker_delta - target_delta, axis=1)
 
-            ik_err = np.linalg.norm(ee - target, axis=1)
+            ik_err = np.linalg.norm(ee_cmd - target, axis=1)
 
             tracker_span = tracker_delta.max(axis=0) - tracker_delta.min(axis=0)
-            ee_span = (ee - ee[0]).max(axis=0) - (ee - ee[0]).min(axis=0)
+            ee_span = (
+                (ee_cmd - ee_cmd[0]).max(axis=0)
+                - (ee_cmd - ee_cmd[0]).min(axis=0)
+            )
             with np.errstate(divide="ignore", invalid="ignore"):
                 transfer = np.where(tracker_span > 0.02, ee_span / tracker_span, np.nan)
 
@@ -129,6 +235,31 @@ def analyze(path, clamp):
                 f"        amplitude transfer x/y/z: "
                 + "/".join("-" if not np.isfinite(r) else f"{r*100:.0f}%" for r in transfer)
             )
+            if has_pose(seg, side, "raw_tracker"):
+                raw = positions(seg, side, "raw_tracker")
+                filter_delta = np.linalg.norm(raw - tracker, axis=1)
+                raw_step = np.linalg.norm(np.diff(raw, axis=0), axis=1)
+                filtered_step = np.linalg.norm(np.diff(tracker, axis=0), axis=1)
+                print(
+                    f"        EMA raw->filtered offset median "
+                    f"{np.median(filter_delta)*1e3:.1f} mm  "
+                    f"p95 {np.percentile(filter_delta, 95)*1e3:.1f} mm"
+                )
+                print(
+                    f"        per-tick wrist step p95 raw/filtered "
+                    f"{np.percentile(raw_step, 95)*1e3:.1f}/"
+                    f"{np.percentile(filtered_step, 95)*1e3:.1f} mm"
+                )
+            if has_pose(seg, side, "ee_meas"):
+                ee_meas = positions(seg, side, "ee_meas")
+                following_err = np.linalg.norm(ee_meas - ee_cmd, axis=1)
+                print(
+                    f"        EE commanded->measured error median "
+                    f"{np.median(following_err)*1e3:.1f} mm  "
+                    f"p95 {np.percentile(following_err, 95)*1e3:.1f} mm  "
+                    f"max {following_err.max()*1e3:.1f} mm"
+                )
+            report_quiet_jitter(seg, side)
     return 0
 
 

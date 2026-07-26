@@ -493,20 +493,54 @@ class MotionTrackerInput:
 
 
 class PoseEma:
-    """First-order low-pass on a pose: EMA on position, geodesic blend on SO(3).
+    """Low-pass a pose, with optional motion-adaptive rotation smoothing.
 
-    The gain is derived from elapsed time, alpha = 1 - exp(-elapsed / tau),
-    rather than fixed per sample: the optical skeleton nominally updates at
-    about 52 Hz but stalls and slower stretches happen, and a fixed gain would
-    smooth by a different amount at every rate. A gap much longer than tau
-    drives alpha to 1, so the filter re-seeds itself after a dropout instead of
-    dragging the pre-dropout pose across it.
+    Position uses a fixed EMA time constant. Rotation can use a slow time
+    constant near the current output, suppressing optical wrist jitter, and
+    continuously approach a fast time constant as tracking error grows during
+    an intentional turn. Setting no adaptive parameters preserves the original
+    fixed-time-constant behavior.
     """
 
-    def __init__(self, time_constant: float) -> None:
+    def __init__(
+        self,
+        time_constant: float,
+        *,
+        rotation_slow_time_constant: float | None = None,
+        rotation_fast_time_constant: float | None = None,
+        rotation_error_low: float | None = None,
+        rotation_error_high: float | None = None,
+    ) -> None:
         if not np.isfinite(time_constant) or time_constant <= 0:
             raise ValueError("Smoothing time constant must be positive")
         self.time_constant = float(time_constant)
+        adaptive = (
+            rotation_slow_time_constant,
+            rotation_fast_time_constant,
+            rotation_error_low,
+            rotation_error_high,
+        )
+        if any(value is not None for value in adaptive):
+            if any(value is None for value in adaptive):
+                raise ValueError(
+                    "Adaptive rotation smoothing requires all four parameters"
+                )
+            slow, fast, low, high = (float(value) for value in adaptive)
+            if not all(np.isfinite(value) and value > 0 for value in (slow, fast, low, high)):
+                raise ValueError(
+                    "Adaptive rotation smoothing parameters must be positive"
+                )
+            if slow < fast:
+                raise ValueError(
+                    "Rotation slow time constant must be at least the fast one"
+                )
+            if high <= low:
+                raise ValueError(
+                    "Rotation high error must be greater than low error"
+                )
+            self.rotation_adaptive = (slow, fast, low, high)
+        else:
+            self.rotation_adaptive = None
         self.value: Pose | None = None
 
     def reset(self) -> None:
@@ -516,13 +550,29 @@ class PoseEma:
         if self.value is None or elapsed is None or elapsed <= 0.0:
             self.value = pose
             return pose
-        alpha = 1.0 - math.exp(-float(elapsed) / self.time_constant)
+        position_alpha = 1.0 - math.exp(
+            -float(elapsed) / self.time_constant
+        )
+        rotation_delta = pin.log3(pose.rotation @ self.value.rotation.T)
+        rotation_time_constant = self.time_constant
+        if self.rotation_adaptive is not None:
+            slow, fast, low, high = self.rotation_adaptive
+            activation = np.clip(
+                (np.linalg.norm(rotation_delta) - low) / (high - low),
+                0.0,
+                1.0,
+            )
+            rotation_time_constant = slow + activation * (fast - slow)
+        rotation_alpha = 1.0 - math.exp(
+            -float(elapsed) / rotation_time_constant
+        )
         rotation = (
-            pin.exp3(alpha * pin.log3(pose.rotation @ self.value.rotation.T))
+            pin.exp3(rotation_alpha * rotation_delta)
             @ self.value.rotation
         )
         self.value = Pose(
-            self.value.position + alpha * (pose.position - self.value.position),
+            self.value.position
+            + position_alpha * (pose.position - self.value.position),
             rotation,
         )
         return self.value
@@ -561,6 +611,10 @@ class HandRootInput:
         max_rotation_jump: float,
         smoothing_time_constant: float,
         keyboard_device: str,
+        rotation_slow_time_constant: float | None = None,
+        rotation_fast_time_constant: float | None = None,
+        rotation_error_low: float | None = None,
+        rotation_error_high: float | None = None,
     ) -> None:
         import xrobotoolkit_sdk as xrt
 
@@ -582,7 +636,14 @@ class HandRootInput:
             side: SkeletonLiveness(stale_timeout, frozen_timeout) for side in SIDES
         }
         self.filters = {
-            side: PoseEma(smoothing_time_constant) for side in SIDES
+            side: PoseEma(
+                smoothing_time_constant,
+                rotation_slow_time_constant=rotation_slow_time_constant,
+                rotation_fast_time_constant=rotation_fast_time_constant,
+                rotation_error_low=rotation_error_low,
+                rotation_error_high=rotation_error_high,
+            )
+            for side in SIDES
         }
         self.last_raw_wrist: dict[str, np.ndarray | None] = {
             side: None for side in SIDES
@@ -707,6 +768,19 @@ class HandRootInput:
             timestamp=now,
         )
 
+    def debug_raw_poses(self) -> dict[str, Pose]:
+        """Return the latest accepted pre-EMA wrist poses for instrumentation.
+
+        These are snapshots of state already read by :meth:`sample`; this
+        method deliberately performs no SDK I/O so enabling a debug log cannot
+        alter control-loop timing or skeleton liveness.
+        """
+        return {
+            side: pose
+            for side, pose in self.last_raw_pose.items()
+            if pose is not None
+        }
+
     def take_requests(self) -> dict[str, bool]:
         return self.keyboard.take_requests()
 
@@ -782,6 +856,14 @@ def create_pico_input(config: InputConfig, input_type: str):
             max_rotation_jump=hand_roots.max_rotation_jump,
             smoothing_time_constant=hand_roots.smoothing_time_constant,
             keyboard_device=hand_roots.keyboard_device,
+            rotation_slow_time_constant=(
+                hand_roots.rotation_slow_time_constant
+            ),
+            rotation_fast_time_constant=(
+                hand_roots.rotation_fast_time_constant
+            ),
+            rotation_error_low=hand_roots.rotation_error_low,
+            rotation_error_high=hand_roots.rotation_error_high,
         )
     raise ValueError(f"Unsupported PICO input type: {input_type}")
 

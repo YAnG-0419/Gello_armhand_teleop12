@@ -1,6 +1,6 @@
 # Repository handover
 
-State as of 2026-07-26. Operator commands are in
+State as of the evening of 2026-07-26. Operator commands are in
 [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md); camera recovery is in
 [ORBBEC_CAMERA.md](ORBBEC_CAMERA.md).
 
@@ -27,134 +27,186 @@ can0        left G20,  0x28
 can1        right G20, 0x27
 ```
 
+Robot-side control, updated 2026-07-26:
+
+- Joint impedance gains are at the franka_ros2 example values
+  (k 600/600/600/600/250/150/50, d 30/30/30/25/25/25/15). The previous halved
+  set left a 20-40 mrad friction deadband on the distal joints, measured as
+  stick-slip; the old values are kept in a comment in `controllers.yaml` for
+  rollback.
+- `JointImpedanceController` first-order-hold interpolates `q_goal` between
+  incoming commands (ramp over the measured command spacing, clamped to
+  1-20 ms, evaluated per 1 kHz cycle). This removes the k-gain-proportional
+  torque step each 100 Hz command used to cause, and smooths the former snap
+  from the move-to-start trajectory onto the live stream. Costs one command
+  period (~10 ms) of target lag.
+- `joint_state_broadcaster` and `franka_robot_state_broadcaster` run at
+  200 Hz. They were 30 Hz, which aliased everything above ~15 Hz in host
+  logs and hid slip transients.
+- Host-side position EMA time constant is 0.20 s (raised from 0.10 after an
+  offline tau sweep; see the jitter section).
+
 ## Hardware verification status
 
 Verified:
 
 - Dual-FR3 teleoperation from PICO hand roots.
 - Simultaneous PICO-to-G20 hand teleoperation.
-- Orbbec Viewer and ROS RGB-D streaming.
-- Camera traffic did not cause packet loss in ping tests to either FR3.
-
-Operator feedback on the latest thumb retargeting:
-
-- thumb-root rotation improved;
-- thumb extension is better after removing the log-derived flex calibration
-  and fading heterogeneous orientation constraints out near extension;
-- overall behavior is improved but not considered finished.
+- Orbbec Viewer and ROS RGB-D streaming; camera traffic caused no packet loss
+  in ping tests to either FR3.
+- Stiffer gains + command interpolation + 200 Hz broadcasters, on recordings
+  20260726_180408/182543/183228: measured/commanded speed variability at
+  parity (0.61-0.65 vs 0.55, was ~1.1), proximal stick-slip roughly halved,
+  no lunges, high-frequency arm gain 0.1-0.35 with no resonance. Operator
+  reports clearly less jerky motion; the initial harshness after the gain
+  change was resolved by the interpolation.
+- `q` in the teleop keyboard flow exits cleanly.
 
 Not yet hardware-validated end to end:
 
 - recording a complete FR3/G20/RGB-D episode;
 - LeRobot export followed by four-device action replay;
 - per-side arm-gates-hand behavior and the `O`/`H` keyboard flows;
-- the latest thumb constraint gating after this handover update.
+- the latest thumb constraint gating.
 
 Robot replay and `H` reset cause physical motion. Keep PICO disengaged and
 validate the path before using either.
 
-## Next priority: FR3 end-effector jitter
+Unresolved incident: on the first run after the 2026-07-26 evening restart,
+the right FR3 made one violent motion at startup and hit a reflex stop; the
+second run was normal. The container logs were lost to `docker compose down`
+before they were read. Whenever a reflex trips, save
+`docker compose logs franka-control` before taking the stack down, and treat
+the first engagement after any restart as suspect until this is explained.
 
-Observed by the operator:
+## EE jitter: state of the investigation
 
-- the teleoperator's hand pose looks stable;
-- the corresponding physical FR3 end effector appears to tremble.
+Analyzed recordings: `20260726_1712` (fixed and adaptive EMA baselines, soft
+gains), `20260726_180408` (stiff gains + interpolation, arm only),
+`20260726_182543` and `20260726_183228` (same, with `--hands`). Analyzer:
+`teleop_sources/pico/scripts/simulation/analyze_ee_jitter_spectrum.py`
+(wrap-safe: logged world-frame rotation vectors wrap near |r| ~ pi, so windows
+are rebuilt from per-tick geodesic increments before spectral analysis;
+`analyze_follow_log.py` keeps the aggregate following metrics).
 
-No cause has been established. Do not tune smoothing or controller gains before
-localizing the jitter.
+Two mechanisms were separated:
 
-Existing instrumentation:
+1. Robot-side stick-slip and harshness - resolved by the gain/interpolation
+   changes above. j5-j7 retain residual slip events (p95 error up to
+   ~75 mrad in `--hands` sessions); revisit only if it stays visible in
+   practice.
+2. Quiet-band input noise - still open. Raw optical wrist rotation noise
+   (quiet 0.5-3 Hz RMS) varied 7-31 mrad across the four sessions; the EMA
+   only attenuates above ~3 Hz and the arm follows the remainder with gain
+   0.6-0.8, so perceived quiet tremor tracks that session-to-session optical
+   variation (hand position in headset view, pose, lighting), not code
+   changes. Keeping the hand centered in the headset's view helps.
+
+Dead ends, measured, do not repeat:
+
+- Fixed-EMA sweeps: tau 0.10 -> 0.30 removes only ~35% of the quiet wander
+  while tripling moving lag (lag scales with hand speed).
+- The error-adaptive rotation EMA in `config/pico.yaml` failed on hardware
+  because `rotation_error_low` (15 mrad) sits below the measured noise floor,
+  so noise itself switches the filter fast. Its parameters are still active
+  and harmless, but any retuning must put the low threshold above ~30 mrad.
+- Averaging skeleton landmarks (rigid palm fit) does not reduce noise: the
+  skeleton wanders as a whole, per-joint noise is coherent.
+- Do not re-soften robot gains to hide the quiet band; that reintroduces
+  stick-slip.
+
+Remaining levers, in recommended order: speed-adaptive input filtering with
+thresholds above the measured noise floor (One-Euro-style, displacement over a
+~300 ms window, hysteresis), or tracker/skeleton fusion (tracker position is
+sub-millimetre with optical fix but freezes in side-grasp poses, which is why
+hand-roots became primary).
+
+## Jitter instrumentation
 
 ```bash
+RUN_DIR=/home/descfly/franka_teleop_data/diagnostics/$(date +%Y%m%d_%H%M%S)
+mkdir -p "$RUN_DIR"
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
   --config config/pico.yaml --input hand-roots --hands \
-  --debug-log /tmp/ee_jitter.jsonl
+  --debug-log "$RUN_DIR/ee_jitter.jsonl" \
+  --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
 
-`FollowDebugLogger` records, at 100 Hz:
-
-- filtered input pose;
-- mapped target pose;
-- commanded joint state;
-- measured joint state;
-- FK end-effector pose of the commanded joint state.
-
-It does not record the raw pre-EMA PICO wrist pose or measured-robot FK.
-Add those before drawing conclusions. Then compare:
-
-1. raw wrist versus filtered wrist;
-2. filtered wrist versus mapped target;
-3. target versus commanded FK;
-4. commanded joints versus measured joints;
-5. measured-joint FK versus the observed physical motion.
+`FollowDebugLogger` records at 100 Hz: raw pre-EMA PICO wrist pose, filtered
+pose, mapped target, commanded and measured joints, and FK end-effector poses
+of both. `--hand-debug-log` adds canonical skeleton landmarks, emitted G20
+joints, and thumb fidelity residuals per solved frame; summarize with
+`scripts/simulation/analyze_hand_retarget_log.py`.
 
 Useful facts:
 
-- PICO skeletons update at about 52 Hz; the owner loop runs at 100 Hz.
-- `PoseEma` advances only on changed skeleton samples and uses a 0.10 s time
-  constant.
-- host and gateway `max_joint_speed` are both 0.5 rad/s.
+- PICO skeletons update at ~52 Hz sample rate but deliver changed wrist
+  samples on ~85% of 100 Hz ticks; the owner loop runs at 100 Hz.
+- `PoseEma` advances only on changed skeleton samples. Position tau 0.20 s;
+  rotation adapts 0.30 s -> 0.075 s between 15 and 80 mrad tracking error
+  (thresholds known-flawed, see above).
+- host and gateway `max_joint_speed` are both 0.5 rad/s; commanded joint
+  speed rides that clamp at p95 during ordinary motion.
 - arm commands pass through `teleop_interfaces/ArmCommand`; only the safety
   gateway publishes the FR3 command bus.
 - hand retargeting runs after the arm command and at most one hand is solved
   per owner tick.
 
-Keep the arm loop, camera load, and hand retargeting separable during tests.
-Measure first with `--hands` disabled, then enabled, using the same static-hand
-trial.
+Keep the arm loop, camera load, and hand retargeting separable during tests:
+measure first with `--hands` disabled, then enabled, on the same gesture.
+
+## Current top priorities
+
+1. Quiet-band input noise (see above): adaptive filtering or tracker fusion.
+2. G20 hand behavior: operator reports finger motion feels slow (suspects the
+   30 Hz command cap, gesture EMA, or the 1500 vendor-unit/s bridge slew
+   limit - unquantified), and thumb retargeting fidelity is still not good
+   (unclear how much is solver vs PICO thumb tracking; hand_fidelity
+   recordings from 20260726_182543 and 20260726_183228 exist for offline
+   analysis).
 
 ## Hand retargeting
 
 - The public packet has 21 joint names; Pinocchio solves the 16 physical
   actuators and expands the five URDF mimic joints.
-- Thumb MCP/IP flex is one coupled actuator and follows the robot FK bend curve.
-- Flex is fixed before solving the three CMC joints.
+- Thumb MCP/IP flex is one coupled actuator and follows the robot FK bend
+  curve; flex is fixed before solving the three CMC joints.
 - Thumb segment-direction and local-frame constraints are adapted from the
-  read-only `somehand` reference.
-- Direction/frame weights fade in with flexion or fingertip proximity.
-- Thumb-to-fingertip distance terms activate only near pinch.
+  read-only `somehand` reference; weights fade in with flexion or fingertip
+  proximity, and thumb-to-fingertip distance terms activate only near pinch.
 - No ordinary teleop log is used as open/closed calibration ground truth.
-- Gesture EMA alpha is 0.7. The bridge retains its 250 ms watchdog, 30 Hz cap,
-  and 1500 vendor-unit/s slew limit.
-
-The script below visualizes or sends isolated thumb configurations; hardware
-mode does not send FR3 commands:
-
-```bash
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/simulation/inspect_thumb_configuration.py
-```
+- Gesture EMA alpha is 0.7. The bridge retains its 250 ms watchdog, 30 Hz
+  cap, and 1500 vendor-unit/s slew limit.
+- `inspect_thumb_configuration.py` visualizes or sends isolated thumb
+  configurations; hardware mode does not send FR3 commands.
 
 ## Data pipeline
 
-Required recording topics cover:
-
-- left/right measured FR3 joint state;
-- left/right executed FR3 action;
-- left/right measured G20 state;
-- left/right post-mapping, post-slew G20 action;
-- RGB, depth, and both camera-info topics.
-
-The raw rosbag is the synchronized source of truth. Camera-only replay publishes
-under `/replay/camera`. Robot replay is separate and prepositions all four
-devices before sending actions.
+Required recording topics cover left/right measured FR3 joint state, executed
+FR3 action, measured G20 state, post-mapping post-slew G20 action, RGB, depth,
+and both camera-info topics. The raw rosbag is the synchronized source of
+truth. Camera-only replay publishes under `/replay/camera`; robot replay is
+separate and prepositions all four devices before sending actions.
 
 ## Safety and process invariants
 
 - Do not run `RobotLinuxDemo` beside a Python XRoboToolkit client.
-- `isActive` and array-change detection are required because the SDK can serve
-  plausible cached skeletons after tracking loss.
-- A hand-root fault on an engaged side disengages that arm.
-- Skeleton finger loss stops that hand but does not independently disengage an
-  arm.
+- `isActive` and array-change detection are required because the SDK can
+  serve plausible cached skeletons after tracking loss.
+- A hand-root fault on an engaged side disengages that arm; skeleton finger
+  loss stops that hand but does not independently disengage an arm.
 - One SDK client owns both arm and hand input.
 - Do not run `teleop_hands.py` and `teleop_dual_fr3.py` together.
 - Do not run OrbbecViewer while the ROS Orbbec service owns the camera.
 - Do not reconfigure `enp6s0` during an active FCI session.
-- The host operator must remain ROS-free; `env_guard.py` scrubs ROS variables.
+- The host operator must remain ROS-free; `env_guard.py` scrubs ROS
+  variables.
 - `config/pico.yaml` is validated by both the host parser and
   `pico_teleop_bridge/launch/pico.launch.py`.
+- Another automation agent (a Cursor sandbox) has been observed inspecting
+  this machine; if services change state unexpectedly, check whether someone
+  else is operating it.
 
 ## Tests
 
@@ -181,18 +233,25 @@ docker compose run --rm tools bash -lc \
 Expected counts at handover:
 
 ```text
-PICO host tests          83
+PICO host tests          87
 LinkerHand bridge tests  30
 teleop_data tests        15
 ```
 
+The C++ controller rebuilds with
+`docker compose run --rm tools bash /workspace/franka_upper_body_teleop/docker/build_workspace.sh --packages-select franka_fr3_arm_controllers`;
+the workspace is volume-mounted with symlink-install, so config and Python
+changes need no rebuild, only a service restart.
+
 ## Local data
 
 ```text
-/home/descfly/franka_teleop_data/hand_coexistence.jsonl
-/home/descfly/franka_teleop_data/follow_debug.jsonl
+/home/descfly/franka_teleop_data/hand_coexistence.jsonl            PICO skeletons + tracker poses, 10 Hz
+/home/descfly/franka_teleop_data/follow_debug.jsonl                degraded tracker trial (GUI contention)
+/home/descfly/franka_teleop_data/diagnostics/20260726_1712/        fixed + adaptive EMA baselines, soft gains
+/home/descfly/franka_teleop_data/diagnostics/20260726_180408/      stiff gains + interpolation, arm only
+/home/descfly/franka_teleop_data/diagnostics/20260726_182543/      same with --hands (+ hand_fidelity)
+/home/descfly/franka_teleop_data/diagnostics/20260726_183228/      same with --hands (+ hand_fidelity)
 ```
 
-These are diagnostic recordings, not calibration ground truth. The first
-contains PICO skeletons and tracker poses; the second captures an earlier
-degraded tracker-following trial.
+These are diagnostic recordings, not calibration ground truth.

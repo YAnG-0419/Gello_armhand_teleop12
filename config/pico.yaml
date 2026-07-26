@@ -48,10 +48,20 @@ input:
     # 0.906 m whole-skeleton teleport measured in hand_coexistence.jsonl.
     max_position_jump: 0.20
     max_rotation_jump: 1.5
-    # EMA time constant in seconds. Measured on hand_coexistence.jsonl the raw
-    # wrist carries 18-37 mm rms noise; 0.1 s keeps median smoothing lag under
-    # ~7 mm while cutting most of it. Raise for smoother, laggier following.
-    smoothing_time_constant: 0.10
+    # Position EMA time constant in seconds. Replaying the 20260726_180408
+    # recording: 0.10 leaves 1.7 mm quiet 0.5-3 Hz wander at ~8 mm moving lag;
+    # 0.20 trades that to 1.4 mm wander at ~17 mm lag (lag scales with hand
+    # speed). Raise for smoother, laggier following.
+    smoothing_time_constant: 0.20
+    # Rotation is smoothed strongly while the wrist is nearly still, then
+    # continuously speeds up during an intentional turn. Values were selected
+    # by replaying the 2026-07-26 right-arm jitter recording: quiet angular RMS
+    # fell about 45% versus the fixed 0.10 s filter without taking the full
+    # 0.30 s lag during large rotations.
+    rotation_slow_time_constant: 0.30
+    rotation_fast_time_constant: 0.075
+    rotation_error_low: 0.015
+    rotation_error_high: 0.080
     activation:
       type: keyboard
       device: /dev/tty

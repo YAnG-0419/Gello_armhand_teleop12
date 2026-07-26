@@ -347,6 +347,39 @@ def test_pose_ema_seeds_then_blends() -> None:
     np.testing.assert_allclose(caught_up.position, far.position, atol=1e-6)
 
 
+def test_pose_ema_adapts_rotation_without_changing_position_filter() -> None:
+    import pinocchio as pin
+
+    parameters = {
+        "rotation_slow_time_constant": 0.30,
+        "rotation_fast_time_constant": 0.075,
+        "rotation_error_low": 0.015,
+        "rotation_error_high": 0.080,
+    }
+    start = xr_input.Pose(np.zeros(3), np.eye(3))
+
+    quiet = xr_input.PoseEma(time_constant=0.10, **parameters)
+    quiet.update(start, None)
+    small_target = xr_input.Pose(
+        np.ones(3), pin.exp3(np.array([0.01, 0.0, 0.0]))
+    )
+    small = quiet.update(small_target, elapsed=0.02)
+    slow_alpha = 1.0 - np.exp(-0.02 / 0.30)
+    position_alpha = 1.0 - np.exp(-0.02 / 0.10)
+    np.testing.assert_allclose(pin.log3(small.rotation), [0.01 * slow_alpha, 0, 0])
+    np.testing.assert_allclose(small.position, np.full(3, position_alpha))
+
+    moving = xr_input.PoseEma(time_constant=0.10, **parameters)
+    moving.update(start, None)
+    large_target = xr_input.Pose(
+        np.ones(3), pin.exp3(np.array([0.10, 0.0, 0.0]))
+    )
+    large = moving.update(large_target, elapsed=0.02)
+    fast_alpha = 1.0 - np.exp(-0.02 / 0.075)
+    np.testing.assert_allclose(pin.log3(large.rotation), [0.10 * fast_alpha, 0, 0])
+    np.testing.assert_allclose(large.position, np.full(3, position_alpha))
+
+
 def test_hand_root_input_maps_wrist_to_world(monkeypatch) -> None:
     fake_xrt = _FakeHandXrt()
     hand_input_source = _create_hand_root_input(monkeypatch, fake_xrt)

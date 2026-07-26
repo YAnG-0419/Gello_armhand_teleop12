@@ -63,6 +63,12 @@ def main() -> int:
     parser.add_argument("--stale-timeout", type=float, default=0.25)
     parser.add_argument("--frozen-timeout", type=float, default=1.0)
     parser.add_argument(
+        "--debug-log",
+        default=None,
+        help="write canonical landmarks, emitted joints, and thumb fidelity "
+        "metrics to JSONL",
+    )
+    parser.add_argument(
         "--duration",
         type=float,
         default=0.0,
@@ -98,6 +104,7 @@ def main() -> int:
             sides=sides,
             stale_timeout=args.stale_timeout,
             frozen_timeout=args.frozen_timeout,
+            debug_log=args.debug_log,
         )
         print("SDK initialized. Waiting for hand tracking...")
         started = time.monotonic()

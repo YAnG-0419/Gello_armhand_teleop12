@@ -789,13 +789,75 @@ class L20Retargeter:
             self.filtered_qpos += self.filter_alpha * (solution - self.filtered_qpos)
         self._q_current = self.filtered_qpos.copy()
 
+        # Report physical, interpretable thumb fidelity at the pose that will
+        # actually be emitted (after gesture filtering). Aggregate optimizer
+        # loss mixes unlike weighted objectives and cannot say whether an
+        # observed mismatch is flexion, CMC orientation, reach, or opposition.
+        robot_points = self.robot_landmarks()
+        thumb_indices = CANONICAL_FINGERS["thumb"]
+        thumb_position_errors = np.asarray(
+            [
+                np.linalg.norm(
+                    robot_points[index] - wanted_by_landmark[index]
+                )
+                for index in thumb_indices
+            ],
+            dtype=np.float64,
+        )
+        thumb_direction_errors = []
+        for origin, target in zip(thumb_indices[:-1], thumb_indices[1:]):
+            actual = _normalize(
+                robot_points[target] - robot_points[origin],
+                f"robot thumb segment {origin}->{target}",
+            )
+            desired = _normalize(
+                wanted_by_landmark[target] - wanted_by_landmark[origin],
+                f"target thumb segment {origin}->{target}",
+            )
+            thumb_direction_errors.append(
+                np.degrees(np.arccos(np.clip(np.dot(actual, desired), -1.0, 1.0)))
+            )
+        robot_thumb_bend = chain_bend_angle(
+            robot_points[list(thumb_indices)]
+        )
+
         stats: dict[str, float | int | bool] = {
             "success": success,
             "loss": total_loss,
             "iterations": total_iterations,
             "function_evaluations": total_evaluations,
             "thumb_bend": thumb_bend,
+            "thumb_robot_bend": robot_thumb_bend,
+            "thumb_bend_error": robot_thumb_bend - thumb_bend,
+            "thumb_flex_target": float(thumb_flex),
+            "thumb_flex_emitted": float(
+                self.filtered_qpos[self._thumb_mcp_index]
+            ),
+            "thumb_position_rmse": float(
+                np.sqrt(np.mean(thumb_position_errors**2))
+            ),
+            "thumb_tip_error": float(thumb_position_errors[-1]),
+            "thumb_direction_error_deg": float(
+                np.mean(thumb_direction_errors)
+            ),
+            "thumb_orientation_activation": thumb_orientation_activation,
         }
+        for finger, tip_landmark in zip(
+            ("index", "middle", "ring", "pinky"), (8, 12, 16, 20)
+        ):
+            desired_distance = float(
+                np.linalg.norm(
+                    wanted_by_landmark[4] - wanted_by_landmark[tip_landmark]
+                )
+            )
+            robot_distance = float(
+                np.linalg.norm(
+                    robot_points[4] - robot_points[tip_landmark]
+                )
+            )
+            stats[f"thumb_{finger}_distance_error"] = (
+                robot_distance - desired_distance
+            )
         return self._expand_qpos(self.filtered_qpos), stats
 
     # ------------------------------------------------------------------ state

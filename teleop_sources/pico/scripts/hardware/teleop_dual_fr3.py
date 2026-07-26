@@ -69,6 +69,12 @@ def main() -> None:
         action="store_true",
         help="also retarget optical hand tracking to the Linker Hands",
     )
+    parser.add_argument(
+        "--hand-debug-log",
+        default=None,
+        help="write live canonical landmarks, emitted hand joints, and thumb "
+        "fidelity metrics to JSONL (requires --hands)",
+    )
     parser.add_argument("--hand-host", default="127.0.0.1")
     parser.add_argument(
         "--hand-port",
@@ -89,6 +95,8 @@ def main() -> None:
         choices=("left", "right", "both"),
     )
     args = parser.parse_args()
+    if args.hand_debug_log and not args.hands:
+        parser.error("--hand-debug-log requires --hands")
 
     hand_sender_factory = None
     if args.hands:
@@ -108,6 +116,7 @@ def main() -> None:
             port=args.hand_port,
             rate=args.hand_rate,
             sides=sides,
+            debug_log=args.hand_debug_log,
         )
 
     debug_logger = None
@@ -135,7 +144,13 @@ def main() -> None:
         debug_logger=debug_logger,
         reset_invoker=invoke_reset,
     )
-    teleop.run()
+    # The keyboard's `q` (and Ctrl-C) surface as KeyboardInterrupt; run()'s
+    # finally block has already closed hands, robot, and input by the time it
+    # reaches here.
+    try:
+        teleop.run()
+    except KeyboardInterrupt:
+        print("\nteleop stopped")
 
 
 if __name__ == "__main__":

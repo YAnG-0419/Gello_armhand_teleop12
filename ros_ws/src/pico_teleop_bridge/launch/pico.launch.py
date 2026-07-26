@@ -134,6 +134,10 @@ def launch_bridge(context):
         "max_position_jump",
         "max_rotation_jump",
         "smoothing_time_constant",
+        "rotation_slow_time_constant",
+        "rotation_fast_time_constant",
+        "rotation_error_low",
+        "rotation_error_high",
         "activation",
     }
     if not isinstance(hand_roots, dict) or set(hand_roots) != hand_root_fields:

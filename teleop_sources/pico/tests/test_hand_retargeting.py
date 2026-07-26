@@ -128,6 +128,10 @@ def test_robot_own_landmarks_are_an_exact_fixed_point(side):
         assert np.allclose(targets, expected, atol=1e-12)
         _, stats = retargeter.retarget(own)
         assert stats["loss"] < 1e-6
+        assert stats["thumb_position_rmse"] < 1e-6
+        assert stats["thumb_tip_error"] < 1e-6
+        assert stats["thumb_direction_error_deg"] < 1e-3
+        assert abs(stats["thumb_bend_error"]) < 1e-6
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
@@ -158,6 +162,9 @@ def test_thumb_retargeting_enforces_the_urdf_mimic_joint(side):
         assert values[distal] == pytest.approx(
             1.1619 * values["thumb_mcp"], abs=1e-9
         )
+        assert stats["thumb_flex_target"] == pytest.approx(0.8, abs=2e-4)
+        assert stats["thumb_flex_emitted"] == pytest.approx(0.8, abs=2e-4)
+        assert abs(stats["thumb_bend_error"]) < 2e-4
 
 
 @pytest.mark.parametrize("side", ["left", "right"])

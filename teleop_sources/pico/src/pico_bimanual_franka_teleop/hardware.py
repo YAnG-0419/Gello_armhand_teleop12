@@ -158,8 +158,9 @@ class DualFr3HardwareTeleop:
                     self.teleop_input.disable_all("reset in progress")
                     sample = None
                 targets = {}
+                current_poses = self.ik.frame_poses(self.hold_q)
                 for side in SIDES:
-                    current = self.ik.frame_pose(self.hold_q, side)
+                    current = current_poses[side]
                     if sample is None:
                         self.mappers[side].update(current, False, current)
                         continue
@@ -179,6 +180,12 @@ class DualFr3HardwareTeleop:
                 active_sides = tuple(side for side in SIDES if side in targets)
                 self.robot.send_command(self.hold_q, active_sides)
                 if self.debug_logger is not None:
+                    raw_pose_reader = getattr(
+                        self.teleop_input, "debug_raw_poses", None
+                    )
+                    raw_poses = (
+                        raw_pose_reader() if raw_pose_reader is not None else {}
+                    )
                     self.debug_logger.record(
                         time.monotonic(),
                         q,
@@ -186,10 +193,9 @@ class DualFr3HardwareTeleop:
                         {} if sample is None else sample.poses,
                         {} if sample is None else sample.activations,
                         targets,
-                        {
-                            side: self.ik.frame_pose(self.hold_q, side)
-                            for side in SIDES
-                        },
+                        self.ik.frame_poses(self.hold_q),
+                        raw_tracker_poses=raw_poses,
+                        measured_ee_poses=self.ik.frame_poses(q),
                     )
                 # Hands go after the arm command so the deadline-critical work
                 # is never queued behind a hand solve. Each hand follows only

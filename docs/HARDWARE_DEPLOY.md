@@ -21,6 +21,39 @@ conda run --no-capture-output --name franka-teleop-pico \
   --config config/pico.yaml --input hand-roots --hands
 ```
 
+For a synchronized arm-jitter and hand-retargeting diagnostic trial, add both
+logs:
+
+```bash
+RUN_DIR=/home/descfly/franka_teleop_data/diagnostics/$(date +%Y%m%d_%H%M%S)
+mkdir -p "$RUN_DIR"
+
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
+  --config config/pico.yaml --input hand-roots --hands \
+  --debug-log "$RUN_DIR/ee_jitter_with_hands.jsonl" \
+  --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
+```
+
+First repeat the same static-hand arm trial without `--hands` (and without
+`--hand-debug-log`) to isolate arm behavior. Store it as
+`"$RUN_DIR/ee_jitter_no_hands.jsonl"` so all recordings from one comparison
+remain together. Analyze the recordings offline in the same terminal:
+
+```bash
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/simulation/analyze_follow_log.py \
+  "$RUN_DIR/ee_jitter_with_hands.jsonl"
+
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/simulation/analyze_hand_retarget_log.py \
+  "$RUN_DIR/hand_fidelity.jsonl"
+```
+
+Do not use `/tmp` for hardware evidence intended for later comparison. The
+logger truncates an existing filename, so create a new timestamped `RUN_DIR`
+for every diagnostic session.
+
 Controls:
 
 - `Space`: toggle both sides

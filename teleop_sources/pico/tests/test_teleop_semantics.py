@@ -138,3 +138,19 @@ def test_configuration_evolves_continuously():
         q_next = ik.step(q, targets)
         assert np.abs(q_next - q).max() <= bound
         q = q_next
+
+
+def test_fk_pose_snapshots_do_not_change_after_a_later_fk_update():
+    ik = make_ik()
+    before = ik.frame_poses(HOME_Q)
+    saved = {
+        side: (pose.position.copy(), pose.rotation.copy())
+        for side, pose in before.items()
+    }
+    moved = HOME_Q.copy()
+    moved[0] += 0.1
+    moved[7] -= 0.1
+    ik.frame_poses(moved)
+    for side, pose in before.items():
+        np.testing.assert_array_equal(pose.position, saved[side][0])
+        np.testing.assert_array_equal(pose.rotation, saved[side][1])

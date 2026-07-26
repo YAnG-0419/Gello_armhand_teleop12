@@ -102,7 +102,21 @@ class BimanualPinkIK:
         transform = self.configuration.get_transform_frame_to_world(
             END_EFFECTOR_FRAMES[side]
         )
-        return Pose(transform.translation, transform.rotation)
+        # Copy out of Pinocchio's mutable data cache: a later FK update must
+        # not silently rewrite a pose retained by a mapper or debug logger.
+        return Pose(transform.translation.copy(), transform.rotation.copy())
+
+    def frame_poses(self, q: np.ndarray) -> dict[str, Pose]:
+        """Return both end-effector poses from one FK update."""
+        self.update(q)
+        poses = {}
+        for side, frame in END_EFFECTOR_FRAMES.items():
+            transform = self.configuration.get_transform_frame_to_world(frame)
+            poses[side] = Pose(
+                transform.translation.copy(),
+                transform.rotation.copy(),
+            )
+        return poses
 
     def step(self, q: np.ndarray, targets: Mapping[str, Pose]) -> np.ndarray:
         unknown = set(targets).difference(SIDES)

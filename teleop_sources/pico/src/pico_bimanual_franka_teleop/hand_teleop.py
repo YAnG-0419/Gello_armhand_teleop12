@@ -60,6 +60,7 @@ class HandPipeline:
         stale_timeout: float = 0.25,
         frozen_timeout: float = 1.0,
         max_iterations: int = 20,
+        debug_log: str | Path | None = None,
     ) -> None:
         if xrt is None:
             raise ValueError("HandPipeline requires an initialized SDK module")
@@ -98,6 +99,11 @@ class HandPipeline:
         # Round-robin start point, so one side cannot starve the other when both
         # come due on the same tick.
         self._preferred = 0
+        self.debug_logger = None
+        if debug_log is not None:
+            from .debug_log import HandRetargetDebugLogger
+
+            self.debug_logger = HandRetargetDebugLogger(debug_log)
 
     def _advance_deadline(self, side: str, moment: float) -> None:
         """Advance a periodic deadline without drifting down to the loop grid."""
@@ -219,8 +225,12 @@ class HandPipeline:
             status = self.status.sides[side]
             try:
                 started = time.monotonic()
-                qpos, _ = self.retargeters[side].retarget(sample.landmarks)
+                qpos, stats = self.retargeters[side].retarget(sample.landmarks)
                 elapsed = time.monotonic() - started
+                if self.debug_logger is not None:
+                    self.debug_logger.record(
+                        moment, side, sample.landmarks, qpos, stats
+                    )
                 self._socket.sendto(
                     build_hand_packet(
                         f"pico-hand-{side}",
@@ -248,6 +258,10 @@ class HandPipeline:
             return
 
     def close(self) -> None:
-        self._socket.close()
-        for retargeter in self.retargeters.values():
-            retargeter.close()
+        try:
+            if self.debug_logger is not None:
+                self.debug_logger.close()
+        finally:
+            self._socket.close()
+            for retargeter in self.retargeters.values():
+                retargeter.close()
