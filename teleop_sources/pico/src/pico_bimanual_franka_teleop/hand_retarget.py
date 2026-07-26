@@ -63,6 +63,17 @@ THUMB_FRAME_WEIGHTS = (2.0, 1.8)
 THUMB_DISTANCE_WEIGHTS = (2000.0, 1500.0, 1000.0, 800.0)
 THUMB_DISTANCE_THRESHOLD = 0.04
 
+# Fixed power-grasp thumb-root pose (cmc yaw, roll, pitch), used when the
+# retargeter is constructed with thumb_cmc_fixed. Mimicking the human thumb
+# root on this heterogeneous mechanism was measured to be a conflicted
+# objective (matching human segment directions and reaching contact disagree
+# by ~16 mm at pinch on the 2026-07-26 recordings), and the operator's tasks
+# only need the thumb to oppose and curl. Chosen offline: with the four
+# fingers half-curled around a tool, sweeping flex carries the thumb tip from
+# 55 mm clear of the index/middle grasp line to within 7 mm of it. Tune on
+# hardware with inspect_thumb_configuration.py and update in place.
+THUMB_CMC_POWER_GRASP = (1.00, 0.00, 0.10)
+
 # Canonical landmark indices used by the palm frame.
 _INDEX_BASE = 5
 _MIDDLE_BASE = 9
@@ -150,6 +161,7 @@ class L20Retargeter:
         filter_alpha: float = 0.7,
         max_iterations: int = 20,
         normalize_finger_length: bool = True,
+        thumb_cmc_fixed: tuple[float, float, float] | None = None,
     ) -> None:
         if side not in {"left", "right"}:
             raise ValueError(f"side must be 'left' or 'right', got {side!r}")
@@ -225,6 +237,28 @@ class L20Retargeter:
                 "Expected the distal thumb joint to mimic thumb_mcp with zero offset"
             )
         self._thumb_mcp_index = self._active_joint_names.index("thumb_mcp")
+
+        self.thumb_cmc_fixed: np.ndarray | None = None
+        if thumb_cmc_fixed is not None:
+            values = np.asarray(thumb_cmc_fixed, dtype=np.float64)
+            if values.shape != (3,) or not np.all(np.isfinite(values)):
+                raise ValueError("thumb_cmc_fixed must be three finite values")
+            self._thumb_cmc_indices = np.asarray(
+                [
+                    self._active_joint_names.index(name)
+                    for name in (
+                        "thumb_cmc_yaw",
+                        "thumb_cmc_roll",
+                        "thumb_cmc_pitch",
+                    )
+                ],
+                dtype=int,
+            )
+            self.thumb_cmc_fixed = np.clip(
+                values,
+                self._active_lower[self._thumb_cmc_indices],
+                self._active_upper[self._thumb_cmc_indices],
+            )
 
         self._finger_joints: dict[str, np.ndarray] = {}
         for finger in CANONICAL_FINGERS:
@@ -516,7 +550,14 @@ class L20Retargeter:
 
         # Solve the ordinary fingers first. The thumb then sees their final tip
         # locations for the activated thumb-to-fingertip distance constraints.
-        solve_order = ("index", "middle", "ring", "pinky", "thumb")
+        # With a fixed CMC pose the thumb needs no solve at all: the root is
+        # constant and the curl is the bend-curve flex set above.
+        solve_order = (
+            ("index", "middle", "ring", "pinky")
+            if self.thumb_cmc_fixed is not None
+            else ("index", "middle", "ring", "pinky", "thumb")
+        )
+        thumb_orientation_activation = 0.0
         for finger in solve_order:
             all_joint_indices = self._finger_joints[finger]
             joint_indices = (
@@ -779,6 +820,9 @@ class L20Retargeter:
             total_iterations += int(result.nit)
             total_evaluations += int(result.nfev)
             success = success and bool(result.success)
+
+        if self.thumb_cmc_fixed is not None:
+            solution[self._thumb_cmc_indices] = self.thumb_cmc_fixed
 
         # The regularizer anchors on the raw solution while the emitted command
         # is filtered, so smoothing never fights the optimizer's own history.

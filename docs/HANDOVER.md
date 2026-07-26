@@ -159,14 +159,43 @@ measure first with `--hands` disabled, then enabled, on the same gesture.
 ## Current top priorities
 
 1. Quiet-band input noise (see above): adaptive filtering or tracker fusion.
-2. G20 hand behavior: operator reports finger motion feels slow (suspects the
-   30 Hz command cap, gesture EMA, or the 1500 vendor-unit/s bridge slew
-   limit - unquantified), and thumb retargeting fidelity is still not good
-   (unclear how much is solver vs PICO thumb tracking; hand_fidelity
-   recordings from 20260726_182543 and 20260726_183228 exist for offline
-   analysis).
+2. G20 hand behavior: hardware-validate the new fixed-root thumb mode (see
+   Hand retargeting) and tune `THUMB_CMC_POWER_GRASP` for the operator's
+   grips. Finger motion feeling slow was measured to be downstream of the
+   software (input-to-emitted-qpos lag ~0 ms at 30 Hz solves): candidates are
+   the G20 motors themselves, the 1500 unit/s bridge slew (~85 ms per
+   half-swing; launch arg `max_command_rate`), and the 30 Hz send cap
+   (`--hand-rate`, safe up to ~50). PICO thumb-tracking noise was ruled out
+   as the fidelity limit (thumb landmarks jitter ~3 mm, same as the other
+   fingers).
 
 ## Hand retargeting
+
+Thumb mode changed 2026-07-26 evening, NOT yet hardware-validated: the live
+pipeline now runs the thumb with a FIXED power-grasp root. The three CMC
+actuators hold `THUMB_CMC_POWER_GRASP` (yaw/roll/pitch 1.00/0.00/0.10 in
+`hand_retarget.py`) and only the coupled MCP/IP flex follows the operator's
+thumb curl via the bend curve. Rationale, all measured offline on the
+20260726_183228 recording:
+
+- mimicking the human thumb root is a conflicted objective on this
+  heterogeneous mechanism: a reachability oracle showed thumb-index tips can
+  touch exactly, yet the full objective's own equilibrium left 16 mm of pinch
+  gap, and neither freeing the flex actuator, nor 20x more iterations, nor
+  fading the direction terms improved it (the last made it worse);
+- the operator's tasks need opposition plus curl, not human-like root motion,
+  and reports the root rotation was the hard-to-control part;
+- the fixed pose was chosen so that with the fingers half-curled around a
+  tool, sweeping flex carries the thumb tip from 55 mm clear of the
+  index/middle grasp line to within 7 mm of it;
+- replay: root exactly constant, other fingers bit-identical, solve time
+  halved, flex-to-human-bend correlation 0.898. The recording only exercised
+  flex 0.00-0.37 rad of the 1.05 range; if the physical thumb closes too
+  little, the bend-to-flex curve gain is the knob to revisit.
+
+Tune the pose on hardware with `inspect_thumb_configuration.py`, then update
+`THUMB_CMC_POWER_GRASP` in place. Constructing `L20Retargeter` without
+`thumb_cmc_fixed` restores the previous solver behavior (tests cover it).
 
 - The public packet has 21 joint names; Pinocchio solves the 16 physical
   actuators and expands the five URDF mimic joints.

@@ -70,7 +70,7 @@ class HandPipeline:
             raise ValueError(f"Invalid hand sides: {sides}")
 
         # Import here so arm-only runs never pay for pinocchio.
-        from .hand_retarget import L20Retargeter
+        from .hand_retarget import L20Retargeter, THUMB_CMC_POWER_GRASP
 
         assets = Path(assets_dir)
         self.retargeters = {}
@@ -82,6 +82,7 @@ class HandPipeline:
                 urdf,
                 side,
                 max_iterations=max_iterations,
+                thumb_cmc_fixed=THUMB_CMC_POWER_GRASP,
             )
 
         self.reader = HandSkeletonReader(
