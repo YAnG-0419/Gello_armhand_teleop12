@@ -67,6 +67,7 @@ class LinkerHandBridge(Node):
         self.declare_parameter("max_command_rate", 200.0)
         self.declare_parameter("log_period", 2.0)
         self.declare_parameter("initial_speed", 30)
+        self.declare_parameter("initial_torque", 0)
         self.declare_parameter("abduction_invert", False)
 
         host = str(self.get_parameter("host").value)
@@ -80,9 +81,12 @@ class LinkerHandBridge(Node):
         max_command_rate = float(self.get_parameter("max_command_rate").value)
         self.log_period = float(self.get_parameter("log_period").value)
         self.initial_speed = int(self.get_parameter("initial_speed").value)
+        self.initial_torque = int(self.get_parameter("initial_torque").value)
         abduction_invert = bool(self.get_parameter("abduction_invert").value)
         if not 0 <= self.initial_speed <= 255:
             raise ValueError("initial_speed must be in [0, 255]; 0 disables")
+        if not 0 <= self.initial_torque <= 255:
+            raise ValueError("initial_torque must be in [0, 255]; 0 disables")
 
         if sides_value == "both":
             self.sides = ("left", "right")
@@ -140,7 +144,7 @@ class LinkerHandBridge(Node):
         # possibly 255. Sending it from here means it cannot be forgotten.
         self.setting_publisher = self.create_publisher(String, "/cb_hand_setting_cmd", 10)
         self.speed_timer = None
-        if self.initial_speed > 0:
+        if self.initial_speed > 0 or self.initial_torque > 0:
             self.speed_timer = self.create_timer(2.0, self._send_initial_speed)
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -182,19 +186,33 @@ class LinkerHandBridge(Node):
             self.speed_timer.cancel()
             self.speed_timer = None
         for side in self.sides:
-            message = String()
-            message.data = json.dumps(
-                {
-                    "setting_cmd": "set_speed",
-                    "params": {
-                        "hand_type": side,
-                        "speed": [self.initial_speed] * 5,
-                    },
-                }
-            )
-            self.setting_publisher.publish(message)
+            if self.initial_speed > 0:
+                message = String()
+                message.data = json.dumps(
+                    {
+                        "setting_cmd": "set_speed",
+                        "params": {
+                            "hand_type": side,
+                            "speed": [self.initial_speed] * 5,
+                        },
+                    }
+                )
+                self.setting_publisher.publish(message)
+            if self.initial_torque > 0:
+                message = String()
+                message.data = json.dumps(
+                    {
+                        "setting_cmd": "set_max_torque_limits",
+                        "params": {
+                            "hand_type": side,
+                            "torque": [self.initial_torque] * 5,
+                        },
+                    }
+                )
+                self.setting_publisher.publish(message)
         self.get_logger().info(
-            f"Requested joint speed {self.initial_speed}/255 on {list(self.sides)}"
+            f"Requested joint speed {self.initial_speed}/255 and max torque "
+            f"{self.initial_torque}/255 (0 = not sent) on {list(self.sides)}"
         )
 
     def _feedback_callback(self, side: str, message: JointState) -> None:

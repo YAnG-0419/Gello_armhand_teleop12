@@ -230,6 +230,13 @@ inspect_thumb_configuration.py viewer).
 - No ordinary teleop log is used as open/closed calibration ground truth.
 - Gesture EMA alpha is 0.7. The bridge retains its 250 ms watchdog, 30 Hz
   cap, and 1500 vendor-unit/s slew limit.
+- Press force: during the 20260726_204055 button-press session the emitted
+  thumb curl held its position limit (saturated 8.3% of frames), so any
+  missing force is the firmware's torque ceiling, not the command. The
+  bridge now requests `set_max_torque_limits` at startup alongside speed
+  (launch arg `initial_torque`, default 250/255, 0 disables; the vendor
+  driver never initializes G20 torque on its own). NOT yet hardware-tested;
+  lower it for fragile objects.
 - `inspect_thumb_configuration.py` visualizes or sends isolated thumb
   configurations; hardware mode does not send FR3 commands.
 

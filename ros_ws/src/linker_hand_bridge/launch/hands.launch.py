@@ -59,6 +59,16 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "initial_torque",
+            default_value="250",
+            description=(
+                "Per-finger maximum torque 0..255 requested at startup; 0 "
+                "disables. The vendor driver never initializes G20 torque, so "
+                "without this the press force stays at whatever the firmware "
+                "booted with. Lower it when handling fragile objects."
+            ),
+        ),
+        DeclareLaunchArgument(
             "abduction_invert",
             default_value="false",
             description=(
@@ -102,6 +112,7 @@ def generate_launch_description() -> LaunchDescription:
                 "enabled": LaunchConfiguration("enabled"),
                 "max_command_rate": LaunchConfiguration("max_command_rate"),
                 "initial_speed": LaunchConfiguration("initial_speed"),
+                "initial_torque": LaunchConfiguration("initial_torque"),
                 "abduction_invert": LaunchConfiguration("abduction_invert"),
             }
         ],
