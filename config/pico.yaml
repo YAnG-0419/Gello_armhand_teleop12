@@ -53,13 +53,13 @@ input:
     # 0.20 trades that to 1.4 mm wander at ~17 mm lag (lag scales with hand
     # speed). Raise for smoother, laggier following.
     smoothing_time_constant: 0.20
-    # Rotation is smoothed strongly while the wrist is nearly still, then
-    # continuously speeds up during an intentional turn. Values were selected
-    # by replaying the 2026-07-26 right-arm jitter recording: quiet angular RMS
-    # fell about 45% versus the fixed 0.10 s filter without taking the full
-    # 0.30 s lag during large rotations.
-    rotation_slow_time_constant: 0.30
-    rotation_fast_time_constant: 0.075
+    # Rotation uses a fixed 0.10 s time constant: slow == fast disables the
+    # error-adaptive schedule (the thresholds below are then inert, but both
+    # config validators require the keys). The adaptive attempt failed on
+    # hardware because its 0.015 rad low threshold sits under the measured
+    # 0.02-0.03 rad quiet noise floor, so noise kept switching it fast.
+    rotation_slow_time_constant: 0.10
+    rotation_fast_time_constant: 0.10
     rotation_error_low: 0.015
     rotation_error_high: 0.080
     activation:
