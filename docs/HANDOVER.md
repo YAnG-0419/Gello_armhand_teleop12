@@ -23,9 +23,12 @@ log (commits `c545a9b`..`7960098`, each self-explanatory).
   freeze/jump guards then disengage that arm). Current practice: the
   operator keeps both trackers in view at all times. Hand-root input
   (`--input hand-roots`) survives occlusion and side-grasps but carries
-  7-31 mrad of session-dependent optical wrist noise in the 0.5-3 Hz band
+  7-34 mrad of session-dependent optical wrist noise in the 0.5-3 Hz band
   that reaches the end effector as visible tremor; it is the fallback, not
-  the default.
+  the default. Direct A/B on the same control stack (2026-07-26 tracker
+  session vs 2026-07-27 hand-root session): quiet EE tremor 3.4 mrad /
+  0.83 mm vs 16.8 mrad / 2.57 mm - the residual arm jitter is entirely an
+  input-side property.
 - Arm-side control state (do not change without reading the git history):
   franka_ros2 example impedance gains, first-order-hold command
   interpolation in the 1 kHz controller, 200 Hz state broadcasters, host
