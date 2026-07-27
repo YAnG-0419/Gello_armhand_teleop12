@@ -26,10 +26,13 @@ class DualFr3HardwareTeleop:
         robot_state_wait_timeout: float,
         input_config: InputConfig,
         input_type: str,
+        required_input_sides: tuple[str, ...] = SIDES,
         hand_sender_factory=None,
         debug_logger=None,
         reset_invoker=None,
     ) -> None:
+        if not required_input_sides or set(required_input_sides).difference(SIDES):
+            raise ValueError(f"Invalid required input sides: {required_input_sides}")
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
         self.robot = UdpRobotBackend(
@@ -40,7 +43,9 @@ class DualFr3HardwareTeleop:
             state_timeout=state_timeout,
         )
         try:
-            self.teleop_input = create_pico_input(input_config, input_type)
+            self.teleop_input = create_pico_input(
+                input_config, input_type, sides=tuple(required_input_sides)
+            )
         except BaseException:
             self.robot.close()
             raise
@@ -60,7 +65,12 @@ class DualFr3HardwareTeleop:
         # Constructing it must never prevent the arms from running.
         self.hands = None
         if hand_sender_factory is not None:
-            self.hands = hand_sender_factory(self.teleop_input.xrt)
+            try:
+                self.hands = hand_sender_factory(self.teleop_input.xrt)
+            except BaseException:
+                self.robot.close()
+                self.teleop_input.close()
+                raise
         self.debug_logger = debug_logger
         # Reset to the captured initial pose, requested from the keyboard. The
         # operator process is deliberately ROS-free, so the reset is delegated
@@ -114,6 +124,11 @@ class DualFr3HardwareTeleop:
         self.hold_q = None
 
     def run(self) -> None:
+        next_status_report = 0.0
+        previous_hand_sent = (
+            {} if self.hands is None else {side: 0 for side in self.hands.sides}
+        )
+        status_summary = getattr(self.teleop_input, "status_summary", None)
         try:
             self.robot.wait_for_state(timeout=self.robot_state_wait_timeout)
             while True:
@@ -149,7 +164,7 @@ class DualFr3HardwareTeleop:
                         self.hands.request_open()
                         print("hands: opening (sides not currently following)")
                     else:
-                        print("hands: not running, start with --hands")
+                        print("hands: not running, start with --hand-source")
                 if requests.get("reset"):
                     self._start_reset()
                 if self.reset_thread is not None:
@@ -208,6 +223,28 @@ class DualFr3HardwareTeleop:
                             else sample.activations
                         )
                     )
+                now = time.monotonic()
+                if now >= next_status_report:
+                    input_summary = (
+                        status_summary() if status_summary is not None else ""
+                    )
+                    parts = [f"trackers: {input_summary}"] if input_summary else []
+                    if self.hands is not None:
+                        hand_parts = []
+                        for side in self.hands.sides:
+                            status = self.hands.status.sides[side]
+                            sent = status.sent - previous_hand_sent[side]
+                            previous_hand_sent[side] = status.sent
+                            state = (
+                                f"sending {sent:.0f}Hz"
+                                if status.sending
+                                else f"stopped ({status.fault})"
+                            )
+                            hand_parts.append(f"{side}={state}")
+                        parts.append("hands: " + " | ".join(hand_parts))
+                    if parts:
+                        print("STATE | " + " | ".join(parts), flush=True)
+                    next_status_report = now + 1.0
                 remaining = self.dt - (time.monotonic() - started_at)
                 if remaining > 0.0:
                     time.sleep(remaining)

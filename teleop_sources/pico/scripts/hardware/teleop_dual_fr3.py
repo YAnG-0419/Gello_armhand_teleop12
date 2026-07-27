@@ -43,18 +43,18 @@ def invoke_reset() -> tuple[bool, str]:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Dual FR3 teleoperation from PICO. Add --hands to also drive the "
-            "Linker Hands from optical hand tracking, retargeted inline in this "
-            "process and sent to linker_hand_bridge."
+            "Unified FR3 and LinkerHand teleoperation. PICO supplies arm poses; "
+            "PICO optical tracking or MANUS may supply hand poses in this same "
+            "operator process."
         )
     )
     parser.add_argument("--config", required=True)
     parser.add_argument(
-        "--input",
+        "--arm-source",
         required=True,
         choices=("controllers", "motion-trackers", "hand-roots"),
     )
-    # Hand options are CLI arguments rather than YAML, matching how --input is
+    # Hand options are CLI arguments rather than YAML, matching how --arm-source is
     # handled: what is being driven is an explicit choice per run, and this keeps
     # existing configuration files valid.
     parser.add_argument(
@@ -65,15 +65,16 @@ def main() -> None:
         "following quality",
     )
     parser.add_argument(
-        "--hands",
-        action="store_true",
-        help="also retarget optical hand tracking to the Linker Hands",
+        "--hand-source",
+        default="none",
+        choices=("none", "pico", "right-only-manus"),
+        help="hand source integrated into this operator process (default: none)",
     )
     parser.add_argument(
         "--hand-debug-log",
         default=None,
         help="write live canonical landmarks, emitted hand joints, and thumb "
-        "fidelity metrics to JSONL (requires --hands)",
+        "fidelity metrics to JSONL (requires a hand source)",
     )
     parser.add_argument("--hand-host", default="127.0.0.1")
     parser.add_argument(
@@ -91,24 +92,28 @@ def main() -> None:
     )
     parser.add_argument(
         "--hand-sides",
-        default="both",
+        default=None,
         choices=("left", "right", "both"),
+        help="dynamic hand sides for --hand-source pico (default: both)",
     )
     args = parser.parse_args()
-    if args.hand_debug_log and not args.hands:
-        parser.error("--hand-debug-log requires --hands")
+    if args.hand_debug_log and args.hand_source == "none":
+        parser.error("--hand-debug-log requires a hand source")
+
+    required_input_sides = ("left", "right")
 
     hand_sender_factory = None
-    if args.hands:
-        if args.input == "controllers":
+    if args.hand_source == "pico":
+        if args.arm_source == "controllers":
             parser.error(
-                "--hands cannot be combined with --input controllers: holding "
-                "a controller occupies the operator's hand, so the optical "
-                "skeleton cannot describe a grasp"
+                "--hand-source pico cannot be combined with --arm-source "
+                "controllers: holding a controller occupies the operator's "
+                "hand, so the optical skeleton cannot describe a grasp"
             )
         from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
 
-        sides = ("left", "right") if args.hand_sides == "both" else (args.hand_sides,)
+        hand_sides = args.hand_sides or "both"
+        sides = ("left", "right") if hand_sides == "both" else (hand_sides,)
         hand_sender_factory = partial(
             HandPipeline,
             assets_dir=REPO_ROOT / "assets" / "linkerhand_l20",
@@ -116,6 +121,26 @@ def main() -> None:
             port=args.hand_port,
             rate=args.hand_rate,
             sides=sides,
+            debug_log=args.hand_debug_log,
+        )
+    elif args.hand_source == "right-only-manus":
+        if args.arm_source != "motion-trackers":
+            parser.error(
+                "right-only-manus requires --arm-source motion-trackers"
+            )
+        if args.hand_sides is not None:
+            parser.error(
+                "--hand-sides only applies to --hand-source pico; "
+                "right-only-manus always emits a left default plus a "
+                "dynamic right"
+            )
+        required_input_sides = ("right",)
+        from manus_teleop import RightOnlyManusHandPipeline
+
+        hand_sender_factory = lambda _xrt: RightOnlyManusHandPipeline(
+            host=args.hand_host,
+            port=args.hand_port,
+            rate=args.hand_rate,
             debug_log=args.hand_debug_log,
         )
 
@@ -139,7 +164,8 @@ def main() -> None:
         max_joint_speed=config.host.max_joint_speed,
         robot_state_wait_timeout=config.host.robot_state_wait_timeout,
         input_config=config.input,
-        input_type=args.input,
+        input_type=args.arm_source,
+        required_input_sides=required_input_sides,
         hand_sender_factory=hand_sender_factory,
         debug_logger=debug_logger,
         reset_invoker=invoke_reset,

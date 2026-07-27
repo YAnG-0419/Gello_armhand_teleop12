@@ -12,17 +12,19 @@ log (commits `c545a9b`..`7960098`, each self-explanatory).
 
 ## Working setup
 
-- Arms: PICO motion trackers (`--input motion-trackers`). Hands: PICO
-  optical skeletons retargeted to both LinkerHand G20s (`--hands`). This
-  combination is hardware-validated end to end, including pressing an
-  electric screwdriver button (with a workaround, see the force section).
+- Current experiment: right arm from its PICO motion tracker and right
+  LinkerHand from MANUS, owned by one operator process
+  (`--hand-source right-only-manus`); the left LinkerHand holds its default
+  pose. The earlier PICO optical skeleton path (`--hand-source pico`) remains
+  hardware-validated end to end on both G20s, including pressing an electric
+  screwdriver button (with a workaround, see the force section).
 - Tracker vs hand-root tradeoff, measured: the tracker's position is
   sub-millimetre with optical fix and carries no in-band wander, so the arms
   are smooth; but its position comes from the headset cameras seeing the
   tracker, and a wrist occlusion or leaving the view freezes it (the
   freeze/jump guards then disengage that arm). Current practice: the
   operator keeps both trackers in view at all times. Hand-root input
-  (`--input hand-roots`) survives occlusion and side-grasps but carries
+  (`--arm-source hand-roots`) survives occlusion and side-grasps but carries
   7-34 mrad of session-dependent optical wrist noise in the 0.5-3 Hz band
   that reaches the end effector as visible tremor; it is the fallback, not
   the default. Direct A/B on the same control stack (2026-07-26 tracker
@@ -57,13 +59,15 @@ RUN_DIR=/home/descfly/franka_teleop_data/diagnostics/$(date +%Y%m%d_%H%M%S)
 mkdir -p "$RUN_DIR"
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input motion-trackers --hands \
+  --config config/pico.yaml --arm-source motion-trackers --hand-source pico \
   --debug-log "$RUN_DIR/ee_jitter.jsonl" \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
 
 `docker compose up -d` starts everything; `docker compose up -d hand-control`
-brings up only the hands (enough for hand experiments and the thumb tuner).
+brings up only the hand stack, output enabled. Its operational defaults live
+in `docker/compose.yaml`; launching `hands.launch.py` directly keeps output
+disabled.
 
 ## Hand system: current implementation
 
@@ -87,6 +91,40 @@ brings up only the hands (enough for hand experiments and the thumb tuner).
 - Software latency skeleton-to-emitted-qpos is ~0 ms at 30 Hz solves;
   perceived finger slowness is downstream (motors, slew ~85 ms per
   half-swing, 30 Hz send cap).
+
+### MANUS right-hand MVP
+
+`teleop_sources/manus` is a standalone C++ MANUS CoreSDK adapter: it reads
+the glove's calibrated ergonomics angles and emits the existing 21-name L20
+UDP contract, dynamic right hand plus all-zero left default. It is print-only
+without `--send` and stops output when MANUS data is stale; build and dry-run
+commands are in its README. Use the bundled Metaglove Pro calibration; this
+glove family rejects the sibling reference's non-Pro file. Hardware-validated
+2026-07-27: `MetagloveProHaptics` at ~93.5 Hz with no discarded frames, and a
+10 s right-G20 run at 30 Hz with clean packets and CAN.
+
+`teleop_sources/manus/scripts/teleop_full_thumb.py` is an experimental
+raw-skeleton path through the canonical 21-landmark solver
+(`thumb_opposition_fixed=None`); its `--send` mode is a hand-only diagnostic.
+A cautious hardware test drove every thumb coordinate dynamically with clean
+packets/CAN, but deep-opposition tip error reached ~33 mm; keep it
+experimental until operator feel is compared directly.
+
+Abduction polarity: the bridge's derived per-side baseline is correct for the
+unified MANUS mode and `abduction_invert` stays false. Offline comparison of
+the 2026-07-27 session logs (PICO 12:27 vs MANUS 13:55) shows identical
+skeleton chirality, so both sources drive the same retargeter convention. An
+earlier `abduction_invert:=true` in Compose was a wrong-layer workaround
+(operator-confirmed inverted finger gaps on 2026-07-27 evening); if a future
+ergonomics-based sender (e.g. the C++ adapter's `Spread()`) shows closed gaps
+on spread, fix that sender's sign, not the bridge.
+
+The hardware entrypoint is `teleop_dual_fr3.py --hand-source
+right-only-manus`: one process owns both SDK clients and ticks MANUS from the
+arm loop, so `R`, `Space`, and `X` gate the right arm and hand together while
+the left hand holds its default pose. Only the right tracker is required;
+per-side status prints once per second. `H` stays a global workcell HOME and
+resets both arms regardless of source mode.
 
 ## Research agenda
 
@@ -188,7 +226,7 @@ scripted hand action.
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output --name franka-teleop-pico \
-  pytest -q teleop_sources/pico/tests            # 87
+  pytest -q teleop_sources/pico/tests            # 90
 cd ros_ws/src/linker_hand_bridge
 PYTHONPATH=. python3 -m pytest -q test/test_core.py   # 30
 ```

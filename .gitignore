@@ -8,5 +8,6 @@ build/
 install/
 log/
 Log/
+/log.txt
 docker/.env
 data/

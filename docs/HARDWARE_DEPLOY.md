@@ -1,7 +1,35 @@
 # Dual-FR3 full-pipeline runbook
 
-Commands for two FR3 arms, two LinkerHand G20 hands, PICO teleoperation,
+Commands for FR3 arms, LinkerHand G20 hands, PICO/MANUS teleoperation,
 Orbbec RGB-D, recording, export, and replay.
+
+## Current MANUS right hand + right arm
+
+The operator is one process. PICO supplies the right-arm motion tracker and
+MANUS supplies the right-hand skeleton. The same `R`, `Space`, and `X`
+activation state gates both command streams; do not run
+`teleop_full_thumb.py` separately.
+
+### Terminal 1 — ROS services
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose up hand-control franka-control teleop-control pico-bridge
+```
+
+### Terminal 2 — unified operator
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
+  --config config/pico.yaml --arm-source motion-trackers \
+  --hand-source right-only-manus
+```
+
+Only the right tracker is required; the left LinkerHand holds its default
+pose. The terminal prints per-side tracker and hand-send status once per
+second. `H` still homes both arms.
 
 ## Full teleop and recording
 
@@ -18,11 +46,11 @@ docker compose up
 cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input motion-trackers --hands
+  --config config/pico.yaml --arm-source motion-trackers --hand-source pico
 ```
 
-`--input motion-trackers` is the default choice: measured quiet EE tremor is
-~5x lower than with `--input hand-roots` (3.4 vs 16.8 mrad on the 2026-07-26
+`--arm-source motion-trackers` is the recommended choice: measured quiet EE tremor is
+~5x lower than with `--arm-source hand-roots` (3.4 vs 16.8 mrad on the 2026-07-26
 vs 2026-07-27 sessions), because the tracker has no optical-skeleton wrist
 noise. Keep both trackers in the headset's view; occlusion freezes them and
 disengages that arm. Use `hand-roots` only when the task forces the trackers
@@ -37,12 +65,12 @@ mkdir -p "$RUN_DIR"
 
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input motion-trackers --hands \
+  --config config/pico.yaml --arm-source motion-trackers --hand-source pico \
   --debug-log "$RUN_DIR/ee_jitter_with_hands.jsonl" \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
 
-First repeat the same static-hand arm trial without `--hands` (and without
+First repeat the same static-hand arm trial without `--hand-source` (and without
 `--hand-debug-log`) to isolate arm behavior. Store it as
 `"$RUN_DIR/ee_jitter_no_hands.jsonl"` so all recordings from one comparison
 remain together. Analyze the recordings offline in the same terminal:
@@ -160,13 +188,13 @@ docker compose run --rm tools \
 
 The reset is joint-space interpolation, not collision planning.
 
-### Motion trackers
+### Motion trackers with PICO optical hands
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input motion-trackers --hands
+  --config config/pico.yaml --arm-source motion-trackers --hand-source pico
 ```
 
 List tracker serial numbers:
@@ -182,7 +210,7 @@ conda run --no-capture-output --name franka-teleop-pico \
 cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input controllers
+  --config config/pico.yaml --arm-source controllers
 ```
 
 ### Hands only

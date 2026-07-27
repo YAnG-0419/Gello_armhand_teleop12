@@ -10,19 +10,69 @@ Bus-to-side mapping is confirmed from each hand's own reported comm ID:
 
 `linker_hand_sdk` with `hand_joint:=G20` is motionless at startup, unlike
 `linker_hand_advanced_g20`, which snaps to a default pose at full speed and
-torque during construction. The bridge sets a conservative joint speed shortly
-after startup, because the vendor driver never initializes speed for G20.
+torque during construction. The bridge sets the requested operational speed
+shortly after startup, because the vendor driver never initializes speed for
+G20.
 
-Output is enabled by default here: this launch file exists to run the demo. Pass
-`enabled:=false` to map and inspect without commanding the hands.
+Output is disabled by default. The Compose `hand-control` service explicitly
+enables it as an operator-facing hardware action.
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 SIDES = (("left", "can0"), ("right", "can1"))
+
+
+def _nodes(context):
+    # Resolved eagerly so a typo like `sides:=letf` fails the launch instead
+    # of silently starting zero hand drivers.
+    sides = LaunchConfiguration("sides").perform(context)
+    if sides not in ("left", "right", "both"):
+        raise ValueError(f"sides must be left, right, or both, got {sides!r}")
+    drivers = [
+        Node(
+            package="linker_hand_ros2_sdk",
+            executable="linker_hand_sdk",
+            # Both driver instances hardcode the same node name, so rename them
+            # or the second one collides with the first.
+            name=f"linker_hand_{side}",
+            output="screen",
+            parameters=[
+                {
+                    "hand_type": side,
+                    "hand_joint": "G20",
+                    "can": channel,
+                    "is_touch": LaunchConfiguration("is_touch"),
+                }
+            ],
+        )
+        for side, channel in SIDES
+        if sides in ("both", side)
+    ]
+    bridge = Node(
+        package="linker_hand_bridge",
+        executable="bridge",
+        name="linker_hand_bridge",
+        output="screen",
+        parameters=[
+            {
+                "port": LaunchConfiguration("port"),
+                "sides": LaunchConfiguration("sides"),
+                "enabled": LaunchConfiguration("enabled"),
+                "max_command_rate": LaunchConfiguration("max_command_rate"),
+                "initial_speed": LaunchConfiguration("initial_speed"),
+                "initial_torque": LaunchConfiguration("initial_torque"),
+                "initial_thumb_torque": LaunchConfiguration(
+                    "initial_thumb_torque"
+                ),
+                "abduction_invert": LaunchConfiguration("abduction_invert"),
+            }
+        ],
+    )
+    return [*drivers, bridge]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -35,7 +85,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "enabled",
-            default_value="true",
+            default_value="false",
             description="Publish to the vendor control topics.",
         ),
         DeclareLaunchArgument(
@@ -89,45 +139,4 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument("is_touch", default_value="false"),
     ]
-
-    drivers = [
-        Node(
-            package="linker_hand_ros2_sdk",
-            executable="linker_hand_sdk",
-            # Both driver instances hardcode the same node name, so rename them
-            # or the second one collides with the first.
-            name=f"linker_hand_{side}",
-            output="screen",
-            parameters=[
-                {
-                    "hand_type": side,
-                    "hand_joint": "G20",
-                    "can": channel,
-                    "is_touch": LaunchConfiguration("is_touch"),
-                }
-            ],
-        )
-        for side, channel in SIDES
-    ]
-
-    bridge = Node(
-        package="linker_hand_bridge",
-        executable="bridge",
-        name="linker_hand_bridge",
-        output="screen",
-        parameters=[
-            {
-                "port": LaunchConfiguration("port"),
-                "sides": LaunchConfiguration("sides"),
-                "enabled": LaunchConfiguration("enabled"),
-                "max_command_rate": LaunchConfiguration("max_command_rate"),
-                "initial_speed": LaunchConfiguration("initial_speed"),
-                "initial_torque": LaunchConfiguration("initial_torque"),
-                "initial_thumb_torque": LaunchConfiguration(
-                    "initial_thumb_torque"
-                ),
-                "abduction_invert": LaunchConfiguration("abduction_invert"),
-            }
-        ],
-    )
-    return LaunchDescription([*arguments, *drivers, bridge])
+    return LaunchDescription([*arguments, OpaqueFunction(function=_nodes)])

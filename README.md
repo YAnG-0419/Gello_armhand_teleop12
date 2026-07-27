@@ -11,8 +11,8 @@ PICO input -> retargeting/IK -> UDP -> ROS gateway -> FR3 controllers
 PICO inputs are selected explicitly on the CLI:
 
 ```text
---input controllers
---input motion-trackers
+--arm-source controllers
+--arm-source motion-trackers
 ```
 
 The choice is not stored in YAML. Both inputs share the same mapping, IK, UDP,
@@ -41,13 +41,16 @@ Mock simulation:
 ```bash
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/simulation/teleop_dual_fr3_mujoco.py \
-  --config config/pico.yaml --input mock --headless --duration 2
+  --config config/pico.yaml --arm-source mock --headless --duration 2
 ```
 
 See [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md) for real PICO and FR3
 commands, including the three-terminal teleoperation/data-collection workflow,
 LeRobot export, and replay. See [docs/HANDOVER.md](docs/HANDOVER.md) for the
 current implementation state, safety boundaries, and suggested next work.
+The right-only MANUS glove MVP is documented in
+[teleop_sources/manus/README.md](teleop_sources/manus/README.md); its runbook
+is in HARDWARE_DEPLOY.md.
 
 ## Configuration ownership
 

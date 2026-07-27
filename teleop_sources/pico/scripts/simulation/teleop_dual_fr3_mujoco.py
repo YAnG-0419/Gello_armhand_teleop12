@@ -13,7 +13,7 @@ from pico_bimanual_franka_teleop.simulation import DualFr3Simulation
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input",
+        "--arm-source",
         required=True,
         choices=("controllers", "motion-trackers", "hand-roots", "mock"),
     )
@@ -28,7 +28,7 @@ def main() -> None:
         control_rate=config.host.control_rate,
         max_joint_speed=config.host.max_joint_speed,
         input_config=config.input,
-        input_type=args.input,
+        input_type=args.arm_source,
     )
     simulation.run(duration=args.duration, headless=args.headless)
 

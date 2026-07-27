@@ -18,31 +18,14 @@ filter history is dropped so reacquisition cannot jump.
 
 from __future__ import annotations
 
-import socket
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from .hand_input import HandSkeletonReader
-from .hand_stream import build_hand_packet
+from .hand_sender import HandCommandSender, HandSideStatus, HandStatus
 from .types import SIDES
 
-
-@dataclass
-class HandSideStatus:
-    sending: bool = False
-    fault: str | None = None
-    sent: int = 0
-    solve_seconds: float = 0.0
-
-
-@dataclass
-class HandStatus:
-    sides: dict[str, HandSideStatus] = field(
-        default_factory=lambda: {side: HandSideStatus() for side in SIDES}
-    )
-    errors: int = 0
-    last_error: str | None = None
+__all__ = ["HandPipeline", "HandSideStatus", "HandStatus"]
 
 
 class HandPipeline:
@@ -64,10 +47,13 @@ class HandPipeline:
     ) -> None:
         if xrt is None:
             raise ValueError("HandPipeline requires an initialized SDK module")
-        if not 0.0 < rate <= 60.0:
-            raise ValueError("Hand send rate must be in (0, 60] Hz")
         if not sides or set(sides).difference(SIDES):
             raise ValueError(f"Invalid hand sides: {sides}")
+        self.sides = tuple(sides)
+        self.status = HandStatus()
+        self.sender = HandCommandSender(
+            host=host, port=port, rate=rate, sides=self.sides, status=self.status
+        )
 
         # Import here so arm-only runs never pay for pinocchio.
         from .hand_retarget import L20Retargeter, THUMB_OPPOSITION_YAW_ROLL
@@ -88,13 +74,6 @@ class HandPipeline:
         self.reader = HandSkeletonReader(
             xrt, stale_timeout=stale_timeout, frozen_timeout=frozen_timeout
         )
-        self.address = (str(host), int(port))
-        self.interval = 1.0 / float(rate)
-        self.sides = tuple(sides)
-        self.status = HandStatus()
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sequence = {side: 0 for side in sides}
-        self._next_due = {side: 0.0 for side in sides}
         self._open_until = {side: 0.0 for side in sides}
         self._was_following = {side: False for side in sides}
         # Round-robin start point, so one side cannot starve the other when both
@@ -105,18 +84,6 @@ class HandPipeline:
             from .debug_log import HandRetargetDebugLogger
 
             self.debug_logger = HandRetargetDebugLogger(debug_log)
-
-    def _advance_deadline(self, side: str, moment: float) -> None:
-        """Advance a periodic deadline without drifting down to the loop grid."""
-        deadline = self._next_due[side]
-        if deadline <= 0.0 or moment - deadline >= self.interval:
-            # First send or a long pause: do not create a catch-up burst.
-            self._next_due[side] = moment + self.interval
-        else:
-            # Preserve fractional deadlines. With a 100 Hz owner loop, setting
-            # `moment + interval` made nominal 30 Hz become 25 Hz because every
-            # 33.3 ms period rounded up to four 10 ms ticks.
-            self._next_due[side] = deadline + self.interval
 
     def request_open(self, now: float | None = None, duration: float = 2.0) -> None:
         """Stream the open-hand pose to every side that is not following.
@@ -175,32 +142,18 @@ class HandPipeline:
             if (
                 following[side]
                 or moment >= self._open_until[side]
-                or moment < self._next_due[side]
+                or not self.sender.due(side, moment)
             ):
                 continue
-            status = self.status.sides[side]
             names = self.retargeters[side].joint_names
-            try:
-                self._socket.sendto(
-                    build_hand_packet(
-                        f"pico-hand-{side}-open",
-                        self._sequence[side],
-                        time.time(),
-                        side,
-                        names,
-                        [0.0] * len(names),
-                    ),
-                    self.address,
-                )
-            except Exception as error:  # noqa: BLE001 - contain per side
-                self.status.errors += 1
-                self.status.last_error = f"{side} open command failed: {error}"
-                continue
-            self._sequence[side] += 1
-            self._advance_deadline(side, moment)
-            status.sending = True
-            status.fault = None
-            status.sent += 1
+            self.sender.emit(
+                f"pico-hand-{side}-open",
+                side,
+                names,
+                [0.0] * len(names),
+                moment,
+                f"{side} open command failed",
+            )
 
         for side in self.sides:
             if following[side] or moment < self._open_until[side]:
@@ -221,7 +174,11 @@ class HandPipeline:
         ]
         for side in order:
             sample = samples.get(side)
-            if not following[side] or sample is None or moment < self._next_due[side]:
+            if (
+                not following[side]
+                or sample is None
+                or not self.sender.due(side, moment)
+            ):
                 continue
             status = self.status.sides[side]
             try:
@@ -232,30 +189,22 @@ class HandPipeline:
                     self.debug_logger.record(
                         moment, side, sample.landmarks, qpos, stats
                     )
-                self._socket.sendto(
-                    build_hand_packet(
-                        f"pico-hand-{side}",
-                        self._sequence[side],
-                        time.time(),
-                        side,
-                        self.retargeters[side].joint_names,
-                        qpos,
-                    ),
-                    self.address,
-                )
             except Exception as error:  # noqa: BLE001 - contain per side
                 self.status.errors += 1
                 self.status.last_error = f"{side} hand retargeting failed: {error}"
                 status.sending = False
                 status.fault = str(error)
                 return
-            self._sequence[side] += 1
-            self._advance_deadline(side, moment)
-            self._preferred = (self.sides.index(side) + 1) % len(self.sides)
-            status.sending = True
-            status.fault = None
-            status.sent += 1
-            status.solve_seconds = elapsed
+            if self.sender.emit(
+                f"pico-hand-{side}",
+                side,
+                self.retargeters[side].joint_names,
+                qpos,
+                moment,
+                f"{side} hand send failed",
+            ):
+                self._preferred = (self.sides.index(side) + 1) % len(self.sides)
+                status.solve_seconds = elapsed
             return
 
     def close(self) -> None:
@@ -263,6 +212,6 @@ class HandPipeline:
             if self.debug_logger is not None:
                 self.debug_logger.close()
         finally:
-            self._socket.close()
+            self.sender.close()
             for retargeter in self.retargeters.values():
                 retargeter.close()

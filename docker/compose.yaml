@@ -55,16 +55,28 @@ services:
   hand-control:
     <<: *runtime
     # Privileged for SocketCAN: with the host network namespace the container
-    # binds can0/can1 directly, verified on this machine. Both Linker Hand
-    # drivers and the teleoperation bridge run here; the bridge listens for
-    # hand commands on udp 5570, reachable from the host because the network
-    # is shared.
+    # binds can0/can1 directly, verified on this machine. This service's
+    # defaults are the current right-only-manus mode's operational
+    # configuration: both G20s, with the source holding the left at its default
+    # pose and driving the right from MANUS. The bridge listens on UDP 5570,
+    # reachable from the host because the network is shared.
     privileged: true
     command:
       - ros2
       - launch
       - linker_hand_bridge
       - hands.launch.py
+      - sides:=both
+      - enabled:=true
+      # abduction_invert stays at its default (false). The unified MANUS mode
+      # feeds the same L20 retargeter as the validated PICO path (offline check
+      # 2026-07-27: identical skeleton chirality in both sessions' logs), so the
+      # bridge's derived per-side polarity is already correct. The flag exists
+      # for senders with their own, unverified abduction convention.
+      - max_command_rate:=1500.0
+      - initial_speed:=255
+      - initial_torque:=200
+      - initial_thumb_torque:=250
 
   teleop-control:
     <<: *runtime
