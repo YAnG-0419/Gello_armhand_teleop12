@@ -18,8 +18,15 @@ docker compose up
 cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input hand-roots --hands
+  --config config/pico.yaml --input motion-trackers --hands
 ```
+
+`--input motion-trackers` is the default choice: measured quiet EE tremor is
+~5x lower than with `--input hand-roots` (3.4 vs 16.8 mrad on the 2026-07-26
+vs 2026-07-27 sessions), because the tracker has no optical-skeleton wrist
+noise. Keep both trackers in the headset's view; occlusion freezes them and
+disengages that arm. Use `hand-roots` only when the task forces the trackers
+out of view.
 
 For a synchronized arm-jitter and hand-retargeting diagnostic trial, add both
 logs:
@@ -30,7 +37,7 @@ mkdir -p "$RUN_DIR"
 
 conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --input hand-roots --hands \
+  --config config/pico.yaml --input motion-trackers --hands \
   --debug-log "$RUN_DIR/ee_jitter_with_hands.jsonl" \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
