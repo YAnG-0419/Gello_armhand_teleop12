@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
 sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "manus" / "python"))
 
-from manus_teleop import RightOnlyManusHandPipeline  # noqa: E402
+from manus_teleop import ManusHandPipeline  # noqa: E402
 from pico_bimanual_franka_teleop.xr_input import KeyboardActivation  # noqa: E402
 
 
@@ -43,7 +43,8 @@ def main() -> int:
     pipeline = None
     keyboard = None
     try:
-        pipeline = RightOnlyManusHandPipeline(
+        pipeline = ManusHandPipeline(
+            dynamic_sides=("right",),
             host=args.host,
             port=args.port,
             rate=args.rate,

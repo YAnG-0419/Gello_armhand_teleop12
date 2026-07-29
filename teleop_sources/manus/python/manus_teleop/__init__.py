@@ -1,5 +1,5 @@
 """In-process MANUS hand source for the unified teleoperation operator."""
 
-from .pipeline import RightOnlyManusHandPipeline
+from .pipeline import ManusHandPipeline
 
-__all__ = ["RightOnlyManusHandPipeline"]
+__all__ = ["ManusHandPipeline"]

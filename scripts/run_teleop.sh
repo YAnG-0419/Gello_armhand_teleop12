@@ -28,7 +28,7 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate franka-teleop-pico
 exec python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
   --config config/pico.yaml --arm-source motion-trackers \
-  --hand-source right-only-manus \
+  --hand-source manus \
   --debug-log "$RUN_DIR/ee_jitter.jsonl" \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl" \
   "$@"

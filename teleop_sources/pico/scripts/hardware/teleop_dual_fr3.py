@@ -74,8 +74,10 @@ def main() -> None:
     parser.add_argument(
         "--hand-source",
         default="none",
-        choices=("none", "pico", "right-only-manus"),
-        help="hand source integrated into this operator process (default: none)",
+        choices=("none", "pico", "manus", "right-only-manus"),
+        help="hand source integrated into this operator process; "
+        "right-only-manus is a deprecated alias for manus with "
+        "--hand-sides right (default: none)",
     )
     parser.add_argument(
         "--hand-debug-log",
@@ -101,15 +103,15 @@ def main() -> None:
         "--hand-sides",
         default=None,
         choices=("left", "right", "both"),
-        help="dynamic hand sides for --hand-source pico (default: both)",
+        help="dynamic hand sides for --hand-source pico or manus "
+        "(default: both)",
     )
     parser.add_argument("--left-hand-model", default="g20")
     parser.add_argument(
         "--right-hand-model",
         default=None,
         help=(
-            "right hand model; defaults to g20 for PICO and o30i for "
-            "right-only-manus"
+            "right hand model; defaults to g20 for PICO and o30i for MANUS"
         ),
     )
     args = parser.parse_args()
@@ -142,25 +144,32 @@ def main() -> None:
             models=models,
             debug_log=args.hand_debug_log,
         )
-    elif args.hand_source == "right-only-manus":
+    elif args.hand_source in ("manus", "right-only-manus"):
         if args.arm_source != "motion-trackers":
             parser.error(
-                "right-only-manus requires --arm-source motion-trackers"
+                f"{args.hand_source} requires --arm-source motion-trackers"
             )
-        if args.hand_sides is not None:
-            parser.error(
-                "--hand-sides only applies to --hand-source pico; "
-                "right-only-manus always emits a left default plus a "
-                "dynamic right"
-            )
-        from manus_teleop import RightOnlyManusHandPipeline
+        if args.hand_source == "right-only-manus":
+            if args.hand_sides is not None:
+                parser.error(
+                    "right-only-manus fixes the dynamic side to right; "
+                    "use --hand-source manus with --hand-sides instead"
+                )
+            hand_sides = "right"
+        else:
+            hand_sides = args.hand_sides or "both"
+        dynamic_sides = (
+            ("left", "right") if hand_sides == "both" else (hand_sides,)
+        )
+        from manus_teleop import ManusHandPipeline
 
         def create_manus_pipeline(_xrt):
-            return RightOnlyManusHandPipeline(
+            return ManusHandPipeline(
                 host=args.hand_host,
                 port=args.hand_port,
                 rate=args.hand_rate,
                 debug_log=args.hand_debug_log,
+                dynamic_sides=dynamic_sides,
                 models={
                     "left": args.left_hand_model,
                     "right": args.right_hand_model or "o30i",

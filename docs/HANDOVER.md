@@ -15,8 +15,7 @@ PICO tracker ids: config/pico.yaml; re-assign via calibrate_tracker_sides.py
 
 Bringup: `docker compose up franka-control teleop-control pico-bridge
 hand-control` (hand-control = left G20 + right O30i, enabled). Operator:
-`scripts/run_teleop.sh` - fresh RUN_DIR plus both debug logs; extra flags
-pass through and later flags win (`--hand-source pico`, `--ui plain`).
+`scripts/run_teleop.sh` - fresh RUN_DIR, both debug logs; later flags win.
 
 Status:
 
@@ -26,11 +25,12 @@ Status:
 - The mixed stack ran on hardware 2026-07-29 (teleop + 3.4 min recording;
   engage/disengage cycles validated the recoverable O30i watchdog). Pending:
   per-side tracker fault drills, feel-check of the 2026-07-29 retargeting
-  change (segment-direction + pinch terms; offline: MCP deficit -> ~0 deg,
-  pinch at touch 17 -> 5.7 mm), a left-G20 grasp in mixed mode.
-- Hand path: MANUS -> canonical landmarks -> O30i solver (2.3 ms mean) ->
-  UDP :5570 -> bridge (250 ms watchdog, per-model slew) -> drivers. PICO
-  optical hands remain the G20-only path. Bimanual MANUS not implemented.
+  change (segment-direction + pinch terms), a left-G20 grasp in mixed mode.
+- Hand path: MANUS -> canonical landmarks -> per-side solver (right O30i,
+  left G20 via the PICO-validated fixed-opposition L20 profile) -> UDP
+  :5570 -> bridge (250 ms watchdog, per-model slew) -> drivers. Bimanual
+  MANUS implemented 2026-07-29, unvalidated; the left glove sends nothing
+  until Calibration_left.mcal exists (probe: inspect_manus_gloves.py).
 
 ## Research agenda
 
@@ -48,9 +48,9 @@ on retreat. Wrenching the held arm still reflexes at 50 N - by design.
 
 Instrumented 2026-07-29: `ik.py` classifies every step (ok / joint-limit /
 speed-clamp / workspace), the STATE line shows each side's worst cause once
-per second, and `follow-debug.v3` logs it per tick. Replaying all 14
-sessions: past deficits were mostly j7 at its limit and workspace edges.
-Pending: an operator staged-reach check (stretch, j7 stop, fast sweep).
+per second, and `follow-debug.v4` logs it per tick. Replaying all 14
+sessions: past deficits were mostly j7 at its limit and workspace edges;
+an operator staged-reach check (stretch, j7 stop, fast sweep) pends.
 
 ### 3. Collision awareness (low priority)
 

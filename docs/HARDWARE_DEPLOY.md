@@ -3,16 +3,30 @@
 Commands for FR3 arms, mixed LinkerHand G20/O30i hands, PICO/MANUS teleoperation,
 Orbbec RGB-D, recording, export, and replay.
 
-## Current MANUS right hand + right arm
+## MANUS hands + arms
 
-The operator is one process. PICO supplies the right-arm motion tracker and
-MANUS supplies the right-hand skeleton. The same `R`, `Space`, and `X`
-activation state gates both command streams; do not run
-`teleop_full_thumb.py` separately.
+The operator is one process. PICO supplies the arm motion trackers and
+MANUS supplies both hand skeletons (`--hand-source manus`, the
+`run_teleop.sh` default; `--hand-sides right` degrades to the old
+right-only behavior). The same `L`, `R`, `Space`, and `X` activation state
+gates each side's arm and hand together; do not run `teleop_full_thumb.py`
+separately.
+
+Each glove only delivers frames once its calibration file exists in
+`teleop_sources/manus/config` (`Calibration_left.mcal` /
+`Calibration_right.mcal`) - the bridge silently drops uncalibrated gloves,
+and only the right file exists as of 2026-07-29. Check what is connected
+and streaming (owns the MANUS client; stop teleop first):
+
+```bash
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/manus/scripts/inspect_manus_gloves.py
+```
 
 The right-hand-only MANUS/O30i path has been physically validated. The
-integrated arm plus mixed left-G20/right-O30i configuration is the next
-real-world test and is not yet marked validated.
+bimanual MANUS configuration (left G20 through the same fixed-opposition
+L20 profile as the validated PICO left hand) is implemented but not yet
+hardware-validated.
 
 ### Terminal 1 — ROS services
 

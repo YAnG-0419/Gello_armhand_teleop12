@@ -11,12 +11,16 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "ros_ws" / "src" / "linker_hand_bridge"))
 
 from linker_hand_bridge.core import G20Mapper
-from manus_teleop.pipeline import ManusFrame, RightOnlyManusHandPipeline
+from manus_teleop.pipeline import ManusFrame, ManusHandPipeline, SIDE_CODES
 from manus_teleop import o30i_retarget
 from pico_bimanual_franka_teleop import hand_retarget
 
 
 class FakeBridge:
+    """Per-side frame source; sides outside `serving` never deliver."""
+
+    serving = ("left", "right")
+
     def __init__(self, _library: Path) -> None:
         self.connected = False
         self.closed = False
@@ -25,9 +29,14 @@ class FakeBridge:
     def connect(self, _calibration_dir: Path) -> None:
         self.connected = True
 
-    def read(self, _timeout_s: float = 0.0) -> ManusFrame:
+    def available_sides(self) -> tuple[str, ...]:
+        return tuple(self.serving)
+
+    def read(self, side: str, _timeout_s: float = 0.0) -> ManusFrame | None:
+        if side not in self.serving:
+            return None
         frame = ManusFrame()
-        frame.side = 2
+        frame.side = SIDE_CODES[side]
         frame.keypoint_count = 25
         frame.sequence = self.sequence
         self.sequence += 1
@@ -35,6 +44,10 @@ class FakeBridge:
 
     def close(self) -> None:
         self.closed = True
+
+
+class RightOnlyFakeBridge(FakeBridge):
+    serving = ("right",)
 
 
 class FakeRetargeter:
@@ -113,14 +126,22 @@ def _drain(sink: socket.socket) -> list[dict]:
         messages.append(json.loads(payload))
 
 
-def test_manus_pipeline_uses_shared_right_activation(monkeypatch) -> None:
-    monkeypatch.setattr(hand_retarget, "L20Retargeter", FakeRetargeter)
+def _sink() -> socket.socket:
     sink = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sink.bind(("127.0.0.1", 0))
-    pipeline = RightOnlyManusHandPipeline(
+    return sink
+
+
+def test_manus_right_only_keeps_left_default_and_shared_activation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(hand_retarget, "L20Retargeter", FakeRetargeter)
+    sink = _sink()
+    pipeline = ManusHandPipeline(
         host="127.0.0.1",
         port=sink.getsockname()[1],
-        bridge_factory=FakeBridge,
+        bridge_factory=RightOnlyFakeBridge,
+        dynamic_sides=("right",),
     )
     try:
         for step in range(20):
@@ -175,10 +196,10 @@ def test_manus_pipeline_uses_shared_right_activation(monkeypatch) -> None:
         assert stopped_messages
         assert all(message["side"] == "left" for message in stopped_messages)
         assert pipeline.status.sides["right"].fault == "disengaged by operator"
-        assert pipeline.retargeter.reset_count == 1
+        assert pipeline.retargeters["right"].reset_count == 1
     finally:
         bridge = pipeline.bridge
-        retargeter = pipeline.retargeter
+        retargeter = pipeline.retargeters["right"]
         pipeline.close()
         sink.close()
     assert bridge.closed
@@ -187,12 +208,12 @@ def test_manus_pipeline_uses_shared_right_activation(monkeypatch) -> None:
 
 def test_manus_pipeline_selects_o30i_only_for_right(monkeypatch) -> None:
     monkeypatch.setattr(o30i_retarget, "O30IRetargeter", FakeO30IRetargeter)
-    sink = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sink.bind(("127.0.0.1", 0))
-    pipeline = RightOnlyManusHandPipeline(
+    sink = _sink()
+    pipeline = ManusHandPipeline(
         host="127.0.0.1",
         port=sink.getsockname()[1],
-        bridge_factory=FakeBridge,
+        bridge_factory=RightOnlyFakeBridge,
+        dynamic_sides=("right",),
         models={"left": "g20", "right": "o30i"},
     )
     try:
@@ -213,6 +234,84 @@ def test_manus_pipeline_selects_o30i_only_for_right(monkeypatch) -> None:
         assert left
         assert all(message["model"] == "g20" for message in left)
         assert all(len(message["joint_names"]) == 21 for message in left)
+    finally:
+        pipeline.close()
+        sink.close()
+
+
+def test_manus_bimanual_follows_both_sides(monkeypatch) -> None:
+    monkeypatch.setattr(hand_retarget, "L20Retargeter", FakeRetargeter)
+    monkeypatch.setattr(o30i_retarget, "O30IRetargeter", FakeO30IRetargeter)
+    sink = _sink()
+    pipeline = ManusHandPipeline(
+        host="127.0.0.1",
+        port=sink.getsockname()[1],
+        bridge_factory=FakeBridge,
+        models={"left": "g20", "right": "o30i"},
+    )
+    try:
+        for step in range(100):
+            pipeline.tick(
+                300.0 + step * 0.01,
+                active={"left": True, "right": True},
+            )
+        messages = _drain(sink)
+        by_side = {
+            side: [message for message in messages if message["side"] == side]
+            for side in ("left", "right")
+        }
+        # Both sides stream at the configured 30 Hz; the one-solve-per-tick
+        # round-robin must not starve either.
+        assert 25 <= len(by_side["left"]) <= 31
+        assert 25 <= len(by_side["right"]) <= 31
+        assert all(
+            message["stream_id"] == "manus-left-g20"
+            and message["model"] == "g20"
+            and len(message["joint_names"]) == 21
+            for message in by_side["left"]
+        )
+        assert all(
+            message["stream_id"] == "manus-right-o30i"
+            and message["model"] == "o30i"
+            for message in by_side["right"]
+        )
+
+        # Disengaging one side must reset only that side's filter history.
+        for step in range(20):
+            pipeline.tick(
+                302.0 + step * 0.01,
+                active={"left": False, "right": True},
+            )
+        assert pipeline.retargeters["left"].reset_count == 1
+        assert pipeline.retargeters["right"].reset_count == 0
+        assert pipeline.status.sides["left"].fault == "disengaged by operator"
+    finally:
+        pipeline.close()
+        sink.close()
+
+
+def test_manus_bimanual_reports_a_missing_left_glove(monkeypatch) -> None:
+    monkeypatch.setattr(hand_retarget, "L20Retargeter", FakeRetargeter)
+    monkeypatch.setattr(o30i_retarget, "O30IRetargeter", FakeO30IRetargeter)
+    sink = _sink()
+    pipeline = ManusHandPipeline(
+        host="127.0.0.1",
+        port=sink.getsockname()[1],
+        bridge_factory=RightOnlyFakeBridge,
+        models={"left": "g20", "right": "o30i"},
+    )
+    try:
+        for step in range(50):
+            pipeline.tick(
+                400.0 + step * 0.01,
+                active={"left": True, "right": True},
+            )
+        messages = _drain(sink)
+        # The uncalibrated left glove never blocks the right hand.
+        assert all(message["side"] == "right" for message in messages)
+        assert messages
+        assert "Calibration_left.mcal" in pipeline.status.sides["left"].fault
+        assert pipeline.status.sides["right"].sending
     finally:
         pipeline.close()
         sink.close()
