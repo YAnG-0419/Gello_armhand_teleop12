@@ -7,10 +7,10 @@ own bridge, on their own port, so that a fault in one stream cannot be mistaken
 for a fault in the other. Losing the optical skeleton must not look like losing
 a wrist tracker.
 
-Values are URDF joint angles in radians, keyed by name. The 0..255 vendor
-conversion happens in the ROS bridge, so nothing on the robot side of the wire
-needs to know about PICO and nothing on this side needs to know about the
-vendor's slot layout.
+Values are URDF joint angles in radians, keyed by name. Model profiles validate
+that contract on both sides of the wire. The bridge projects L20 kinematics
+into G20 command slots, while only the physical O30i driver converts O30i
+radians to calibrated firmware ticks.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ class HandQposPacket:
     side: str
     joint_names: tuple[str, ...]
     qpos: tuple[float, ...]
+    model: str = "g20"
 
 
 def encode_hand_packet(packet: HandQposPacket) -> bytes:
@@ -41,6 +42,8 @@ def encode_hand_packet(packet: HandQposPacket) -> bytes:
         raise ValueError(f"side must be left or right, got {packet.side!r}")
     if not packet.stream_id:
         raise ValueError("stream_id must be non-empty")
+    if not packet.model:
+        raise ValueError("model must be non-empty")
     if packet.sequence < 0:
         raise ValueError("sequence must be non-negative")
     if len(packet.joint_names) != len(packet.qpos):
@@ -58,6 +61,7 @@ def encode_hand_packet(packet: HandQposPacket) -> bytes:
         "sequence": int(packet.sequence),
         "timestamp": float(packet.timestamp),
         "side": packet.side,
+        "model": packet.model,
         "joint_names": list(packet.joint_names),
         "qpos": [float(value) for value in packet.qpos],
     }
@@ -74,6 +78,7 @@ def build_hand_packet(
     side: str,
     joint_names: Sequence[str],
     qpos: Sequence[float],
+    model: str = "g20",
 ) -> bytes:
     """Convenience wrapper returning an encoded datagram."""
     return encode_hand_packet(
@@ -84,5 +89,6 @@ def build_hand_packet(
             side=str(side),
             joint_names=tuple(str(name) for name in joint_names),
             qpos=tuple(float(value) for value in qpos),
+            model=str(model).strip().lower(),
         )
     )

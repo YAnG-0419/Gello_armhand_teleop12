@@ -35,11 +35,12 @@ class HandPipeline:
         self,
         xrt,
         *,
-        assets_dir: Path,
+        assets_root: Path,
         host: str,
         port: int,
         rate: float = 30.0,
         sides: tuple[str, ...] = SIDES,
+        models: dict[str, str] | None = None,
         stale_timeout: float = 0.25,
         frozen_timeout: float = 1.0,
         max_iterations: int = 20,
@@ -50,26 +51,44 @@ class HandPipeline:
         if not sides or set(sides).difference(SIDES):
             raise ValueError(f"Invalid hand sides: {sides}")
         self.sides = tuple(sides)
-        self.status = HandStatus()
-        self.sender = HandCommandSender(
-            host=host, port=port, rate=rate, sides=self.sides, status=self.status
+        if models is not None and set(models) != set(self.sides):
+            raise ValueError("models must define exactly the active hand sides")
+        self.models = (
+            {side: "g20" for side in self.sides}
+            if models is None
+            else {
+                side: str(models[side]).strip().lower() for side in self.sides
+            }
         )
+        from .hand_profiles import create_hand_retargeter
 
-        # Import here so arm-only runs never pay for pinocchio.
-        from .hand_retarget import L20Retargeter, THUMB_OPPOSITION_YAW_ROLL
-
-        assets = Path(assets_dir)
         self.retargeters = {}
-        for side in sides:
-            urdf = assets / side / f"linkerhand_l20_{side}.urdf"
-            if not urdf.is_file():
-                raise FileNotFoundError(f"Hand URDF not found: {urdf}")
-            self.retargeters[side] = L20Retargeter(
-                urdf,
-                side,
-                max_iterations=max_iterations,
-                thumb_opposition_fixed=THUMB_OPPOSITION_YAW_ROLL[side],
+        try:
+            for side in sides:
+                self.retargeters[side] = create_hand_retargeter(
+                    self.models[side],
+                    side=side,
+                    assets_root=Path(assets_root),
+                    max_iterations=max_iterations,
+                )
+        except BaseException:
+            for retargeter in self.retargeters.values():
+                retargeter.close()
+            raise
+        self.status = HandStatus()
+        try:
+            self.sender = HandCommandSender(
+                host=host,
+                port=port,
+                rate=rate,
+                sides=self.sides,
+                models=self.models,
+                status=self.status,
             )
+        except BaseException:
+            for retargeter in self.retargeters.values():
+                retargeter.close()
+            raise
 
         self.reader = HandSkeletonReader(
             xrt, stale_timeout=stale_timeout, frozen_timeout=frozen_timeout

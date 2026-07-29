@@ -12,6 +12,7 @@ sys.path.insert(0, str(REPO_ROOT / "ros_ws" / "src" / "linker_hand_bridge"))
 
 from linker_hand_bridge.core import G20Mapper
 from manus_teleop.pipeline import ManusFrame, RightOnlyManusHandPipeline
+from manus_teleop import o30i_retarget
 from pico_bimanual_franka_teleop import hand_retarget
 
 
@@ -76,6 +77,31 @@ class FakeRetargeter:
         self.closed = True
 
 
+class FakeO30IRetargeter(FakeRetargeter):
+    joint_names = [
+        "thumb_cmc_roll",
+        "thumb_cmc_yaw",
+        "thumb_mcp",
+        "thumb_ip",
+        "index_mcp_roll",
+        "index_mcp_pitch",
+        "index_pip",
+        "index_dip",
+        "middle_mcp_roll",
+        "middle_mcp_pitch",
+        "middle_pip",
+        "middle_dip",
+        "ring_mcp_roll",
+        "ring_mcp_pitch",
+        "ring_pip",
+        "ring_dip",
+        "pinky_mcp_roll",
+        "pinky_mcp_pitch",
+        "pinky_pip",
+        "pinky_dip",
+    ]
+
+
 def _drain(sink: socket.socket) -> list[dict]:
     messages = []
     sink.settimeout(0.02)
@@ -136,7 +162,7 @@ def test_manus_pipeline_uses_shared_right_activation(monkeypatch) -> None:
         )
         assert len(mapped_left) == 20
         assert all(
-            message["stream_id"] == "manus-right-full-thumb"
+            message["stream_id"] == "manus-right-g20"
             for message in by_side["right"]
         )
 
@@ -157,3 +183,36 @@ def test_manus_pipeline_uses_shared_right_activation(monkeypatch) -> None:
         sink.close()
     assert bridge.closed
     assert retargeter.closed
+
+
+def test_manus_pipeline_selects_o30i_only_for_right(monkeypatch) -> None:
+    monkeypatch.setattr(o30i_retarget, "O30IRetargeter", FakeO30IRetargeter)
+    sink = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sink.bind(("127.0.0.1", 0))
+    pipeline = RightOnlyManusHandPipeline(
+        host="127.0.0.1",
+        port=sink.getsockname()[1],
+        bridge_factory=FakeBridge,
+        models={"left": "g20", "right": "o30i"},
+    )
+    try:
+        for step in range(10):
+            pipeline.tick(
+                200.0 + step * 0.04,
+                active={"left": False, "right": True},
+            )
+        messages = _drain(sink)
+        right = [message for message in messages if message["side"] == "right"]
+        assert right
+        assert all(message["model"] == "o30i" for message in right)
+        assert all(
+            message["joint_names"] == FakeO30IRetargeter.joint_names
+            for message in right
+        )
+        left = [message for message in messages if message["side"] == "left"]
+        assert left
+        assert all(message["model"] == "g20" for message in left)
+        assert all(len(message["joint_names"]) == 21 for message in left)
+    finally:
+        pipeline.close()
+        sink.close()

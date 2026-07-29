@@ -60,6 +60,8 @@ def main() -> int:
         help="hand commands per second per side; keep at or below 60 (default: 30)",
     )
     parser.add_argument("--sides", default="both", choices=["left", "right", "both"])
+    parser.add_argument("--left-model", default="g20")
+    parser.add_argument("--right-model", default="g20")
     parser.add_argument("--stale-timeout", type=float, default=0.25)
     parser.add_argument("--frozen-timeout", type=float, default=1.0)
     parser.add_argument(
@@ -97,11 +99,15 @@ def main() -> int:
         xrt.init()
         pipeline = HandPipeline(
             xrt,
-            assets_dir=REPO_ROOT / "assets" / "linkerhand_l20",
+            assets_root=REPO_ROOT / "assets",
             host=args.host,
             port=args.port,
             rate=args.rate,
             sides=sides,
+            models={
+                side: getattr(args, f"{side}_model")
+                for side in sides
+            },
             stale_timeout=args.stale_timeout,
             frozen_timeout=args.frozen_timeout,
             debug_log=args.debug_log,

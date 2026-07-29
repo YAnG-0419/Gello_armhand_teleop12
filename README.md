@@ -58,7 +58,8 @@ is in HARDWARE_DEPLOY.md.
 - `config/current_workcell.yaml`: FR3 addresses and namespaces
 - `config/pico.yaml`: controller and motion-tracker settings, mapping, IK, and UDP
 - `config/teleop_control.yaml`: ROS command gateway
-- `ros_ws/src/teleop_data/config/recording.yaml`: data pipeline
+- `ros_ws/src/teleop_data/config/recording.yaml`: data pipeline and per-side
+  recorded hand models
 - `ros_ws/src/franka_fr3_arm_controllers/config/initial_pose.yaml`: reset pose
 
 Missing or unknown YAML fields are errors.

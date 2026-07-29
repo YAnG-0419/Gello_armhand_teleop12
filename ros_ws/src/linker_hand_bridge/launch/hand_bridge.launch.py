@@ -1,4 +1,4 @@
-"""Launch the LinkerHand G20 bridge.
+"""Launch the model-profiled LinkerHand safety bridge.
 
 Hardware output is off by default. Bring it up in dry-run first, inspect
 `/linker_hand_bridge/{side}/mapped_command`, and only then relaunch with
@@ -20,6 +20,8 @@ def generate_launch_description() -> LaunchDescription:
             default_value="both",
             description="left, right, or both",
         ),
+        DeclareLaunchArgument("left_model", default_value="g20"),
+        DeclareLaunchArgument("right_model", default_value="g20"),
         DeclareLaunchArgument(
             "enabled",
             default_value="false",
@@ -34,7 +36,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             "max_command_rate",
             default_value="200.0",
-            description="Slew limit in vendor range units per second.",
+            description=(
+                "Requested slew limit per second in each model profile's "
+                "canonical units; the profile may impose a lower cap."
+            ),
         ),
     ]
     node = Node(
@@ -47,6 +52,8 @@ def generate_launch_description() -> LaunchDescription:
                 "host": LaunchConfiguration("host"),
                 "port": LaunchConfiguration("port"),
                 "sides": LaunchConfiguration("sides"),
+                "left_model": LaunchConfiguration("left_model"),
+                "right_model": LaunchConfiguration("right_model"),
                 "enabled": LaunchConfiguration("enabled"),
                 "publish_rate": LaunchConfiguration("publish_rate"),
                 "watchdog_timeout": LaunchConfiguration("watchdog_timeout"),

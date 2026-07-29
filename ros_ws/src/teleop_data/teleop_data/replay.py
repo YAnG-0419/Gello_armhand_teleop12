@@ -19,11 +19,11 @@ from teleop_interfaces.msg import ArmCommand
 from .config import load_config
 from .lerobot_io import load_lerobot_episode
 from .portable_bag import (
-    G20_JOINT_NAMES,
     HAND_ACTION_TOPIC,
     HAND_STATE_TOPIC,
     ordered_hand_positions,
 )
+from .hand_profiles import default_hand_profiles
 
 
 def smootherstep(value):
@@ -45,9 +45,10 @@ def preposition_trajectory(start, target, speed, rate):
 
 
 class ReplayPublisher(Node):
-    def __init__(self, state_timeout):
+    def __init__(self, state_timeout, hand_profiles=None):
         super().__init__("teleop_replay")
         self.state_timeout = state_timeout
+        self.hand_profiles = hand_profiles or default_hand_profiles()
         self.publisher = self.create_publisher(ArmCommand, SOURCE_COMMAND_TOPIC, 10)
         self.state = {"left": None, "right": None}
         self.state_at = {"left": None, "right": None}
@@ -81,7 +82,11 @@ class ReplayPublisher(Node):
 
     def _hand_state(self, side, message):
         try:
-            positions = ordered_hand_positions(message.name, message.position)
+            positions = ordered_hand_positions(
+                message.name,
+                message.position,
+                self.hand_profiles[side],
+            )
         except ValueError:
             return
         self.hand_state[side] = positions
@@ -126,21 +131,30 @@ class ReplayPublisher(Node):
 
     def publish_hands(self, positions, active_sides=("left", "right")):
         positions = np.asarray(positions, dtype=float)
-        if (
-            positions.shape != (40,)
-            or not np.all(np.isfinite(positions))
-            or np.any(positions < 0.0)
-            or np.any(positions > 255.0)
-        ):
-            raise ValueError("Replay hand actions must be 40 values in [0, 255].")
-        for side_index, side in enumerate(("left", "right")):
+        expected_width = sum(
+            self.hand_profiles[side].width for side in ("left", "right")
+        )
+        if positions.shape != (expected_width,) or not np.all(np.isfinite(positions)):
+            raise ValueError(
+                f"Replay hand actions must contain {expected_width} finite values."
+            )
+        offset = 0
+        for side in ("left", "right"):
+            profile = self.hand_profiles[side]
+            side_positions = positions[offset:offset + profile.width]
+            offset += profile.width
+            if np.any(side_positions < profile.lower_bounds) or np.any(
+                side_positions > profile.upper_bounds
+            ):
+                raise ValueError(
+                    f"Replay {side} {profile.model} actions exceed profile bounds."
+                )
             if side not in active_sides:
                 continue
             message = JointState()
             message.header.stamp = self.get_clock().now().to_msg()
-            message.name = list(G20_JOINT_NAMES)
-            start = side_index * 20
-            message.position = positions[start:start + 20].tolist()
+            message.name = list(profile.joint_names)
+            message.position = side_positions.tolist()
             self.hand_publishers[side].publish(message)
 
 
@@ -149,20 +163,53 @@ def load_episode(path, episode_index=0):
     return timestamp, arm_action, active
 
 
-def load_complete_episode(path, episode_index=0):
+def load_complete_episode(
+    path,
+    episode_index=0,
+    hand_width=None,
+    hand_profiles=None,
+):
+    hand_profiles = hand_profiles or default_hand_profiles()
+    configured_width = sum(
+        hand_profiles[side].width for side in ("left", "right")
+    )
+    if hand_width is None:
+        hand_width = configured_width
+    elif hand_width != configured_width:
+        raise ValueError("hand_width does not match the configured hand profiles.")
     path = Path(path)
     if path.is_dir() and (path / "meta" / "info.json").is_file():
         timestamp, action, active = load_lerobot_episode(path, episode_index)
+        recorded_hands = None
     else:
-        timestamp, action, active = _load_npz_episode(path)
-    if action.ndim != 2 or action.shape[1] not in {14, 54}:
-        raise ValueError("Episode actions must contain 14 arm or 54 arm/hand values.")
+        timestamp, action, active, recorded_hands = _load_npz_episode(path)
+    if recorded_hands is not None:
+        for side in ("left", "right"):
+            recorded_model, recorded_names = recorded_hands[side]
+            profile = hand_profiles[side]
+            if (
+                recorded_model != profile.model
+                or recorded_names != profile.joint_names
+            ):
+                raise ValueError(
+                    f"Episode {side} hand contract does not match configured "
+                    f"{profile.model} profile."
+                )
+    combined_width = 14 + int(hand_width)
+    if action.ndim != 2 or action.shape[1] not in {14, combined_width}:
+        raise ValueError(
+            "Episode actions must contain 14 arm or "
+            f"{combined_width} configured arm/hand values."
+        )
     arm_action = action[:, :14]
-    hand_action = action[:, 14:] if action.shape[1] == 54 else None
+    hand_action = action[:, 14:] if action.shape[1] == combined_width else None
     if (
         timestamp.ndim != 1
         or arm_action.shape != (timestamp.size, 14)
-        or (hand_action is not None and hand_action.shape != (timestamp.size, 40))
+        or (
+            hand_action is not None
+            and hand_action.shape != (timestamp.size, hand_width)
+        )
         or active.shape != (timestamp.size, 2)
     ):
         raise ValueError("Episode timestamps and actions have invalid dimensions.")
@@ -170,25 +217,47 @@ def load_complete_episode(path, episode_index=0):
         raise ValueError("Episode needs at least two ordered frames.")
     if not np.all(np.isfinite(timestamp)) or not np.all(np.isfinite(action)):
         raise ValueError("Episode contains non-finite values.")
-    if hand_action is not None and (
-        np.any(hand_action < 0.0) or np.any(hand_action > 255.0)
-    ):
-        raise ValueError("Episode hand actions must be within [0, 255].")
+    if hand_action is not None:
+        offset = 0
+        for side in ("left", "right"):
+            profile = hand_profiles[side]
+            values = hand_action[:, offset:offset + profile.width]
+            offset += profile.width
+            if np.any(values < profile.lower_bounds) or np.any(
+                values > profile.upper_bounds
+            ):
+                raise ValueError(
+                    f"Episode {side} {profile.model} hand actions exceed "
+                    "profile bounds."
+                )
     return timestamp - timestamp[0], arm_action, hand_action, active
 
 
 def _load_npz_episode(path):
     with np.load(path, allow_pickle=False) as data:
         schema = str(data["schema_version"])
+        recorded_hands = None
         if schema == "franka.teleop.normalized.v1":
             action = np.asarray(data["action_arm_joint_position"], dtype=float)
         elif schema == "franka_linker.teleop.normalized.v2":
             action = np.asarray(data["action_joint_position"], dtype=float)
+        elif schema == "franka_linker.teleop.normalized.v3":
+            action = np.asarray(data["action_joint_position"], dtype=float)
+            recorded_hands = {
+                side: (
+                    str(data[f"{side}_hand_model"]),
+                    tuple(
+                        str(name)
+                        for name in data[f"{side}_hand_joint_names"].tolist()
+                    ),
+                )
+                for side in ("left", "right")
+            }
         else:
             raise ValueError(f"Unsupported episode schema: {schema}")
         timestamp = np.asarray(data["timestamp"], dtype=float)
         active = np.asarray(data["active_sides"], dtype=np.bool_)
-    return timestamp, action, active
+    return timestamp, action, active, recorded_hands
 
 
 def main():
@@ -199,10 +268,15 @@ def main():
     args = parser.parse_args()
     config = load_config(args.config)
     timestamp, action, hand_action, active = load_complete_episode(
-        args.episode, args.episode_index
+        args.episode,
+        args.episode_index,
+        hand_profiles=config.hand_profiles,
     )
     rclpy.init()
-    node = ReplayPublisher(config.replay_state_timeout)
+    node = ReplayPublisher(
+        config.replay_state_timeout,
+        hand_profiles=config.hand_profiles,
+    )
     try:
         deadline = time.monotonic() + config.replay_discovery_timeout
         while (
@@ -222,12 +296,19 @@ def main():
             / config.replay_preposition_speed,
             period,
         )
-        hand_duration = (
-            float(np.max(np.abs(hand_action[0] - measured_hands)))
-            / config.replay_hand_preposition_speed
-            if hand_action is not None
-            else 0.0
-        )
+        hand_duration = 0.0
+        if hand_action is not None:
+            offset = 0
+            for side in ("left", "right"):
+                width = config.hand_profiles[side].width
+                target = hand_action[0, offset:offset + width]
+                measured_side = measured_hands[offset:offset + width]
+                offset += width
+                hand_duration = max(
+                    hand_duration,
+                    float(np.max(np.abs(target - measured_side)))
+                    / config.replay_hand_preposition_speed[side],
+                )
         duration = max(arm_duration, hand_duration, period)
         count = int(np.ceil(duration * config.replay_rate)) + 1
         progress = smootherstep(np.linspace(0.0, 1.0, count))[:, None]

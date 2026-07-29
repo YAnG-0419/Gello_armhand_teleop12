@@ -1,4 +1,4 @@
-"""ROS 2 node bridging hand qpos datagrams to LinkerHand G20 commands.
+"""ROS 2 node bridging hand qpos datagrams to model-specific hand commands.
 
 Ported from the sibling WiLoR repository's bridge node. Safety behaviour is
 deliberately preserved: output is disabled unless explicitly enabled at startup,
@@ -26,15 +26,10 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
 from .core import (
-    COMMAND_SLOTS,
-    G20_JOINT_NAMES,
     CommandLimiter,
-    G20Mapper,
     decode_qpos_packet,
-    validate_hand_state,
 )
-
-VENDOR_MAX_PUBLISH_RATE = 30.0
+from .profiles import HandDeviceProfile, create_hand_profile
 
 
 @dataclass
@@ -54,13 +49,15 @@ class SideState:
 
 
 class LinkerHandBridge(Node):
-    """Receive retargeted hand poses and optionally publish G20 commands."""
+    """Receive retargeted hand poses and publish per-side device commands."""
 
     def __init__(self) -> None:
         super().__init__("linker_hand_bridge")
         self.declare_parameter("host", "127.0.0.1")
         self.declare_parameter("port", 5570)
         self.declare_parameter("sides", "both")
+        self.declare_parameter("left_model", "g20")
+        self.declare_parameter("right_model", "g20")
         self.declare_parameter("enabled", False)
         self.declare_parameter("publish_rate", 30.0)
         self.declare_parameter("watchdog_timeout", 0.25)
@@ -74,6 +71,10 @@ class LinkerHandBridge(Node):
         host = str(self.get_parameter("host").value)
         port = int(self.get_parameter("port").value)
         sides_value = str(self.get_parameter("sides").value).lower()
+        configured_models = {
+            side: str(self.get_parameter(f"{side}_model").value).strip().lower()
+            for side in ("left", "right")
+        }
         # Read once at construction. Enabling hardware output must not be
         # possible through a live parameter update.
         self.enabled = bool(self.get_parameter("enabled").value)
@@ -120,16 +121,33 @@ class LinkerHandBridge(Node):
                 "publish_rate, watchdog_timeout, log_period and max_command_rate "
                 "must be positive"
             )
-        if publish_rate > VENDOR_MAX_PUBLISH_RATE:
+        self.profiles: dict[str, HandDeviceProfile] = {
+            side: create_hand_profile(
+                configured_models[side],
+                side=side,
+                abduction_invert=abduction_invert,
+            )
+            for side in self.sides
+        }
+        maximum_publish_rate = min(
+            profile.max_publish_rate for profile in self.profiles.values()
+        )
+        if publish_rate > maximum_publish_rate:
             raise ValueError(
-                "publish_rate must not exceed the vendor driver's "
-                f"{VENDOR_MAX_PUBLISH_RATE:.0f} Hz limit; above roughly 100 Hz it "
-                "silently drops commands"
+                "publish_rate must not exceed the configured device profiles' "
+                f"{maximum_publish_rate:g} Hz limit"
             )
 
-        self.mapper = G20Mapper(abduction_invert=abduction_invert)
         self.state = {
-            side: SideState(CommandLimiter(self.mapper.home(side), max_command_rate))
+            side: SideState(
+                CommandLimiter(
+                    self.profiles[side].home(side),
+                    min(max_command_rate, self.profiles[side].max_slew_rate),
+                    lower_bounds=self.profiles[side].lower_bounds,
+                    upper_bounds=self.profiles[side].upper_bounds,
+                    fixed_values=self.profiles[side].fixed_values,
+                )
+            )
             for side in self.sides
         }
         self.command_publishers = {
@@ -158,7 +176,12 @@ class LinkerHandBridge(Node):
         # its startup-pose code has no G20 branch. Without this the hand would
         # execute the first position command at whatever the firmware last held,
         # possibly 255. Sending it from here means it cannot be forgotten.
-        self.setting_publisher = self.create_publisher(String, "/cb_hand_setting_cmd", 10)
+        self.setting_publishers = {
+            side: self.create_publisher(
+                String, f"/cb_{side}_hand_setting_cmd", 10
+            )
+            for side in self.sides
+        }
         self.speed_timer = None
         if self.initial_speed > 0 or self.initial_torque > 0:
             self.speed_timer = self.create_timer(2.0, self._send_initial_speed)
@@ -172,10 +195,15 @@ class LinkerHandBridge(Node):
         self.out_of_order_count = 0
 
         mode = "ENABLED" if self.enabled else "DRY-RUN (no vendor commands published)"
+        effective_slew_rates = {
+            side: min(max_command_rate, profile.max_slew_rate)
+            for side, profile in self.profiles.items()
+        }
         self.get_logger().info(
             f"Listening for hand qpos on udp://{host}:{port}; "
             f"sides={self.sides}; rate={publish_rate:g}Hz; "
-            f"slew={max_command_rate:g} units/s; "
+            f"models={configured_models}; "
+            f"effective_slew_rates={effective_slew_rates}; "
             f"abduction_invert={abduction_invert}; mode={mode}"
         )
         if self.enabled:
@@ -191,48 +219,36 @@ class LinkerHandBridge(Node):
         Fires on a delay so the vendor driver has had time to subscribe. The
         driver's own console reports the value it applied.
 
-        Note that `/cb_hand_setting_cmd` is a single global topic and the vendor
-        driver applies every message to its own hand regardless of the
-        `hand_type` field: both branches of its handler assign the same API
-        object. With two drivers running, each therefore applies both messages.
-        That is harmless while both sides get the same speed, but per-side speeds
-        do not work, and the last message received would win.
+        Each driver launch remaps its vendor-global setting subscription to a
+        side-specific topic. This isolation is required when the two sides use
+        different models or settings.
         """
         if self.speed_timer is not None:
             self.speed_timer.cancel()
             self.speed_timer = None
+        requested = []
         for side in self.sides:
-            if self.initial_speed > 0:
+            settings = self.profiles[side].startup_settings(
+                self.initial_speed,
+                self.initial_torque,
+                self.initial_thumb_torque,
+            )
+            for setting in settings:
                 message = String()
                 message.data = json.dumps(
                     {
-                        "setting_cmd": "set_speed",
+                        "setting_cmd": setting.command,
                         "params": {
                             "hand_type": side,
-                            "speed": [self.initial_speed] * 5,
+                            setting.values_key: list(setting.values),
                         },
                     }
                 )
-                self.setting_publisher.publish(message)
-            if self.initial_torque > 0:
-                message = String()
-                message.data = json.dumps(
-                    {
-                        "setting_cmd": "set_max_torque_limits",
-                        "params": {
-                            "hand_type": side,
-                            # Vendor finger order: thumb, index, middle,
-                            # ring, little.
-                            "torque": [self.initial_thumb_torque]
-                            + [self.initial_torque] * 4,
-                        },
-                    }
-                )
-                self.setting_publisher.publish(message)
+                self.setting_publishers[side].publish(message)
+                requested.append(f"{side}:{setting.command}")
         self.get_logger().info(
-            f"Requested joint speed {self.initial_speed}/255, thumb torque "
-            f"{self.initial_thumb_torque}/255, finger torque "
-            f"{self.initial_torque}/255 (0 = not sent) on {list(self.sides)}"
+            "Requested startup settings "
+            + (", ".join(requested) if requested else "(none)")
         )
 
     def _feedback_callback(self, side: str, message: JointState) -> None:
@@ -244,7 +260,7 @@ class LinkerHandBridge(Node):
         like a fully flexed hand, so the limiter would then slew away from a
         closed fist that the hand was never in.
         """
-        validated = validate_hand_state(message.position)
+        validated = self.profiles[side].validate_state(message.position)
         if validated is None:
             side_state = self.state[side]
             side_state.rejected_feedback += 1
@@ -273,7 +289,7 @@ class LinkerHandBridge(Node):
                 ):
                     self.out_of_order_count += 1
                     continue
-                target = self.mapper.map_packet(packet)
+                target = self.profiles[packet.side].map_packet(packet)
             except (TypeError, ValueError) as error:
                 self.invalid_count += 1
                 if self.invalid_count <= 3:
@@ -305,14 +321,14 @@ class LinkerHandBridge(Node):
                 start = (
                     side_state.feedback
                     if side_state.feedback is not None
-                    else self.mapper.home(side)
+                    else self.profiles[side].home(side)
                 )
                 side_state.limiter.reset(start, now)
                 side_state.was_fresh = True
             command = side_state.limiter.step(side_state.target, now)
             message = JointState()
             message.header.stamp = self.get_clock().now().to_msg()
-            message.name = list(G20_JOINT_NAMES)
+            message.name = list(self.profiles[side].command_joint_names)
             message.position = list(command)
             self.debug_publishers[side].publish(message)
             if not self.enabled:

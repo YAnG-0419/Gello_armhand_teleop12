@@ -1,6 +1,7 @@
 import numpy as np
 
 from teleop_data.converter import normalize_episode
+from teleop_data.hand_profiles import HandDataProfile
 
 
 def _samples(width, offset=0.0):
@@ -46,3 +47,32 @@ def test_normalize_episode_contains_franka_and_linker_state_and_action():
             )
         ),
     )
+
+
+def test_normalize_episode_supports_different_per_side_hand_widths():
+    arm_names = [
+        *(f"left_fr3v2_joint{index}" for index in range(1, 8)),
+        *(f"right_fr3v2_joint{index}" for index in range(1, 8)),
+    ]
+    profiles = {
+        "left": HandDataProfile("test2", ("l0", "l1"), (0.0,) * 2, (1.0,) * 2),
+        "right": HandDataProfile(
+            "test3", ("r0", "r1", "r2"), (0.0,) * 3, (1.0,) * 3
+        ),
+    }
+    raw = {
+        "left_state": _samples(7),
+        "right_state": _samples(7),
+        "action": [(0.0, (arm_names, np.zeros(14))), (1.0, (arm_names, np.ones(14)))],
+        "active": [(0.0, [True, True]), (1.0, [True, True])],
+        "left_hand_state": _samples(2),
+        "right_hand_state": _samples(3),
+        "left_hand_action": _samples(2),
+        "right_hand_action": _samples(3),
+    }
+    episode = normalize_episode(raw, fps=2, hand_profiles=profiles)
+    assert str(episode["schema_version"]) == "franka_linker.teleop.normalized.v3"
+    assert episode["observation_hand_joint_position"].shape == (3, 5)
+    assert episode["action_joint_position"].shape == (3, 19)
+    assert str(episode["left_hand_model"]) == "test2"
+    assert episode["right_hand_joint_names"].tolist() == ["r0", "r1", "r2"]

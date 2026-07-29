@@ -96,6 +96,15 @@ def main() -> None:
         choices=("left", "right", "both"),
         help="dynamic hand sides for --hand-source pico (default: both)",
     )
+    parser.add_argument("--left-hand-model", default="g20")
+    parser.add_argument(
+        "--right-hand-model",
+        default=None,
+        help=(
+            "right hand model; defaults to g20 for PICO and o30i for "
+            "right-only-manus"
+        ),
+    )
     args = parser.parse_args()
     if args.hand_debug_log and args.hand_source == "none":
         parser.error("--hand-debug-log requires a hand source")
@@ -114,13 +123,18 @@ def main() -> None:
 
         hand_sides = args.hand_sides or "both"
         sides = ("left", "right") if hand_sides == "both" else (hand_sides,)
+        models = {
+            side: (getattr(args, f"{side}_hand_model") or "g20")
+            for side in sides
+        }
         hand_sender_factory = partial(
             HandPipeline,
-            assets_dir=REPO_ROOT / "assets" / "linkerhand_l20",
+            assets_root=REPO_ROOT / "assets",
             host=args.hand_host,
             port=args.hand_port,
             rate=args.hand_rate,
             sides=sides,
+            models=models,
             debug_log=args.hand_debug_log,
         )
     elif args.hand_source == "right-only-manus":
@@ -137,12 +151,19 @@ def main() -> None:
         required_input_sides = ("right",)
         from manus_teleop import RightOnlyManusHandPipeline
 
-        hand_sender_factory = lambda _xrt: RightOnlyManusHandPipeline(
-            host=args.hand_host,
-            port=args.hand_port,
-            rate=args.hand_rate,
-            debug_log=args.hand_debug_log,
-        )
+        def create_manus_pipeline(_xrt):
+            return RightOnlyManusHandPipeline(
+                host=args.hand_host,
+                port=args.hand_port,
+                rate=args.hand_rate,
+                debug_log=args.hand_debug_log,
+                models={
+                    "left": args.left_hand_model,
+                    "right": args.right_hand_model or "o30i",
+                },
+            )
+
+        hand_sender_factory = create_manus_pipeline
 
     debug_logger = None
     if args.debug_log:

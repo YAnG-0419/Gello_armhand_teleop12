@@ -2,7 +2,7 @@
 <package format="3">
   <name>linker_hand_bridge</name>
   <version>0.1.0</version>
-  <description>Safety-gated bridge from retargeted hand poses to LinkerHand G20 commands.</description>
+  <description>Safety-gated, per-side-profiled LinkerHand command bridge.</description>
   <maintainer email="descfly@example.com">descfly</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>

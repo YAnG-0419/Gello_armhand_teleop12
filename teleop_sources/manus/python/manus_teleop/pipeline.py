@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import time
 from pathlib import Path
+from xml.etree import ElementTree
 
 import numpy as np
 
@@ -131,31 +132,65 @@ class RightOnlyManusHandPipeline:
         port: int = 5570,
         rate: float = 30.0,
         stale_timeout: float = 0.25,
+        filter_alpha: float = 0.85,
         library: Path | None = None,
         calibration_dir: Path | None = None,
         debug_log: str | Path | None = None,
+        models: dict[str, str] | None = None,
         bridge_factory=ManusBridge,
     ) -> None:
         if stale_timeout <= 0.0:
             raise ValueError("MANUS stale timeout must be positive")
-
-        from pico_bimanual_franka_teleop.hand_retarget import L20Retargeter
+        if models is not None and set(models) != set(self.sides):
+            raise ValueError("models must define exactly left and right")
+        models = (
+            {side: "g20" for side in self.sides}
+            if models is None
+            else {
+                side: str(models[side]).strip().lower() for side in self.sides
+            }
+        )
+        if models["left"] != "g20" or models["right"] not in {"g20", "o30i"}:
+            raise ValueError(
+                "MANUS supports left=g20 and right in {g20, o30i}"
+            )
 
         self.stale_timeout = float(stale_timeout)
         self.status = HandStatus()
         self.sender = HandCommandSender(
-            host=host, port=port, rate=rate, sides=self.sides, status=self.status
+            host=host,
+            port=port,
+            rate=rate,
+            sides=self.sides,
+            models=models,
+            status=self.status,
         )
         try:
-            self.retargeter = L20Retargeter(
-                REPO_ROOT
-                / "assets"
-                / "linkerhand_l20"
-                / "right"
-                / "linkerhand_l20_right.urdf",
-                "right",
-                thumb_opposition_fixed=None,
-            )
+            if models["right"] == "o30i":
+                from .o30i_retarget import O30IRetargeter
+
+                self.retargeter = O30IRetargeter(
+                    REPO_ROOT
+                    / "assets"
+                    / "linkerhand_o30i"
+                    / "right"
+                    / "linkerhand_o30i_right.urdf",
+                    "right",
+                    filter_alpha=filter_alpha,
+                )
+            else:
+                from pico_bimanual_franka_teleop.hand_retarget import L20Retargeter
+
+                self.retargeter = L20Retargeter(
+                    REPO_ROOT
+                    / "assets"
+                    / "linkerhand_l20"
+                    / "right"
+                    / "linkerhand_l20_right.urdf",
+                    "right",
+                    filter_alpha=filter_alpha,
+                    thumb_opposition_fixed=None,
+                )
         except BaseException:
             self.sender.close()
             raise
@@ -180,9 +215,18 @@ class RightOnlyManusHandPipeline:
             self.retargeter.close()
             self.sender.close()
             raise
+        left_urdf = (
+            REPO_ROOT
+            / "assets"
+            / "linkerhand_l20"
+            / "left"
+            / "linkerhand_l20_left.urdf"
+        )
+        root = ElementTree.parse(left_urdf).getroot()
         self.left_joint_names = tuple(
-            "thumb_ip" if name == "thumb_dip" else name
-            for name in self.retargeter.joint_names
+            element.attrib["name"]
+            for element in root.findall("joint")
+            if element.attrib.get("type") in {"revolute", "continuous"}
         )
         self.open_until = 0.0
         self.last_frame: ManusFrame | None = None
@@ -282,7 +326,7 @@ class RightOnlyManusHandPipeline:
             status.fault = str(error)
             return
         self.sender.emit(
-            "manus-right-full-thumb",
+            f"manus-right-{self.sender.models['right']}",
             "right",
             self.retargeter.joint_names,
             qpos,

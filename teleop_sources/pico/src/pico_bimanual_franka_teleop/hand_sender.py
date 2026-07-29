@@ -44,6 +44,7 @@ class HandCommandSender:
         port: int,
         rate: float,
         sides: tuple[str, ...],
+        models: dict[str, str],
         status: HandStatus,
     ) -> None:
         if not 0.0 < rate <= 60.0:
@@ -51,6 +52,13 @@ class HandCommandSender:
         self.address = (str(host), int(port))
         self.interval = 1.0 / float(rate)
         self.status = status
+        if set(models) != set(sides) or any(
+            not str(model).strip() for model in models.values()
+        ):
+            raise ValueError("models must define one non-empty model for every side")
+        self.models = {
+            side: str(models[side]).strip().lower() for side in sides
+        }
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sequence = {side: 0 for side in sides}
         self._next_due = {side: 0.0 for side in sides}
@@ -90,6 +98,7 @@ class HandCommandSender:
                     side,
                     joint_names,
                     qpos,
+                    model=self.models[side],
                 ),
                 self.address,
             )

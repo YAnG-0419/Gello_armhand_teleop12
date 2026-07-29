@@ -1,13 +1,12 @@
 import argparse
-import shutil
 from pathlib import Path
 
 import numpy as np
 
 from .config import load_config
 from .converter import normalize_episode
+from .hand_profiles import default_hand_profiles
 from .portable_bag import (
-    G20_JOINT_NAMES,
     image_to_depth,
     image_to_rgb,
     iter_topic,
@@ -26,31 +25,38 @@ ACTION_NAMES = [
     *(f"left_fr3_joint{index}.target_position" for index in range(1, 8)),
     *(f"right_fr3_joint{index}.target_position" for index in range(1, 8)),
 ]
-HAND_STATE_NAMES = [
-    f"{side}_linker_hand.{name.lower().replace(' ', '_')}.position"
-    for side in ("left", "right")
-    for name in G20_JOINT_NAMES
-]
-HAND_ACTION_NAMES = [
-    f"{side}_linker_hand.{name.lower().replace(' ', '_')}.target_position"
-    for side in ("left", "right")
-    for name in G20_JOINT_NAMES
-]
-ALL_STATE_NAMES = STATE_NAMES + HAND_STATE_NAMES
-ALL_ACTION_NAMES = ACTION_NAMES + HAND_ACTION_NAMES
 
 
-def features(color_shape, depth_shape):
+def _hand_feature_names(hand_profiles, suffix):
+    return [
+        f"{side}_linker_hand."
+        f"{name.lower().replace(' ', '_')}.{suffix}"
+        for side, profile in (
+            (side, hand_profiles[side]) for side in ("left", "right")
+        )
+        for name in profile.joint_names
+    ]
+
+
+def features(color_shape, depth_shape, hand_profiles=None):
+    hand_profiles = hand_profiles or default_hand_profiles()
+    all_state_names = STATE_NAMES + _hand_feature_names(
+        hand_profiles, "position"
+    )
+    all_action_names = ACTION_NAMES + _hand_feature_names(
+        hand_profiles, "target_position"
+    )
+    total_width = len(all_state_names)
     return {
         "observation.state": {
             "dtype": "float32",
-            "shape": (54,),
-            "names": ALL_STATE_NAMES,
+            "shape": (total_width,),
+            "names": all_state_names,
         },
         "action": {
             "dtype": "float32",
-            "shape": (54,),
-            "names": ALL_ACTION_NAMES,
+            "shape": (total_width,),
+            "names": all_action_names,
         },
         "observation.active_sides": {
             "dtype": "float32",
@@ -135,7 +141,7 @@ def export_bags(bags, output, repo_id, task, config_path, fps=None):
         fps=fps,
         root=output,
         robot_type="dual_fr3",
-        features=features(color_shape, depth_shape),
+        features=features(color_shape, depth_shape, config.hand_profiles),
         use_videos=True,
         image_writer_threads=4,
         rgb_encoder=_rgb_encoder(),
@@ -146,8 +152,10 @@ def export_bags(bags, output, repo_id, task, config_path, fps=None):
     try:
         for bag, (color_info, depth_info) in zip(bags, stream_info):
             progress.write(f"Reading {bag.name} arm state and actions...")
-            raw = read_raw_episode(bag)
-            episode = normalize_episode(raw, fps)
+            raw = read_raw_episode(bag, config.hand_profiles)
+            episode = normalize_episode(
+                raw, fps, hand_profiles=config.hand_profiles
+            )
             absolute_start = max(
                 raw["left_state"][0][0],
                 raw["right_state"][0][0],

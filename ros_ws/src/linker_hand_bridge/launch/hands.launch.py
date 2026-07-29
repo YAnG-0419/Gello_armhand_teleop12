@@ -1,12 +1,12 @@
-"""Bring up both Linker Hand G20 drivers and the teleoperation bridge.
+"""Bring up model-specific Linker Hand drivers and the safety bridge.
 
-One command for the whole robot side of PICO hand teleoperation. The only other
-process needed is the PICO host script, which runs in the Conda environment:
+This launch supports a left G20 and a right G20 or O30i. PICO optical hand
+tracking remains a G20 source; the right O30i source is the MANUS pipeline.
 
-    python teleop_sources/pico/scripts/hardware/teleop_hands.py
-
-Bus-to-side mapping is confirmed from each hand's own reported comm ID:
-`can0` is the left hand at 0x28, `can1` is the right at 0x27.
+The G20 bus-to-side mapping is confirmed from each hand's own reported comm ID:
+`can0` is the left hand at 0x28. The current O30i uses HOP CAN-FD through the
+vendor `libcanbus` USB adapter, device 0/channel 0, with right-hand request ID
+0x01 and response ID 0x401. A transparent SocketCAN adapter may use `can1`.
 
 `linker_hand_sdk` with `hand_joint:=G20` is motionless at startup, unlike
 `linker_hand_advanced_g20`, which snaps to a default pose at full speed and
@@ -18,10 +18,13 @@ Output is disabled by default. The Compose `hand-control` service explicitly
 enables it as an operator-facing hardware action.
 """
 
+import math
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from linker_hand_bridge.profiles import create_hand_profile
 
 SIDES = (("left", "can0"), ("right", "can1"))
 
@@ -32,26 +35,151 @@ def _nodes(context):
     sides = LaunchConfiguration("sides").perform(context)
     if sides not in ("left", "right", "both"):
         raise ValueError(f"sides must be left, right, or both, got {sides!r}")
-    drivers = [
-        Node(
-            package="linker_hand_ros2_sdk",
-            executable="linker_hand_sdk",
-            # Both driver instances hardcode the same node name, so rename them
-            # or the second one collides with the first.
-            name=f"linker_hand_{side}",
-            output="screen",
-            parameters=[
-                {
-                    "hand_type": side,
-                    "hand_joint": "G20",
-                    "can": channel,
-                    "is_touch": LaunchConfiguration("is_touch"),
-                }
-            ],
-        )
-        for side, channel in SIDES
-        if sides in ("both", side)
+    models = {
+        side: LaunchConfiguration(f"{side}_model").perform(context).strip().lower()
+        for side, _ in SIDES
+    }
+    if any(not model for model in models.values()):
+        raise ValueError("left_model and right_model must be non-empty")
+    enabled = LaunchConfiguration("enabled").perform(context).strip().lower()
+    if enabled not in {"true", "false"}:
+        raise ValueError("enabled must be true or false")
+    calibration_verified = (
+        LaunchConfiguration("o30_calibration_verified")
+        .perform(context)
+        .strip()
+        .lower()
+    )
+    if calibration_verified not in {"true", "false"}:
+        raise ValueError("o30_calibration_verified must be true or false")
+
+    def calibration_vector(argument):
+        text = LaunchConfiguration(argument).perform(context)
+        try:
+            values = [float(value.strip()) for value in text.split(",")]
+        except ValueError as error:
+            raise ValueError(f"{argument} must be a comma-separated numeric vector") from error
+        if len(values) != 20 or any(
+            not math.isfinite(value) or value < 0.0 or value > 255.0
+            for value in values
+        ):
+            raise ValueError(f"{argument} must contain 20 values in [0, 255]")
+        return values
+
+    tick_at_lower = calibration_vector("o30_tick_at_lower")
+    tick_at_upper = calibration_vector("o30_tick_at_upper")
+    for side, _ in SIDES:
+        if sides in ("both", side):
+            # Fail before any driver process starts if the safety bridge has no
+            # contract for the requested hardware.
+            create_hand_profile(models[side], side=side)
+    selected_o30 = [
+        side
+        for side, _ in SIDES
+        if sides in ("both", side) and models[side] == "o30i"
     ]
+    o30_transport = (
+        LaunchConfiguration("o30_transport").perform(context).strip().lower()
+    )
+    if selected_o30 and o30_transport not in {"socketcan", "libcanbus"}:
+        raise ValueError("o30_transport must be socketcan or libcanbus")
+    for argument in ("o30_canfd_device", "o30_canfd_channel"):
+        try:
+            index = int(LaunchConfiguration(argument).perform(context))
+        except ValueError as error:
+            raise ValueError(f"{argument} must be an integer") from error
+        if selected_o30 and index < 0:
+            raise ValueError(f"{argument} must not be negative")
+    if enabled == "true" and selected_o30 and calibration_verified != "true":
+        raise ValueError(
+            "real O30i output requires o30_calibration_verified:=true"
+        )
+    if enabled == "true" and selected_o30:
+        if any(
+            lower == upper
+            for lower, upper in zip(tick_at_lower, tick_at_upper, strict=True)
+        ):
+            raise ValueError(
+                "O30i lower/upper calibration ticks must differ for every joint"
+            )
+        for argument in ("o30_command_timeout", "o30_state_timeout"):
+            try:
+                timeout = float(LaunchConfiguration(argument).perform(context))
+            except ValueError as error:
+                raise ValueError(f"{argument} must be numeric") from error
+            if not math.isfinite(timeout) or timeout <= 0.0:
+                raise ValueError(f"{argument} must be positive and finite")
+
+    drivers = []
+    for side, channel in SIDES:
+        if sides not in ("both", side):
+            continue
+        if models[side] == "o30i":
+            # A dry-run bridge never opens or enables the O30i CAN-FD device.
+            if enabled != "true":
+                continue
+            drivers.append(
+                Node(
+                    package="linker_hand_ros2_sdk",
+                    executable="linker_hand_o30i",
+                    name=f"linker_hand_{side}_o30i",
+                    output="screen",
+                    parameters=[
+                        {
+                            "hand_type": side,
+                            "transport": LaunchConfiguration(
+                                "o30_transport"
+                            ),
+                            "can": channel,
+                            "frame_id": 1 if side == "right" else 2,
+                            "canfd_device": LaunchConfiguration(
+                                "o30_canfd_device"
+                            ),
+                            "canfd_channel": LaunchConfiguration(
+                                "o30_canfd_channel"
+                            ),
+                            "libcanbus_path": LaunchConfiguration(
+                                "o30_libcanbus_path"
+                            ),
+                            "output_enabled": True,
+                            "calibration_verified": True,
+                            "tick_at_lower": tick_at_lower,
+                            "tick_at_upper": tick_at_upper,
+                            "command_timeout": LaunchConfiguration(
+                                "o30_command_timeout"
+                            ),
+                            "state_timeout": LaunchConfiguration(
+                                "o30_state_timeout"
+                            ),
+                        }
+                    ],
+                )
+            )
+            continue
+        drivers.append(
+            Node(
+                package="linker_hand_ros2_sdk",
+                executable="linker_hand_sdk",
+                # Both driver instances hardcode the same node name, so rename
+                # them or the second one collides with the first.
+                name=f"linker_hand_{side}",
+                output="screen",
+                remappings=[
+                    (
+                        "/cb_hand_setting_cmd",
+                        f"/cb_{side}_hand_setting_cmd",
+                    )
+                ],
+                parameters=[
+                    {
+                        "hand_type": side,
+                        "hand_joint": models[side].upper(),
+                        "can": channel,
+                        "is_touch": LaunchConfiguration("is_touch"),
+                    }
+                ],
+            )
+        )
     bridge = Node(
         package="linker_hand_bridge",
         executable="bridge",
@@ -61,6 +189,8 @@ def _nodes(context):
             {
                 "port": LaunchConfiguration("port"),
                 "sides": LaunchConfiguration("sides"),
+                "left_model": models["left"],
+                "right_model": models["right"],
                 "enabled": LaunchConfiguration("enabled"),
                 "max_command_rate": LaunchConfiguration("max_command_rate"),
                 "initial_speed": LaunchConfiguration("initial_speed"),
@@ -84,6 +214,67 @@ def generate_launch_description() -> LaunchDescription:
             description="left, right, or both",
         ),
         DeclareLaunchArgument(
+            "left_model",
+            default_value="g20",
+            description="Registered bridge and vendor-driver model for the left hand.",
+        ),
+        DeclareLaunchArgument(
+            "right_model",
+            default_value="g20",
+            description="Registered bridge and vendor-driver model for the right hand.",
+        ),
+        DeclareLaunchArgument(
+            "o30_calibration_verified",
+            default_value="false",
+            description=(
+                "Required true before real O30i output. Confirms that the "
+                "configured radians-to-tick mapping was reviewed."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "o30_transport",
+            default_value="libcanbus",
+            description=(
+                "O30i adapter transport: libcanbus for the connected metal "
+                "USB-CANFD adapter, or socketcan for a native CAN interface."
+            ),
+        ),
+        DeclareLaunchArgument("o30_canfd_device", default_value="0"),
+        DeclareLaunchArgument("o30_canfd_channel", default_value="0"),
+        DeclareLaunchArgument(
+            "o30_libcanbus_path",
+            default_value="",
+            description=(
+                "Optional libcanbus.so override; empty uses the packaged runtime."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "o30_tick_at_lower",
+            default_value=",".join(["0"] * 20),
+            description="Twenty O30i ticks corresponding to the URDF lower limits.",
+        ),
+        DeclareLaunchArgument(
+            "o30_tick_at_upper",
+            default_value=",".join(["255"] * 20),
+            description="Twenty O30i ticks corresponding to the URDF upper limits.",
+        ),
+        DeclareLaunchArgument(
+            "o30_command_timeout",
+            default_value="0.25",
+            description=(
+                "Seconds without a command before the O30i driver disables all "
+                "joints terminally."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "o30_state_timeout",
+            default_value="0.5",
+            description=(
+                "Seconds without valid O30i position feedback before the driver "
+                "disables all joints terminally."
+            ),
+        ),
+        DeclareLaunchArgument(
             "enabled",
             default_value="false",
             description="Publish to the vendor control topics.",
@@ -92,11 +283,9 @@ def generate_launch_description() -> LaunchDescription:
             "max_command_rate",
             default_value="1500.0",
             description=(
-                "Slew limit in vendor units per second. At 1500 a full 0..255 "
-                "sweep takes about 0.17 s at the 30 Hz publish rate, so the hand's "
-                "own firmware speed becomes the binding constraint rather than this "
-                "limiter, which is where it belongs. Drop to 200 for cautious runs "
-                "after changing the mapping."
+                "Requested per-second slew limit in each profile's canonical "
+                "units. Profiles impose their own upper cap: G20 uses ticks and "
+                "O30i uses URDF radians."
             ),
         ),
         DeclareLaunchArgument(

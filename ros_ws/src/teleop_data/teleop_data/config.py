@@ -1,7 +1,10 @@
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 import yaml
+
+from .hand_profiles import HandDataProfile, create_hand_data_profile
 
 
 @dataclass(frozen=True)
@@ -20,10 +23,11 @@ class RecordingConfig:
     conversion_fps: int
     replay_speed: float
     replay_preposition_speed: float
-    replay_hand_preposition_speed: float
+    replay_hand_preposition_speed: dict[str, float]
     replay_rate: float
     replay_state_timeout: float
     replay_discovery_timeout: float
+    hand_profiles: dict[str, HandDataProfile]
     topics: tuple[TopicSpec, ...]
 
 
@@ -39,6 +43,7 @@ def load_config(path):
         "storage_id",
         "conversion",
         "replay",
+        "hands",
         "topics",
     }
     root_fields = set(raw)
@@ -54,11 +59,20 @@ def load_config(path):
     storage = str(raw["storage_id"]).strip()
     conversion = raw["conversion"]
     replay = raw["replay"]
+    hands_raw = raw["hands"]
     topics_raw = raw["topics"]
     if not schema or not data_root or not storage:
         raise ValueError("schema_version, data_root, and storage_id are required.")
     if not isinstance(topics_raw, dict) or not topics_raw:
         raise ValueError("Recording topics must be a non-empty mapping.")
+    if not isinstance(hands_raw, dict) or set(hands_raw) != {"left", "right"}:
+        raise ValueError("hands must define exactly: left and right.")
+    hand_profiles = {}
+    for side in ("left", "right"):
+        fields = hands_raw[side]
+        if not isinstance(fields, dict) or set(fields) != {"model"}:
+            raise ValueError(f"hands.{side} must contain exactly: model.")
+        hand_profiles[side] = create_hand_data_profile(fields["model"], side=side)
     if not isinstance(conversion, dict) or set(conversion) != {"fps"}:
         raise ValueError("conversion must contain exactly: fps.")
     replay_fields = {
@@ -75,8 +89,23 @@ def load_config(path):
             "hand_preposition_speed, rate, speed, state_timeout."
         )
     conversion_fps = int(conversion["fps"])
-    replay_values = {key: float(replay[key]) for key in replay_fields}
-    if conversion_fps <= 0 or any(value <= 0 for value in replay_values.values()):
+    scalar_replay_fields = replay_fields - {"hand_preposition_speed"}
+    replay_values = {key: float(replay[key]) for key in scalar_replay_fields}
+    hand_preposition_raw = replay["hand_preposition_speed"]
+    if (
+        not isinstance(hand_preposition_raw, dict)
+        or set(hand_preposition_raw) != {"left", "right"}
+    ):
+        raise ValueError(
+            "replay.hand_preposition_speed must define exactly: left and right."
+        )
+    hand_preposition_speed = {
+        side: float(hand_preposition_raw[side]) for side in ("left", "right")
+    }
+    numeric_values = [*replay_values.values(), *hand_preposition_speed.values()]
+    if conversion_fps <= 0 or any(
+        not math.isfinite(value) or value <= 0 for value in numeric_values
+    ):
         raise ValueError("Conversion and replay numeric values must be positive.")
     topics = []
     seen = set()
@@ -111,10 +140,11 @@ def load_config(path):
         conversion_fps,
         replay_values["speed"],
         replay_values["preposition_speed"],
-        replay_values["hand_preposition_speed"],
+        hand_preposition_speed,
         replay_values["rate"],
         replay_values["state_timeout"],
         replay_values["discovery_timeout"],
+        hand_profiles,
         tuple(topics),
     )
 

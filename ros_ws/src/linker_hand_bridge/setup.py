@@ -16,7 +16,7 @@ setup(
     zip_safe=True,
     maintainer="descfly",
     maintainer_email="descfly@example.com",
-    description="Safety-gated bridge from retargeted hand poses to LinkerHand G20.",
+    description="Safety-gated, per-side-profiled LinkerHand command bridge.",
     license="MIT",
     entry_points={
         "console_scripts": [

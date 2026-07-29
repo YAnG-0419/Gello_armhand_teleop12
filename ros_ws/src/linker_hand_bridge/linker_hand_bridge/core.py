@@ -1,4 +1,4 @@
-"""ROS-independent packet decoding, G20 projection, and slew limiting.
+"""ROS-independent packet decoding, device projection, and slew limiting.
 
 Ported from the sibling WiLoR repository's
 `ros2/wilor_linkerhand_bridge/wilor_linkerhand_bridge/core.py`. The projection
@@ -100,6 +100,7 @@ class QposPacket:
     sequence: int
     timestamp: float
     side: str
+    model: str | None
     joint_names: tuple[str, ...]
     qpos: tuple[float, ...]
 
@@ -154,12 +155,23 @@ def decode_qpos_packet(payload: bytes) -> QposPacket:
         sequence=sequence,
         timestamp=timestamp,
         side=str(message["side"]),
+        model=(
+            None
+            if message.get("model") is None
+            else str(message["model"]).strip().lower()
+        ),
         joint_names=names,
         qpos=qpos,
     )
 
 
-def validate_hand_state(positions: Sequence[float]) -> tuple[float, ...] | None:
+def validate_hand_state(
+    positions: Sequence[float],
+    *,
+    command_slots: int = COMMAND_SLOTS,
+    lower_bounds: Sequence[float] | None = None,
+    upper_bounds: Sequence[float] | None = None,
+) -> tuple[float, ...] | None:
     """Return a usable 20-slot state, or None if the message must be ignored.
 
     The vendor driver's very first published state carries 10 values rather than
@@ -167,12 +179,20 @@ def validate_hand_state(positions: Sequence[float]) -> tuple[float, ...] | None:
     hardware poll fills it in. It also uses -1 as a no-data sentinel. Neither is
     a valid measurement and neither may be allowed to seed the slew limiter.
     """
-    if len(positions) != COMMAND_SLOTS:
+    if lower_bounds is None:
+        lower_bounds = [0.0] * command_slots
+    if upper_bounds is None:
+        upper_bounds = [255.0] * command_slots
+    if (
+        len(lower_bounds) != command_slots
+        or len(upper_bounds) != command_slots
+        or len(positions) != command_slots
+    ):
         return None
     values = []
-    for value in positions:
+    for value, lower, upper in zip(positions, lower_bounds, upper_bounds):
         number = float(value)
-        if not math.isfinite(number) or number < 0.0 or number > 255.0:
+        if not math.isfinite(number) or number < lower or number > upper:
             return None
         values.append(number)
     return tuple(values)
@@ -309,24 +329,75 @@ class G20Mapper:
 class CommandLimiter:
     """Limit command slew in vendor range units per second."""
 
-    def __init__(self, initial: Sequence[float], max_units_per_second: float) -> None:
-        if len(initial) != COMMAND_SLOTS:
-            raise ValueError(f"initial command must contain {COMMAND_SLOTS} values")
+    def __init__(
+        self,
+        initial: Sequence[float],
+        max_units_per_second: float,
+        *,
+        lower_bounds: Sequence[float] | None = None,
+        upper_bounds: Sequence[float] | None = None,
+        fixed_values: dict[int, float] | None = None,
+    ) -> None:
+        if not initial:
+            raise ValueError("initial command must not be empty")
         if max_units_per_second <= 0.0:
             raise ValueError("max_units_per_second must be positive")
+        size = len(initial)
+        legacy_g20_defaults = (
+            lower_bounds is None
+            and upper_bounds is None
+            and fixed_values is None
+        )
+        if legacy_g20_defaults and size != COMMAND_SLOTS:
+            raise ValueError(
+                f"initial command must contain {COMMAND_SLOTS} values"
+            )
+        self.lower_bounds = tuple(
+            float(value)
+            for value in (
+                [0.0] * size if lower_bounds is None else lower_bounds
+            )
+        )
+        self.upper_bounds = tuple(
+            float(value)
+            for value in (
+                [255.0] * size if upper_bounds is None else upper_bounds
+            )
+        )
+        if len(self.lower_bounds) != size or len(self.upper_bounds) != size:
+            raise ValueError("limiter bounds must match the command length")
+        if any(
+            lower > upper
+            for lower, upper in zip(self.lower_bounds, self.upper_bounds)
+        ):
+            raise ValueError("limiter lower bounds must not exceed upper bounds")
+        self.fixed_values = dict(
+            {
+                index: 0.0
+                for index in range(RESERVED_SLOTS.start, RESERVED_SLOTS.stop)
+            }
+            if legacy_g20_defaults
+            else (fixed_values or {})
+        )
+        if any(index < 0 or index >= size for index in self.fixed_values):
+            raise ValueError("fixed command index is out of range")
         self.value = tuple(float(value) for value in initial)
         self.max_units_per_second = float(max_units_per_second)
         self.last_time: float | None = None
 
     def reset(self, value: Sequence[float], now: float | None = None) -> None:
-        if len(value) != COMMAND_SLOTS:
-            raise ValueError(f"reset command must contain {COMMAND_SLOTS} values")
+        if len(value) != len(self.value):
+            raise ValueError(
+                f"reset command must contain {len(self.value)} values"
+            )
         self.value = tuple(float(item) for item in value)
         self.last_time = now
 
     def step(self, target: Sequence[float], now: float) -> tuple[float, ...]:
-        if len(target) != COMMAND_SLOTS:
-            raise ValueError(f"target command must contain {COMMAND_SLOTS} values")
+        if len(target) != len(self.value):
+            raise ValueError(
+                f"target command must contain {len(self.value)} values"
+            )
         if self.last_time is None:
             self.last_time = float(now)
             return self.value
@@ -336,9 +407,12 @@ class CommandLimiter:
         self.last_time = float(now)
         maximum_delta = self.max_units_per_second * dt
         result = []
-        for current, desired in zip(self.value, target):
+        for current, desired, lower, upper in zip(
+            self.value, target, self.lower_bounds, self.upper_bounds
+        ):
             delta = min(max(float(desired) - current, -maximum_delta), maximum_delta)
-            result.append(min(255.0, max(0.0, current + delta)))
-        result[RESERVED_SLOTS] = [0.0] * 4
+            result.append(min(upper, max(lower, current + delta)))
+        for index, value in self.fixed_values.items():
+            result[index] = value
         self.value = tuple(result)
         return self.value

@@ -2,13 +2,21 @@ schema_version: franka_linker.teleop.raw.v2
 data_root: /data/episodes
 storage_id: sqlite3
 
+hands:
+  left:
+    model: g20
+  right:
+    model: o30i
+
 conversion:
   fps: 30
 
 replay:
   speed: 1.0
   preposition_speed: 0.1
-  hand_preposition_speed: 100.0
+  hand_preposition_speed:
+    left: 100.0
+    right: 1.0
   rate: 100.0
   state_timeout: 0.25
   discovery_timeout: 10.0

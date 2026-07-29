@@ -67,6 +67,8 @@ services:
       - linker_hand_bridge
       - hands.launch.py
       - sides:=both
+      - left_model:=g20
+      - right_model:=g20
       - enabled:=true
       # abduction_invert stays at its default (false). The unified MANUS mode
       # feeds the same L20 retargeter as the validated PICO path (offline check

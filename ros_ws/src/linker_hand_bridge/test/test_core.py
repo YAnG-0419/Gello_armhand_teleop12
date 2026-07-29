@@ -8,9 +8,11 @@ from linker_hand_bridge.core import (
     G20_JOINT_NAMES,
     CommandLimiter,
     G20Mapper,
+    QposPacket,
     decode_qpos_packet,
     validate_hand_state,
 )
+from linker_hand_bridge.profiles import O30I_JOINT_NAMES, create_hand_profile
 
 L20_JOINTS = (
     "pinky_mcp_roll",
@@ -60,6 +62,12 @@ def test_decode_round_trip():
     assert packet.side == "left"
     assert packet.sequence == 1
     assert len(packet.qpos) == 21
+    assert packet.model is None
+
+
+def test_decode_accepts_a_model_tag():
+    packet = decode_qpos_packet(packet_bytes("right", model="g20"))
+    assert packet.model == "g20"
 
 
 @pytest.mark.parametrize(
@@ -223,6 +231,69 @@ def test_validate_hand_state_rejects_the_drivers_first_message():
     assert validate_hand_state([300.0] * 20) is None
     good = [12.0] * 20
     assert validate_hand_state(good) == tuple(good)
+
+
+def test_g20_profile_owns_device_specific_contract():
+    profile = create_hand_profile("G20")
+    assert profile.model == "g20"
+    assert profile.command_slots == 20
+    assert profile.command_joint_names == G20_JOINT_NAMES
+    assert profile.fixed_values == {11: 0.0, 12: 0.0, 13: 0.0, 14: 0.0}
+    assert profile.max_publish_rate == 30.0
+    settings = profile.startup_settings(255, 200, 250)
+    assert [setting.command for setting in settings] == [
+        "set_speed",
+        "set_max_torque_limits",
+    ]
+
+
+def test_profile_rejects_unknown_and_mismatched_models():
+    with pytest.raises(ValueError, match="unsupported hand model"):
+        create_hand_profile("not-a-hand")
+    profile = create_hand_profile("g20")
+    packet = decode_qpos_packet(packet_bytes("left", model="o30"))
+    with pytest.raises(ValueError, match="does not match"):
+        profile.map_packet(packet)
+
+
+def test_o30i_profile_preserves_canonical_urdf_radians():
+    profile = create_hand_profile("o30i", side="right")
+    assert profile.model == "o30i"
+    assert profile.command_joint_names == O30I_JOINT_NAMES
+    assert profile.max_slew_rate == 12.0
+    qpos = tuple(
+        (lower + upper) / 2.0
+        for lower, upper in zip(
+            profile.lower_bounds, profile.upper_bounds, strict=True
+        )
+    )
+    packet = QposPacket(
+        "test",
+        0,
+        1.0,
+        "right",
+        "o30i",
+        tuple(reversed(O30I_JOINT_NAMES)),
+        tuple(reversed(qpos)),
+    )
+    assert profile.map_packet(packet) == pytest.approx(qpos)
+    assert profile.startup_settings(255, 200, 250) == ()
+    with pytest.raises(ValueError, match="right only"):
+        create_hand_profile("o30i", side="left")
+
+
+def test_limiter_supports_profile_defined_dimensions_and_bounds():
+    limiter = CommandLimiter(
+        [0.0, -1.0, 5.0],
+        10.0,
+        lower_bounds=[-2.0, -2.0, 0.0],
+        upper_bounds=[2.0, 2.0, 6.0],
+        fixed_values={2: 5.0},
+    )
+    limiter.step([2.0, 2.0, 6.0], 0.0)
+    assert limiter.step([20.0, 20.0, 20.0], 0.1) == pytest.approx(
+        (1.0, 0.0, 5.0)
+    )
 
 
 def test_limiter_first_step_holds_and_then_slews():

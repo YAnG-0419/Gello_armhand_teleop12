@@ -1,6 +1,6 @@
 # Dual-FR3 full-pipeline runbook
 
-Commands for FR3 arms, LinkerHand G20 hands, PICO/MANUS teleoperation,
+Commands for FR3 arms, mixed LinkerHand G20/O30i hands, PICO/MANUS teleoperation,
 Orbbec RGB-D, recording, export, and replay.
 
 ## Current MANUS right hand + right arm
@@ -10,11 +10,93 @@ MANUS supplies the right-hand skeleton. The same `R`, `Space`, and `X`
 activation state gates both command streams; do not run
 `teleop_full_thumb.py` separately.
 
+The right-hand-only MANUS/O30i path has been physically validated. The
+integrated arm plus mixed left-G20/right-O30i configuration is the next
+real-world test and is not yet marked validated.
+
 ### Terminal 1 — ROS services
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop/docker
-docker compose up hand-control franka-control teleop-control pico-bridge
+docker compose up franka-control teleop-control pico-bridge
+
+# Dry-run model and packet validation only:
+cd /home/descfly/hsc/franka_upper_body_teleop
+ros2 launch linker_hand_bridge hands.launch.py \
+  sides:=both left_model:=g20 right_model:=o30i enabled:=false
+```
+
+The connected `a8fa:8598` CANFD Analyser uses the packaged `libcanbus`
+transport and does not create a `can1` interface. Run the O30i driver through
+the privileged Compose `hand-control` service so it can access the USB device.
+The alternative transparent SocketCAN adapter can still select
+`o30_transport:=socketcan`.
+The read-only launch publishes uncalibrated vendor ticks on
+`/linker_hand_o30i/raw_state`; it deliberately does not publish those values
+as canonical radians.
+
+The current physical tests use the vendor's normalized full-range mapping:
+each URDF joint lower limit maps to tick 0 and its upper limit maps to tick
+255. The wrapper supplies this mapping and acknowledges it explicitly.
+Optional measured endpoint vectors follow the canonical O30i URDF order:
+`thumb_cmc_roll, thumb_cmc_yaw, thumb_mcp, thumb_ip`, then roll, pitch, PIP,
+and DIP for index, middle, ring, and pinky. Use them only after a systematic
+per-device calibration:
+
+```bash
+export O30_TICKS_AT_LOWER='20-comma-separated-measured-ticks'
+export O30_TICKS_AT_UPPER='20-comma-separated-measured-ticks'
+teleop_sources/manus/scripts/run_o30_robot.sh
+```
+
+The O30i node verifies the device model and right-hand identity before it can
+enable motors. It also requires fresh, in-calibration position feedback before
+the first command. Command loss, feedback loss, or a rejected command disables
+all 20 joints terminally; restart the node after resolving the fault.
+
+### Right-hand-only MANUS/O30i test
+
+Validate MANUS and retargeting without hardware output first:
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose run --rm tools ros2 launch linker_hand_bridge \
+  hand_bridge.launch.py sides:=right right_model:=o30i enabled:=false
+
+# In a second terminal:
+cd /home/descfly/hsc/franka_upper_body_teleop
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/manus/scripts/teleop_o30i.py
+```
+
+The hand-only operator starts disengaged. `Space` or `R` enables right-hand
+following, `X` stops sending, `O` requests an open pose while disengaged, and
+`Q` exits. For a real test, replace the dry-run bridge with the calibrated
+`hands.launch.py sides:=right right_model:=o30i enabled:=true` invocation
+through the privileged `hand-control` service.
+
+For the real two-terminal workflow, use the wrapper scripts. The robot wrapper
+uses the vendor's normalized full-range mapping (URDF lower limit = tick 0,
+URDF upper limit = tick 255) unless per-device endpoint vectors are supplied:
+
+```bash
+# Terminal 1: robot-side O30i driver and safety bridge
+cd /home/descfly/hsc/franka_upper_body_teleop
+teleop_sources/manus/scripts/run_o30_robot.sh
+
+# Terminal 2: MANUS source, initially disengaged
+cd /home/descfly/hsc/franka_upper_body_teleop
+teleop_sources/manus/scripts/run_o30_manus.sh
+```
+
+The robot wrapper defaults to the O30i profile's `12.0 rad/s` slew ceiling.
+The MANUS wrapper defaults to output EMA `alpha=0.85`; set
+`O30_FILTER_ALPHA=1.0` to disable that EMA for latency comparison.
+Per-device endpoint calibration can still override the normalized mapping:
+
+```bash
+export O30_TICKS_AT_LOWER='20-comma-separated-ticks'
+export O30_TICKS_AT_UPPER='20-comma-separated-ticks'
 ```
 
 ### Terminal 2 — unified operator
@@ -29,7 +111,8 @@ conda run --no-capture-output --name franka-teleop-pico \
 
 Only the right tracker is required; the left LinkerHand holds its default
 pose. The terminal prints per-side tracker and hand-send status once per
-second. `H` still homes both arms.
+second. `H` still homes both arms. This software path exists, but its complete
+mixed-hardware real-world validation remains pending.
 
 ## Full teleop and recording
 
@@ -158,8 +241,12 @@ cd /home/descfly/hsc/franka_upper_body_teleop
   --fps 10
 ```
 
-State and action are each 54-dimensional: 14 Franka joints followed by the
-left and right 20-slot G20 values.
+With the mixed G20/O30i configuration, state and action are each
+54-dimensional: 14 Franka joints, the left 20-slot G20 vector, and the right
+20-joint O30i URDF-radian vector. The converter derives hand widths, names,
+models, and limits independently per side from `recording.yaml`.
+Replay preposition speed is also configured per side because the G20 driver
+state uses ticks while the O30i driver state uses URDF radians.
 
 ### Robot replay
 

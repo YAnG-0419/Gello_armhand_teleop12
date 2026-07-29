@@ -1,6 +1,6 @@
 # Repository handover
 
-State as of the night of 2026-07-26. Operator commands are in
+State as of 2026-07-29. Operator commands are in
 [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md); camera recovery is in
 [ORBBEC_CAMERA.md](ORBBEC_CAMERA.md).
 
@@ -12,12 +12,18 @@ log (commits `c545a9b`..`7960098`, each self-explanatory).
 
 ## Working setup
 
-- Current experiment: right arm from its PICO motion tracker and right
-  LinkerHand from MANUS, owned by one operator process
-  (`--hand-source right-only-manus`); the left LinkerHand holds its default
-  pose. The earlier PICO optical skeleton path (`--hand-source pico`) remains
-  hardware-validated end to end on both G20s, including pressing an electric
-  screwdriver button (with a workaround, see the force section).
+- Current hand experiment: right MANUS glove to right O30i. The hand-only
+  path is physically validated for connectivity, all-finger correspondence,
+  and responsive motion. The integrated operator path
+  (`--arm-source motion-trackers --hand-source right-only-manus`) exists but
+  has not yet been physically validated with the mixed left-G20/right-O30i
+  stack. In that mode the left G20 holds its default pose; it is not driven
+  by an absent left glove.
+- The earlier PICO optical skeleton path (`--hand-source pico`) remains
+  hardware-validated end to end on the former dual-G20 setup, including
+  pressing an electric screwdriver button. It intentionally does not target
+  O30i. PICO motion trackers are arm inputs and are independent of the hand
+  pose source.
 - Tracker vs hand-root tradeoff, measured: the tracker's position is
   sub-millimetre with optical fix and carries no in-band wander, so the arms
   are smooth; but its position comes from the headset cameras seeing the
@@ -46,7 +52,7 @@ right FR3   172.16.0.2
 host        enp6s0: 172.16.0.6/24, 192.168.1.53/24
 Orbbec      192.168.1.10:8090
 can0        left G20,  0x28
-can1        right G20, 0x27
+USB         right O30i, libcanbus device a8fa:8598, request ID 0x01
 PICO trackers: left PC2310MLL5060501G, right PC2310MLL5290914G
 ```
 
@@ -64,12 +70,62 @@ conda run --no-capture-output --name franka-teleop-pico \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
 
-`docker compose up -d` starts everything; `docker compose up -d hand-control`
-brings up only the hand stack, output enabled. Its operational defaults live
-in `docker/compose.yaml`; launching `hands.launch.py` directly keeps output
-disabled.
+The legacy `docker compose up -d hand-control` service still starts the
+dual-G20 configuration. Use the explicit O30i wrapper scripts below for the
+current hand. Launching `hands.launch.py` directly keeps output disabled unless
+`enabled:=true` is supplied.
 
 ## Hand system: current implementation
+
+The hand path is model-profiled independently per side. The target
+configuration is `left_model:=g20`, `right_model:=o30i`. A device profile
+supplies command names and width, bounds, fixed slots, mapping, home pose,
+maximum publish rate, feedback validation, and startup settings. Host packets
+carry a model tag, and a mismatch with the configured side is rejected. Legacy
+untagged MANUS packets remain accepted only for the configured G20 profile.
+
+The MANUS source registers a right O30i retargeter; it still reads only the
+right glove. Bimanual MANUS is future work. PICO optical hand tracking remains
+G20-only. The bridge and offline data profiles register O30i using canonical
+URDF radians. An unknown model fails at startup rather than falling through to
+G20. Dataset conversion supports unequal left/right vector widths and writes
+normalized v3 model/joint metadata, while replay still reads earlier dual-G20
+v2 files.
+
+The supplied O30i description
+(`/home/descfly/Downloads/O30i_urdf_0706`) is enough to define the kinematic
+side of that profile: it contains separate left/right URDFs with 20 independent
+revolute joints, no mimic joints, radians, and per-joint limits. Its canonical
+order is four thumb joints followed by four joints for each of index, middle,
+ring, and pinky. It must not be passed through `L20Retargeter`, which assumes a
+21-joint L20 description, coupled distal joints, and a different thumb chain.
+
+The updated `/home/descfly/Downloads/litchi_hardware-main` includes the real
+O30i HOP CAN-FD driver. The required controller source was copied into this
+repository with provenance. Its physical protocol uses 20 uint8 ticks in a
+type-grouped order; the project-owned driver is the sole radians/tick boundary
+and publishes canonical URDF names and radians on ROS. PICO-to-O30 remains
+intentionally out of scope.
+
+The physical right hand reports identity
+`LHO30i-01.1-012-R-Z-3-A`, firmware `0.0.3`. It is connected through the
+vendor `libcanbus` USB transport, not SocketCAN. The O30i node does not enable
+motors on connection. Before the first command it requires the reported model
+and right-hand identity, mapping acknowledgement, and fresh in-range position
+feedback. Command/feedback timeout or command rejection disables all joints
+terminally.
+
+For recording, "layout" means the model identifier plus the ordered joint
+names, units, bounds, and vector width used for each state/action. The O30i URDF
+settles this layout. The currently validated runtime mapping linearly maps each
+joint's URDF lower/upper limit to vendor ticks 0/255. This is a general,
+model-level mapping, not an operator-specific compensation. Measured
+per-device endpoint vectors can override it later if accuracy data shows that
+the full vendor range is not the physical joint range.
+
+Vendor setting traffic is now isolated per side. Each driver remaps its global
+`/cb_hand_setting_cmd` subscription to `/cb_{side}_hand_setting_cmd`, preventing
+one model from consuming the other model's speed or torque request.
 
 - Skeletons are converted to 21 canonical hand-frame landmarks
   (`hand_landmarks.py`); this is the seam a different hand-pose source would
@@ -92,23 +148,29 @@ disabled.
   perceived finger slowness is downstream (motors, slew ~85 ms per
   half-swing, 30 Hz send cap).
 
-### MANUS right-hand MVP
+### MANUS right hand and O30i
 
-`teleop_sources/manus` is a standalone C++ MANUS CoreSDK adapter: it reads
-the glove's calibrated ergonomics angles and emits the existing 21-name L20
-UDP contract, dynamic right hand plus all-zero left default. It is print-only
-without `--send` and stops output when MANUS data is stale; build and dry-run
-commands are in its README. Use the bundled Metaglove Pro calibration; this
-glove family rejects the sibling reference's non-Pro file. Hardware-validated
-2026-07-27: `MetagloveProHaptics` at ~93.5 Hz with no discarded frames, and a
-10 s right-G20 run at 30 Hz with clean packets and CAN.
+The primary O30i path reads the calibrated 25-keypoint right MANUS skeleton,
+converts it to canonical landmarks, solves the independent 20-joint O30i URDF,
+and sends named radians to the model-aware bridge. The older standalone C++
+ergonomics-angle adapter remains a G20-only diagnostic.
 
-`teleop_sources/manus/scripts/teleop_full_thumb.py` is an experimental
-raw-skeleton path through the canonical 21-landmark solver
-(`thumb_opposition_fixed=None`); its `--send` mode is a hand-only diagnostic.
-A cautious hardware test drove every thumb coordinate dynamically with clean
-packets/CAN, but deep-opposition tip error reached ~33 mm; keep it
-experimental until operator feel is compared directly.
+The first O30i ordinary-finger implementation used the wrong link
+correspondence and also mutated a shared landmark array while normalizing
+finger lengths. That made fingertips curl at rest. Both structural bugs are
+fixed: proximal/middle/distal/tip landmarks now target the corresponding O30i
+chain and each finger is normalized independently. A recorded real-glove
+replay reduced IK loss by about 84%; solve time was 1.56 ms average and
+2.32 ms p95.
+
+Physical validation on 2026-07-28/29 confirmed correct finger correspondence.
+The robot-side slew ceiling is now 12 rad/s and the MANUS output EMA defaults
+to `alpha=0.85`; the operator reports the response is good. A temporary pinky
+PIP/DIP gain was evaluated and then removed because it encoded one observed
+operator/pose mismatch rather than a justified model-level transform. There
+is currently no per-finger gain compensation in the O30i retargeter. Slight
+O30i motion jitter has been observed but not yet localized to MANUS input,
+retargeting, command transport, or hardware feedback.
 
 Abduction polarity: the bridge's derived per-side baseline is correct for the
 unified MANUS mode and `abduction_invert` stays false. Offline comparison of
@@ -119,16 +181,54 @@ earlier `abduction_invert:=true` in Compose was a wrong-layer workaround
 ergonomics-based sender (e.g. the C++ adapter's `Spread()`) shows closed gaps
 on spread, fix that sender's sign, not the bridge.
 
-The hardware entrypoint is `teleop_dual_fr3.py --hand-source
+The validated hand-only entrypoints are
+`teleop_sources/manus/scripts/run_o30_robot.sh` and
+`teleop_sources/manus/scripts/run_o30_manus.sh`. The integrated entrypoint is
+`teleop_dual_fr3.py --arm-source motion-trackers --hand-source
 right-only-manus`: one process owns both SDK clients and ticks MANUS from the
 arm loop, so `R`, `Space`, and `X` gate the right arm and hand together while
-the left hand holds its default pose. Only the right tracker is required;
-per-side status prints once per second. `H` stays a global workcell HOME and
-resets both arms regardless of source mode.
+the left hand holds its default pose. Only the right tracker is required in
+this mode. `H` remains a global workcell HOME and resets both arms.
 
 ## Research agenda
 
-### 1. Hand pose source (PICO skeleton quality is the suspected limit)
+### 1. Mixed-hand real-world validation
+
+The next integration task is a physical run with left G20 and right O30i:
+
+- PICO motion trackers drive the arms.
+- A right MANUS glove drives right O30i.
+- With only the right glove, left G20 remains at its default pose.
+- Bimanual MANUS, where a left glove drives left G20 and the right glove drives
+  right O30i, is a later implementation and validation task. It is not
+  implemented as of this handover.
+
+The model-aware bridge and `hands.launch.py` support the mixed physical models,
+but the current real-hardware wrapper starts only right O30i. Before the mixed
+test, add or verify a privileged robot-side launch that owns left G20 and right
+O30i together, then test activation, stale-input behavior, and independent
+per-side status. Do not describe this as validated until it has run on both
+physical hands.
+
+### 2. Systematic MANUS-to-O30i precision
+
+Do not add per-finger gains from a single pose observation. First record
+synchronized data at four layers: raw MANUS landmarks, retargeted radians,
+bridge-emitted commands, and O30i feedback ticks/radians. Use a repeatable pose
+set including straight hand, isolated MCP flexion, hook flexion, relaxed fist,
+full fist, thumb opposition, and finger spread. This separates:
+
+- glove calibration and operator anatomy,
+- human-to-robot kinematic retargeting,
+- EMA/slew/transport lag,
+- O30i endpoint mapping, backlash, and hardware control.
+
+The general solution should improve the model/objective or mapping using
+multi-pose, multi-operator evidence. If one teleoperator still needs a better
+fit, add an explicit named calibration profile derived from their recorded
+poses, rather than embedding anonymous constants in the retargeter.
+
+### 3. Hand pose source
 
 Operator intends to explore multi-camera vision-based hand tracking (no
 occlusion) or Manus gloves. Measured facts to reuse: PICO skeleton noise is
@@ -148,7 +248,7 @@ existing retargeting unchanged. Either way a liveness signal is required
 stay on the motion trackers, and multiple hand-teleop methods can coexist
 as alternative senders to the same bridge.
 
-### 2. Retargeting fidelity
+### 4. G20 retargeting fidelity
 
 Not yet studied carefully for the four fingers; the thumb was studied and
 its solver history should not be repeated: mimicking the human thumb root on
@@ -159,7 +259,7 @@ direction terms all failed - the last made it worse). The fixed-opposition
 mode is the working answer for the thumb; treat any return to full-thumb
 retargeting as research, not a bugfix. Two known confounds to resolve first:
 
-- Model identity: the physical hands are G20 (`G20(工业版)` in the vendor
+- Model identity: the physical hands are G20 (industrial model in the vendor
   SDK, dedicated CAN class) but every kinematic model here and in sibling
   repos is an L20 URDF; no G20 URDF exists on this machine. Offline
   model-based pose choices repeatedly disagreed with hardware feel. Get a
@@ -174,7 +274,7 @@ retargeting as research, not a bugfix. Two known confounds to resolve first:
   `analyze_hand_retarget_log.py` summarizes; see git history for the replay
   methodology).
 
-### 3. Hand force control
+### 5. Hand force control
 
 G20 exposes no position-loop gains - the full CAN register map offers only
 position, speed, per-finger torque cap, faults, temperature thresholds, and
@@ -188,7 +288,7 @@ against the existing bridge without new hardware. Mechanical fact: press
 force scales as torque/lever-arm - contact near the thumb root is worth
 2-3x over the fingertip.
 
-### 4. Electric screwdriver primitives
+### 6. Electric screwdriver primitives
 
 Current manual technique: fixed-opposition grasp, thumb-pad press, plus a
 workaround - the four fingers counter-press from the other side because the
@@ -226,12 +326,15 @@ scripted hand action.
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output --name franka-teleop-pico \
-  pytest -q teleop_sources/pico/tests            # 90
-cd ros_ws/src/linker_hand_bridge
-PYTHONPATH=. python3 -m pytest -q test/test_core.py   # 30
+  pytest -q teleop_sources/pico/tests            # 96
+PYTHONPATH=ros_ws/src/linker_hand_bridge:ros_ws/src/linker_hand_ros2_sdk \
+  python3 -m pytest -q \
+  ros_ws/src/linker_hand_bridge/test/test_core.py \
+  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_contract.py \
+  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_transport.py  # 57
 ```
 
-teleop_data tests (15) run in the tools container; see HARDWARE_DEPLOY.md.
+teleop_data tests (20) run in the tools container; see HARDWARE_DEPLOY.md.
 The workspace is volume-mounted with symlink-install: config and Python
 changes need only a service restart; only the C++ controller needs
 `docker/build_workspace.sh --packages-select franka_fr3_arm_controllers`.

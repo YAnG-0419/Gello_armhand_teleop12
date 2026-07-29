@@ -4,31 +4,10 @@ import numpy as np
 from teleop_core.contract import ARM_STATE_TOPIC, VALIDATED_COMMAND_TOPIC
 from teleop_core.joint_state import ordered_arm_positions
 
+from .hand_profiles import G20_JOINT_NAMES, default_hand_profiles
 
 HAND_STATE_TOPIC = "/cb_{side}_hand_state"
 HAND_ACTION_TOPIC = "/cb_{side}_hand_control_cmd"
-G20_JOINT_NAMES = (
-    "Thumb Base",
-    "Index Finger Base",
-    "Middle Finger Base",
-    "Ring Finger Base",
-    "Pinky Finger Base",
-    "Thumb Abduction",
-    "Index Finger Abduction",
-    "Middle Finger Abduction",
-    "Ring Finger Abduction",
-    "Pinky Finger Abduction",
-    "Thumb Horizontal Abduction",
-    "Reserved 1",
-    "Reserved 2",
-    "Reserved 3",
-    "Reserved 4",
-    "Thumb Tip",
-    "Index Finger Tip",
-    "Middle Finger Tip",
-    "Ring Finger Tip",
-    "Pinky Finger Tip",
-)
 
 
 def recording_topics(config):
@@ -65,7 +44,8 @@ def camera_topics(config):
     }
 
 
-def read_raw_episode(bag):
+def read_raw_episode(bag, hand_profiles=None):
+    hand_profiles = hand_profiles or default_hand_profiles()
     topics = {
         "left_state": ARM_STATE_TOPIC.format(side="left"),
         "right_state": ARM_STATE_TOPIC.format(side="right"),
@@ -121,7 +101,11 @@ def read_raw_episode(bag):
             else:
                 try:
                     positions = ordered_hand_positions(
-                        message.name, message.position
+                        message.name,
+                        message.position,
+                        hand_profiles[
+                            "left" if key.startswith("left_") else "right"
+                        ],
                     )
                 except ValueError:
                     if key.endswith("_state"):
@@ -135,20 +119,31 @@ def read_raw_episode(bag):
     return raw
 
 
-def ordered_hand_positions(names, positions):
+def ordered_hand_positions(names, positions, profile_or_joint_names=G20_JOINT_NAMES):
     if len(names) != len(positions):
         raise ValueError("Hand joint names and positions have different lengths.")
     if len(names) != len(set(names)):
         raise ValueError("Hand joint state contains duplicate names.")
     values = dict(zip(names, positions))
-    missing = [name for name in G20_JOINT_NAMES if name not in values]
+    if hasattr(profile_or_joint_names, "joint_names"):
+        profile = profile_or_joint_names
+        joint_names = tuple(profile.joint_names)
+        lower_bounds = np.asarray(profile.lower_bounds, dtype=float)
+        upper_bounds = np.asarray(profile.upper_bounds, dtype=float)
+    else:
+        joint_names = tuple(profile_or_joint_names)
+        lower_bounds = np.zeros(len(joint_names), dtype=float)
+        upper_bounds = np.full(len(joint_names), 255.0, dtype=float)
+    missing = [name for name in joint_names if name not in values]
     if missing:
         raise ValueError("Hand joint state is missing: " + ", ".join(missing))
-    ordered = np.asarray([values[name] for name in G20_JOINT_NAMES], dtype=float)
-    if ordered.shape != (20,) or not np.all(np.isfinite(ordered)):
-        raise ValueError("Hand joint state must contain 20 finite positions.")
-    if np.any(ordered < 0.0) or np.any(ordered > 255.0):
-        raise ValueError("Hand joint positions must be within [0, 255].")
+    ordered = np.asarray([values[name] for name in joint_names], dtype=float)
+    if ordered.shape != (len(joint_names),) or not np.all(np.isfinite(ordered)):
+        raise ValueError(
+            f"Hand joint state must contain {len(joint_names)} finite positions."
+        )
+    if np.any(ordered < lower_bounds) or np.any(ordered > upper_bounds):
+        raise ValueError("Hand joint positions exceed the configured profile bounds.")
     return ordered
 
 

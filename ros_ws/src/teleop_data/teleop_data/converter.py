@@ -14,6 +14,7 @@ from .portable_bag import (
     HAND_STATE_TOPIC,
     ordered_hand_positions,
 )
+from .hand_profiles import default_hand_profiles
 from .timeseries import TimeSeries, fixed_rate_times
 
 
@@ -24,7 +25,8 @@ def message_time(message, receive_ns):
     return float(receive_ns) * 1e-9
 
 
-def read_series(path):
+def read_series(path, hand_profiles=None):
+    hand_profiles = hand_profiles or default_hand_profiles()
     import rosbag2_py
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
@@ -83,7 +85,9 @@ def read_series(path):
             kind = "state" if topic.endswith("_hand_state") else "action"
             try:
                 positions = ordered_hand_positions(
-                    message.name, message.position
+                    message.name,
+                    message.position,
+                    hand_profiles[side],
                 )
             except ValueError:
                 if kind == "state":
@@ -96,7 +100,7 @@ def read_series(path):
     return raw
 
 
-def normalize_episode(raw, fps):
+def normalize_episode(raw, fps, hand_profiles=None):
     left = TimeSeries.from_samples(raw["left_state"])
     right = TimeSeries.from_samples(raw["right_state"])
     left_hand = TimeSeries.from_samples(raw["left_hand_state"])
@@ -155,7 +159,7 @@ def normalize_episode(raw, fps):
     hand_action = np.concatenate(
         (left_hand_action, right_hand_action), axis=1
     )
-    return {
+    episode = {
         "timestamp": (timeline - timeline[0]).astype(np.float64),
         "observation_arm_joint_position": arm_observation.astype(np.float32),
         "action_arm_joint_position": arm_action.astype(np.float32),
@@ -169,12 +173,25 @@ def normalize_episode(raw, fps):
         ).astype(np.float32),
         "active_sides": active,
         "fps": np.asarray(fps, dtype=np.int32),
-        "schema_version": np.asarray("franka_linker.teleop.normalized.v2"),
+        "schema_version": np.asarray(
+            "franka_linker.teleop.normalized.v3"
+            if hand_profiles is not None
+            else "franka_linker.teleop.normalized.v2"
+        ),
     }
+    if hand_profiles is not None:
+        for side in ("left", "right"):
+            profile = hand_profiles[side]
+            episode[f"{side}_hand_model"] = np.asarray(profile.model)
+            episode[f"{side}_hand_joint_names"] = np.asarray(
+                profile.joint_names
+            )
+    return episode
 
 
 def _held_action(samples, timeline):
-    output = np.empty((timeline.size, 20), dtype=float)
+    width = np.asarray(samples[0][1], dtype=float).size
+    output = np.empty((timeline.size, width), dtype=float)
     index = 0
     held = np.asarray(samples[0][1], dtype=float)
     for frame, timestamp in enumerate(timeline):
@@ -185,8 +202,12 @@ def _held_action(samples, timeline):
     return output
 
 
-def convert(input_path, output_path, fps):
-    episode = normalize_episode(read_series(input_path), fps)
+def convert(input_path, output_path, fps, hand_profiles=None):
+    episode = normalize_episode(
+        read_series(input_path, hand_profiles=hand_profiles),
+        fps,
+        hand_profiles=hand_profiles,
+    )
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, **episode)
@@ -200,4 +221,11 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     config = load_config(args.config)
-    print(convert(args.input, args.output, config.conversion_fps))
+    print(
+        convert(
+            args.input,
+            args.output,
+            config.conversion_fps,
+            hand_profiles=config.hand_profiles,
+        )
+    )

@@ -9,7 +9,7 @@ from hand_fixtures import synthetic_skeleton
 from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ASSETS = REPO_ROOT / "assets" / "linkerhand_l20"
+ASSETS = REPO_ROOT / "assets"
 
 
 class FakeXrt:
@@ -60,7 +60,7 @@ def sink():
 def make_pipeline(xrt, sink, **kwargs):
     return HandPipeline(
         xrt,
-        assets_dir=ASSETS,
+        assets_root=ASSETS,
         host="127.0.0.1",
         port=sink.getsockname()[1],
         **kwargs,
@@ -91,6 +91,13 @@ def test_pipeline_validates_its_arguments(sink):
         make_pipeline(FakeXrt(), sink, rate=120.0)
     with pytest.raises(ValueError):
         make_pipeline(FakeXrt(), sink, sides=("middle",))
+    with pytest.raises(ValueError, match="registered"):
+        make_pipeline(
+            FakeXrt(),
+            sink,
+            sides=("left",),
+            models={"left": "o30"},
+        )
 
 
 def test_pipeline_sends_valid_commands_for_both_sides(sink):
@@ -106,6 +113,7 @@ def test_pipeline_sends_valid_commands_for_both_sides(sink):
     for side, side_messages in by_side.items():
         assert side_messages, f"nothing sent for {side}"
         last = side_messages[-1]
+        assert last["model"] == "g20"
         assert len(last["joint_names"]) == 21
         expected_tip = "thumb_ip" if side == "left" else "thumb_dip"
         assert expected_tip in last["joint_names"]
