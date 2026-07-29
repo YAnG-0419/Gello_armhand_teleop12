@@ -67,7 +67,6 @@ CANONICAL_FROM_OPENXR = (
 
 CANONICAL_WRIST = 0
 CANONICAL_FINGER_BASES = (5, 9, 13, 17)
-CANONICAL_MIDDLE_BASE = 9
 CANONICAL_INDEX_BASE = 5
 CANONICAL_LITTLE_BASE = 17
 
@@ -115,21 +114,6 @@ def to_canonical_landmarks(skeleton: np.ndarray) -> np.ndarray:
     validate_skeleton(skeleton)
     positions = _positions(skeleton)
     return np.stack([positions[index] for index in CANONICAL_FROM_OPENXR])
-
-
-def wrist_to_middle_base(landmarks: np.ndarray) -> float:
-    """Wrist to middle-finger base distance.
-
-    Diagnostic only. Deliberately NOT the retargeting scale reference: the L20
-    URDF's base origin sits about 100 mm proximal of its knuckles, on a mount
-    rather than at a wrist, so the robot's equivalent distance is inflated by
-    that offset. Scaling on it over-scales the operator's hand about twofold and
-    pushes fingertip targets beyond reach. Use `palm_scale` instead.
-    """
-    points = np.asarray(landmarks, dtype=np.float64)
-    return float(
-        np.linalg.norm(points[CANONICAL_MIDDLE_BASE] - points[CANONICAL_WRIST])
-    )
 
 
 def finger_base_centroid(landmarks: np.ndarray) -> np.ndarray:

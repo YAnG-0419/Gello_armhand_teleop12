@@ -26,22 +26,9 @@ from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noq
 ensure_ros_free_process()
 
 from pico_bimanual_franka_teleop.hand_teleop import HandPipeline  # noqa: E402
+from pico_bimanual_franka_teleop.xr_input import desktop_gui_pids  # noqa: E402
 
 SIDES = ("left", "right")
-
-
-def _desktop_gui_pids() -> list[int]:
-    pids = []
-    for process in Path("/proc").iterdir():
-        if not process.name.isdigit():
-            continue
-        try:
-            command = (process / "cmdline").read_bytes().replace(b"\0", b" ")
-        except (FileNotFoundError, PermissionError, ProcessLookupError):
-            continue
-        if b"RobotLinuxDemo.x86_64" in command:
-            pids.append(int(process.name))
-    return sorted(pids)
 
 
 def main() -> int:
@@ -78,7 +65,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    gui_pids = _desktop_gui_pids()
+    gui_pids = desktop_gui_pids()
     if gui_pids:
         print(
             "Refusing to start while the desktop RobotLinuxDemo GUI is running "

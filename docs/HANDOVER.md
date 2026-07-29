@@ -330,8 +330,10 @@ conda run --no-capture-output --name franka-teleop-pico \
 PYTHONPATH=ros_ws/src/linker_hand_bridge:ros_ws/src/linker_hand_ros2_sdk \
   python3 -m pytest -q \
   ros_ws/src/linker_hand_bridge/test/test_core.py \
+  ros_ws/src/linker_hand_bridge/test/test_o30i_profile_limits.py \
   ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_contract.py \
-  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_transport.py  # 57
+  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_contract_limits.py \
+  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_transport.py  # 59
 ```
 
 teleop_data tests (20) run in the tools container; see HARDWARE_DEPLOY.md.

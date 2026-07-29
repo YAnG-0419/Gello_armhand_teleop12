@@ -22,10 +22,10 @@ import time
 from pathlib import Path
 
 from .hand_input import HandSkeletonReader
-from .hand_sender import HandCommandSender, HandSideStatus, HandStatus
+from .hand_sender import HandCommandSender, HandStatus
 from .types import SIDES
 
-__all__ = ["HandPipeline", "HandSideStatus", "HandStatus"]
+__all__ = ["HandPipeline"]
 
 
 class HandPipeline:

@@ -219,8 +219,8 @@ class G20Mapper:
     def __init__(self, abduction_invert: bool = False) -> None:
         """Configure the abduction polarity.
 
-        `ABDUCTION_VENDOR_INVERTED` carries the vendor's own per-side convention.
-        Whether the vendor's positive lateral direction agrees with this URDF's is
+        `ABDUCTION_INVERTED` carries the derived per-side polarity. Whether the
+        vendor's positive lateral direction agrees with this URDF's is
         the one fact neither the vendor tables nor the URDF can settle, so it is a
         single flag: set it when the operator spreads and the hand closes its
         finger gaps instead of opening them.

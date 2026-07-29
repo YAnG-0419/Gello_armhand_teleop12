@@ -95,7 +95,6 @@ class O30IRetargeter:
             raise ValueError("O30i URDF must contain 20 independent single-DoF joints")
         self.lower = np.asarray(self.model.lowerPositionLimit, dtype=np.float64)
         self.upper = np.asarray(self.model.upperPositionLimit, dtype=np.float64)
-        self.data = self.model.createData()
         self.smooth_weight = float(smooth_weight)
         self.filter_alpha = float(filter_alpha)
         self.max_iterations = int(max_iterations)
@@ -278,14 +277,6 @@ class O30IRetargeter:
             "iterations": iterations,
             "function_evaluations": evaluations,
         }
-
-    def set_qpos(self, qpos: np.ndarray) -> None:
-        values = np.asarray(qpos, dtype=np.float64)
-        if values.shape != (20,):
-            raise ValueError(f"expected O30i qpos shape (20,), got {values.shape}")
-        values = np.clip(values, self.lower, self.upper)
-        self.last_qpos = values.copy()
-        self.filtered_qpos = values.copy()
 
     def reset(self) -> None:
         self.last_qpos = np.clip(np.zeros(self.model.nq), self.lower, self.upper)

@@ -41,7 +41,6 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
 from .core import (
-    ABDUCTION_VENDOR_INVERTED,
     COMMAND_SLOTS,
     G20_JOINT_NAMES,
     validate_hand_state,

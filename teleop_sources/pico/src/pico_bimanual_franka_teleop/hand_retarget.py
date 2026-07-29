@@ -943,16 +943,6 @@ class L20Retargeter:
         return self._expand_qpos(self.filtered_qpos), stats
 
     # ------------------------------------------------------------------ state
-    def set_qpos(self, qpos: np.ndarray) -> None:
-        values = np.asarray(qpos, dtype=np.float64)
-        if values.shape != (self.dof,):
-            raise ValueError(f"Expected qpos shape {(self.dof,)}, got {values.shape}")
-        values = np.clip(values, self.lower, self.upper)
-        active = values[self._active_output_indices]
-        self.last_qpos = active.copy()
-        self.filtered_qpos = active.copy()
-        self._q_current = active.copy()
-
     def reset(self) -> None:
         """Forget filter and warm-start history after a tracking dropout."""
         self.last_qpos = np.clip(
