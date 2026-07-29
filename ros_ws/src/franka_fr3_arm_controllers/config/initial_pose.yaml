@@ -1,36 +1,36 @@
-captured_utc: '2026-07-25T14:11:23+00:00'
+captured_utc: '2026-07-29T14:00:09.832463+00:00'
 initial_pose:
   left:
     joint_names:
-      - left_fr3_joint1
-      - left_fr3_joint2
-      - left_fr3_joint3
-      - left_fr3_joint4
-      - left_fr3_joint5
-      - left_fr3_joint6
-      - left_fr3_joint7
+    - left_fr3_joint1
+    - left_fr3_joint2
+    - left_fr3_joint3
+    - left_fr3_joint4
+    - left_fr3_joint5
+    - left_fr3_joint6
+    - left_fr3_joint7
     positions:
-      - -0.110970355570
-      - -0.493441432714
-      - 0.114729285240
-      - -2.441572666170
-      - 0.119077377021
-      - 2.436770200730
-      - 0.340127378702
+    - -0.14540450274944305
+    - 0.4294269382953644
+    - 0.05475889891386032
+    - -1.519321084022522
+    - -0.5288795232772827
+    - 2.512793779373169
+    - 1.1914551258087158
   right:
     joint_names:
-      - right_fr3_joint1
-      - right_fr3_joint2
-      - right_fr3_joint3
-      - right_fr3_joint4
-      - right_fr3_joint5
-      - right_fr3_joint6
-      - right_fr3_joint7
+    - right_fr3_joint1
+    - right_fr3_joint2
+    - right_fr3_joint3
+    - right_fr3_joint4
+    - right_fr3_joint5
+    - right_fr3_joint6
+    - right_fr3_joint7
     positions:
-      - 0.917802035809
-      - -0.843023777008
-      - -1.136612057686
-      - -2.587259292603
-      - 0.054329961538
-      - 3.444272756577
-      - -1.538317084312
+    - 1.4745906591415405
+    - 0.11266722530126572
+    - -1.4767279624938965
+    - -2.1031720638275146
+    - 0.041881266981363297
+    - 2.891739845275879
+    - -1.2921348810195923
