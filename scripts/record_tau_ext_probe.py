@@ -83,9 +83,24 @@ def main():
         )
         node = ProbeRecorder(stream)
         deadline = time.monotonic() + args.duration
+        startup_check = time.monotonic() + 5.0
         print(f"recording {args.duration:.0f} s to {args.output} ...", flush=True)
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.1)
+            if startup_check is not None and time.monotonic() >= startup_check:
+                if not node.counts:
+                    print(
+                        "ERROR: no messages on any topic after 5 s - is "
+                        "franka-control running? Aborting; nothing to push "
+                        "against either (a braked arm is rigid; do not force "
+                        "it).",
+                        flush=True,
+                    )
+                    node.destroy_node()
+                    rclpy.shutdown()
+                    return 1
+                print("all topics alive, keep pushing ...", flush=True)
+                startup_check = None
         for side in SIDES:
             for kind in TOPICS:
                 count = node.counts.get((side, kind), 0)
