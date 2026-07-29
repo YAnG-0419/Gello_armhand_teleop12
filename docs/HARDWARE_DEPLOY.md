@@ -76,11 +76,22 @@ side simply stops streaming and the hand holds position. Feedback loss or a
 failed command disables all 20 joints until fresh feedback and a new command
 arrive; only a rejected disable is terminal and requires a node restart.
 
-### Right-hand-only MANUS/O30i test
+### MANUS hands-only test (no arms)
 
-The hand-only operator (`teleop_sources/manus/scripts/teleop_o30i.py`)
-starts disengaged. `Space` or `R` enables right-hand following, `X` stops
-sending, `O` requests an open pose while disengaged, and `Q` exits.
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose up hand-control
+
+# In a second terminal - pick --sides left, right, or both:
+cd /home/descfly/hsc/franka_upper_body_teleop
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/manus/scripts/teleop_manus_hands.py --sides left
+```
+
+The hand-only operator starts disengaged. `L`/`R` toggles one side and
+`Space` toggles the selected sides together, `X` stops sending, `O`
+requests an open pose while disengaged, and `Q` exits. Do not run it
+beside `run_teleop.sh` - one MANUS client at a time.
 
 For the two-terminal workflow, use the wrapper scripts. The robot wrapper
 uses the vendor's normalized full-range mapping (URDF lower limit = tick 0,

@@ -95,7 +95,8 @@ conda run --no-capture-output --name franka-teleop-pico \
 The standalone `scripts/teleop_full_thumb.py` remains a G20 hand-only
 diagnostic, not the O30i path.
 
-For an O30i hand-only test, use `scripts/teleop_o30i.py`. It starts disengaged
+For a hands-only test, use `scripts/teleop_manus_hands.py` (--sides
+left/right/both). It starts disengaged
 and requires `Space` or `R` before it sends right-hand packets. See
 `docs/HARDWARE_DEPLOY.md` for the robot-side commands.
 

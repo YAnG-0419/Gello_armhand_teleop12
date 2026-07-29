@@ -7,7 +7,7 @@ O30_FILTER_ALPHA="${O30_FILTER_ALPHA:-0.85}"
 
 cd "${REPO_ROOT}"
 exec conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/manus/scripts/teleop_o30i.py \
+  python teleop_sources/manus/scripts/teleop_manus_hands.py --sides right \
   --debug-log "${O30_MANUS_DEBUG_LOG}" \
   --filter-alpha "${O30_FILTER_ALPHA}" \
   "$@"
