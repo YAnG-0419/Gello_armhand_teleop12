@@ -309,6 +309,17 @@ conda run --no-capture-output --name franka-teleop-pico \
   python teleop_sources/pico/scripts/hardware/inspect_motion_trackers.py
 ```
 
+Assign trackers to sides without reading any labels - the script prompts
+you to move only the left hand, then only the right, and works out which
+serial is which; `--write` stores the result in `config/pico.yaml`
+(comments preserved, file re-validated). Stop teleop first; this owns the
+single PICO SDK client:
+
+```bash
+conda run --no-capture-output --name franka-teleop-pico \
+  python teleop_sources/pico/scripts/hardware/calibrate_tracker_sides.py --write
+```
+
 ### Controllers
 
 ```bash

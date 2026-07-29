@@ -10,7 +10,7 @@ left FR3    172.16.0.3          right FR3  172.16.0.2
 host        enp6s0: 172.16.0.6/24, 192.168.1.53/24
 Orbbec      192.168.1.10:8090
 left hand   G20  can0 0x28      right hand O30i libcanbus USB a8fa:8598
-PICO trackers: left PC2310MLL5060501G, right PC2310MLL5290914G
+PICO tracker ids: config/pico.yaml; re-assign via calibrate_tracker_sides.py
 ```
 
 Bringup: `docker compose up franka-control teleop-control pico-bridge
