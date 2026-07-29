@@ -114,12 +114,12 @@ Prefer it over pasting the multi-line command: a clipboard missing its final
 newline once left the command pending at the prompt, and the next paste
 glued onto its log argument, burying the recording.
 
-Tracker presence is per-side at runtime: startup needs at least one tracker,
-and each arm engages only while its own tracker is live — a missing tracker's
-side refuses to engage with the reason, and its dropout while disengaged does
-not disturb the other arm. The left G20 holds its default pose because there
-is no left glove yet. `H` still homes both arms. This software path exists,
-but its complete mixed-hardware real-world validation remains pending.
+Tracker presence is per-side at runtime and never blocks the session: with
+zero trackers the operator still starts, `O` (open hands) and `H` (HOME)
+work against the live robot, and each arm becomes engageable the moment its
+own tracker appears. A missing side refuses to engage with the reason, and
+its dropout while disengaged does not disturb the other arm. The left G20
+holds its default pose because there is no left glove yet.
 
 The operator terminal is a TUI by default: a status header updated once per
 second, an operator pane showing only the feedback for keys you pressed, and

@@ -120,19 +120,25 @@ def test_single_tracker_startup_does_not_require_the_other(monkeypatch) -> None:
     tracker_input.close()
 
 
-def test_no_tracker_timeout_reports_each_side(monkeypatch) -> None:
+def test_no_tracker_startup_proceeds_disarmed(monkeypatch) -> None:
+    # A missing tracker must not hold the workcell hostage: the session
+    # starts, arms cannot engage, and O/H keep working against the robot.
     fake_xrt = _FakeXrt()
     fake_xrt.serials = []
     fake_xrt.poses = []
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
     monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
 
-    with pytest.raises(TimeoutError) as captured:
-        _create_tracker_input()
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": True, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    sample = tracker_input.sample()
 
-    message = str(captured.value)
-    assert "left=missing (LEFT-SN); detected=[]" in message
-    assert "right=missing (RIGHT-SN); detected=[]" in message
+    assert sample is not None
+    assert sample.activations == {"left": False, "right": False}
+    assert tracker_input.readiness["left"].startswith("missing (LEFT-SN)")
+    assert tracker_input.readiness["right"].startswith("missing (RIGHT-SN)")
+    tracker_input.close()
 
 
 def test_engaging_a_missing_side_denies_only_that_side(monkeypatch) -> None:

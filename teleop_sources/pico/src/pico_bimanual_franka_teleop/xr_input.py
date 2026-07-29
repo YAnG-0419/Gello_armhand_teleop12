@@ -479,7 +479,13 @@ class MotionTrackerInput:
         return timestamp_after, selected, serials
 
     def _wait_until_ready(self, timeout: float) -> None:
-        """Wait for at least one configured tracker; report the other side."""
+        """Best-effort wait for a tracker; never blocks the session.
+
+        A missing tracker must not hold the whole workcell hostage: the arms
+        simply cannot engage until their trackers appear (per-side, at
+        runtime), while Open and HOME keep working against a live robot. The
+        wait only exists to seed baselines and report status early.
+        """
         deadline = time.monotonic() + timeout
         next_report = 0.0
         while time.monotonic() < deadline:
@@ -504,12 +510,13 @@ class MotionTrackerInput:
                 self.keyboard.show(
                     "Waiting for trackers: "
                     + self.status_summary()
-                    + f" | timeout in {max(0.0, deadline - now):.0f}s"
+                    + f" | proceeding without them in {max(0.0, deadline - now):.0f}s"
                 )
                 next_report = now + 1.0
             time.sleep(0.05)
-        raise TimeoutError(
-            "Timed out waiting for any motion tracker; per-side state: "
+        self.keyboard.show(
+            "No motion tracker available; arms cannot engage until their "
+            "trackers appear. O (open) and H (HOME) still work. "
             + self.status_summary()
         )
 
