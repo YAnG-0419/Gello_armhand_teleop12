@@ -49,21 +49,42 @@ class OperatorConsole:
         self._lock = threading.Lock()
 
     # -- input-source interface ------------------------------------------
+    # Every mutation happens under the lock: the server thread writes while
+    # the 100 Hz control loop reads, and the keyboard-era code was safe only
+    # because both sides ran on one thread. Without the lock a request set
+    # between take_requests' read and swap lands in the discarded dict and
+    # the operator's click is silently lost.
 
     def poll(self) -> dict[str, bool]:
-        return dict(self.active)
+        with self._lock:
+            return dict(self.active)
 
     def take_requests(self) -> dict[str, bool]:
-        taken = self.requests
-        self.requests = {name: False for name in taken}
+        with self._lock:
+            taken = self.requests
+            self.requests = {name: False for name in taken}
         return taken
 
+    def set_active(self, side: str, engaged: bool) -> None:
+        if side not in self.sides:
+            raise ValueError(f"{side} is not configured for this run")
+        with self._lock:
+            self.active[side] = engaged
+
+    def request(self, name: str) -> None:
+        with self._lock:
+            if name not in self.requests:
+                raise ValueError(f"Unknown request: {name}")
+            self.requests[name] = True
+
     def disable_all(self, reason: str) -> None:
-        self.active = {side: False for side in SIDES}
+        with self._lock:
+            self.active = {side: False for side in SIDES}
         self.show(f"all sides disengaged: {reason}")
 
     def deny(self, side: str, reason: str) -> None:
-        self.active[side] = False
+        with self._lock:
+            self.active[side] = False
         self.show(f"{side}: {reason}")
 
     def show(self, message: str) -> None:
@@ -145,36 +166,28 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
 
     # -- commands ---------------------------------------------------------
 
-    def _set_side(self, side: str, engaged: bool) -> None:
-        if side not in self.keyboard.sides:
-            raise ValueError(f"{side} is not configured for this run")
-        self.keyboard.active[side] = engaged
-
-    def _disengage_all(self) -> None:
-        for side in tuple(self.keyboard.active):
-            self.keyboard.active[side] = False
-
-    def _request(self, name: str) -> None:
-        if name not in self.keyboard.requests:
-            raise ValueError(f"Unknown request: {name}")
-        self.keyboard.requests[name] = True
-
     def _reset(self, arguments) -> None:
         scope = str(arguments.get("side", "both"))
         if scope == "both":
-            self._request("reset")
+            self.keyboard.request("reset")
         elif scope in ("left", "right"):
-            self._request(f"reset_{scope}")
+            self.keyboard.request(f"reset_{scope}")
         else:
             raise ValueError("side must be left, right, or both")
 
     def dispatch(self, command: str, arguments: dict):
         commands = {
             "status": self.snapshot,
-            "engage": lambda: self._set_side(_require_side(arguments), True),
-            "disengage": lambda: self._set_side(_require_side(arguments), False),
-            "disengage_all": self._disengage_all,
-            "open_hands": lambda: self._request("open_hands"),
+            "engage": lambda: self.keyboard.set_active(
+                _require_side(arguments), True
+            ),
+            "disengage": lambda: self.keyboard.set_active(
+                _require_side(arguments), False
+            ),
+            "disengage_all": lambda: self.keyboard.disable_all(
+                "operator frontend"
+            ),
+            "open_hands": lambda: self.keyboard.request("open_hands"),
             "reset": lambda: self._reset(arguments),
         }
         handler = commands.get(command)
