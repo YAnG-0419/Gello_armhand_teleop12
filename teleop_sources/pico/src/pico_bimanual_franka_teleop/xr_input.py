@@ -301,7 +301,13 @@ class KeyboardActivation:
                 os.write(fd, b"\x1b[?2004l")
             except OSError:
                 pass
-            termios.tcsetattr(fd, termios.TCSADRAIN, self.saved_attributes)
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, self.saved_attributes)
+            except (termios.error, OSError):
+                # A dying wrapper (e.g. conda run on Ctrl-C) can orphan this
+                # process out of the foreground group; restoration then fails
+                # with EIO and there is nothing more to do.
+                pass
         finally:
             os.close(fd)
 
