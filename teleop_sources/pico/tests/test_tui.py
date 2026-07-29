@@ -1,13 +1,15 @@
 """TUI screen composition and command-key parsing, no tty required."""
 
+import re
+
 from pico_bimanual_franka_teleop import tui
 from pico_bimanual_franka_teleop.xr_input import KeyboardActivation
 
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
 
 def _rows(payload: bytes) -> list[str]:
-    text = payload.decode()
-    text = text.removeprefix("\x1b[?25l\x1b[H").removesuffix("\x1b[0J")
-    return [row.removeprefix("\x1b[2K") for row in text.split("\r\n")]
+    return [_ANSI.sub("", row) for row in payload.decode().split("\r\n")]
 
 
 def test_compose_screen_paints_every_row_without_scrolling():
@@ -28,6 +30,21 @@ def test_compose_screen_shows_the_latest_output():
     payload = tui.compose_screen("", [], lines, width=60, height=16).decode()
     assert "line099" in payload
     assert "line000" not in payload
+
+
+def test_compose_screen_colors_alerts_and_dims_process_noise():
+    payload = tui.compose_screen(
+        "STATE | ok",
+        ["right cannot engage: missing tracker", "reset done"],
+        ["vendor noise"],
+        width=80,
+        height=14,
+    ).decode()
+    # Exactly one red row: the fault line, not the routine feedback.
+    assert payload.count(tui.ALERT_SGR) == 1
+    assert tui.ALERT_SGR + "right cannot engage" in payload
+    assert tui.STATUS_SGR + "STATE | ok" in payload
+    assert tui.PROCESS_SGR in payload
 
 
 def test_command_keys_pass_plain_letters_through():

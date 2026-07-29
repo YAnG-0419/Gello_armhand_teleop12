@@ -28,9 +28,32 @@ STATUS_ROWS = 2
 OPERATOR_ROWS = 6
 HELP = "space/l/r=engage  x=stop  o=open hands  h=HOME (moves arms)  q=quit"
 
+# One accent each: status stands out, frames and process noise recede, and a
+# fault line is the only red thing on screen.
+STATUS_SGR = "\x1b[1;36m"
+FRAME_SGR = "\x1b[90m"
+PROCESS_SGR = "\x1b[90m"
+ALERT_SGR = "\x1b[31m"
+RESET_SGR = "\x1b[0m"
+ALERT_WORDS = (
+    "FAILED",
+    "cannot engage",
+    "disabled",
+    "lost",
+    "stale",
+    "frozen",
+    "missing",
+    "jumped",
+    "moved backwards",
+)
+
 
 def _clip(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _operator_sgr(line: str) -> str:
+    return ALERT_SGR if any(word in line for word in ALERT_WORDS) else ""
 
 
 def _tail(lines, rows: int, width: int) -> list[str]:
@@ -51,20 +74,29 @@ def compose_screen(
     operator_rows = min(OPERATOR_ROWS, max(2, height // 4))
     process_rows = height - STATUS_ROWS - operator_rows - 2
 
-    rows: list[str] = []
+    rows: list[tuple[str, str]] = []
     chunks = [
         status[index : index + width] for index in range(0, len(status), width)
     ] or [""]
     for index in range(STATUS_ROWS):
-        rows.append(chunks[index] if index < len(chunks) else "")
-    rows.append(_clip("─ operator ── " + HELP + " " + "─" * width, width))
-    rows.extend(_tail(operator_lines, operator_rows, width))
-    rows.append(("─ process output " + "─" * width)[:width])
-    rows.extend(_tail(process_lines, process_rows, width))
+        rows.append((chunks[index] if index < len(chunks) else "", STATUS_SGR))
+    rows.append(
+        (_clip("─ operator ── " + HELP + " " + "─" * width, width), FRAME_SGR)
+    )
+    rows.extend(
+        (line, _operator_sgr(line))
+        for line in _tail(operator_lines, operator_rows, width)
+    )
+    rows.append((("─ process output " + "─" * width)[:width], FRAME_SGR))
+    rows.extend(
+        (line, PROCESS_SGR)
+        for line in _tail(process_lines, process_rows, width)
+    )
 
     parts = ["\x1b[?25l\x1b[H"]
-    for index, row in enumerate(rows):
-        parts.append("\x1b[2K" + row)
+    for index, (text, sgr) in enumerate(rows):
+        painted = sgr + text + RESET_SGR if sgr and text else text
+        parts.append("\x1b[2K" + painted)
         if index < len(rows) - 1:
             parts.append("\r\n")
     parts.append("\x1b[0J")
