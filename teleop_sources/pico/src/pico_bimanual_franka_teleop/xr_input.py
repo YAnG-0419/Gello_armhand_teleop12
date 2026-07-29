@@ -145,12 +145,7 @@ class KeyboardActivation:
         self.device = device
         self.sides = tuple(sides)
         self.active = {side: False for side in SIDES}
-        self.requests = {
-            "open_hands": False,
-            "reset": False,
-            "reset_left": False,
-            "reset_right": False,
-        }
+        self.requests = {"open_hands": False}
         self._escape_tail = ""
         self._in_paste = False
         self.fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
@@ -164,8 +159,7 @@ class KeyboardActivation:
         os.write(self.fd, b"\x1b[?2004h")
         self._show(
             "Keyboard: [space] toggle configured sides, [l]/[r] toggle one side, "
-            "[x] disable all, [o] open hands, [h] reset both to initial pose, "
-            "[j]/[k] reset only the left/right arm and hand, [q] quit"
+            "[x] disable all, [o] open hands, [q] quit"
         )
         self._show_state()
 
@@ -266,14 +260,6 @@ class KeyboardActivation:
                     changed = True
                 elif key == "o":
                     self.requests["open_hands"] = True
-                elif key == "h":
-                    self.requests["reset"] = True
-                elif key in ("j", "k"):
-                    side = "left" if key == "j" else "right"
-                    if side not in self.sides:
-                        self._show(f"{side}: not configured for this run")
-                        continue
-                    self.requests[f"reset_{side}"] = True
                 elif key == "q":
                     self.active = {side: False for side in SIDES}
                     self._show_state()
@@ -375,7 +361,6 @@ class MotionTrackerInput:
         max_rotation_jump: float,
         max_linear_speed: float,
         max_angular_speed: float,
-        keyboard_device: str,
         keyboard=None,
     ) -> None:
         import xrobotoolkit_sdk as xrt
@@ -418,10 +403,13 @@ class MotionTrackerInput:
         self.last_activations = {side: False for side in SIDES}
         self.detected_serials: list[str] = []
         self.readiness = {side: "waiting" for side in SIDES}
-        # An injected keyboard (e.g. the TUI) is adopted, lifecycle included.
-        self.keyboard = (
-            KeyboardActivation(keyboard_device) if keyboard is None else keyboard
-        )
+        # The injected keyboard/console is adopted, lifecycle included; a
+        # headless OperatorConsole is the default operator surface.
+        if keyboard is None:
+            from .control_server import OperatorConsole
+
+            keyboard = OperatorConsole()
+        self.keyboard = keyboard
         try:
             self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
@@ -824,7 +812,6 @@ class HandRootInput:
         max_position_jump: float,
         max_rotation_jump: float,
         smoothing_time_constant: float,
-        keyboard_device: str,
         rotation_slow_time_constant: float | None = None,
         rotation_fast_time_constant: float | None = None,
         rotation_error_low: float | None = None,
@@ -869,9 +856,11 @@ class HandRootInput:
         }
         self.smoothed: dict[str, Pose | None] = {side: None for side in SIDES}
         self.last_activations = {side: False for side in SIDES}
-        self.keyboard = (
-            KeyboardActivation(keyboard_device) if keyboard is None else keyboard
-        )
+        if keyboard is None:
+            from .control_server import OperatorConsole
+
+            keyboard = OperatorConsole()
+        self.keyboard = keyboard
         try:
             self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
@@ -1065,7 +1054,6 @@ def create_pico_input(
             max_rotation_jump=trackers.max_rotation_jump,
             max_linear_speed=trackers.max_linear_speed,
             max_angular_speed=trackers.max_angular_speed,
-            keyboard_device=trackers.keyboard_device,
             keyboard=keyboard,
         )
     if input_type == "hand-roots":
@@ -1077,7 +1065,7 @@ def create_pico_input(
             max_position_jump=hand_roots.max_position_jump,
             max_rotation_jump=hand_roots.max_rotation_jump,
             smoothing_time_constant=hand_roots.smoothing_time_constant,
-            keyboard_device=hand_roots.keyboard_device,
+
             rotation_slow_time_constant=(
                 hand_roots.rotation_slow_time_constant
             ),

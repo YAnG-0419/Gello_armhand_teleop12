@@ -91,7 +91,6 @@ def launch_bridge(context):
         "max_rotation_jump",
         "max_linear_speed",
         "max_angular_speed",
-        "activation",
         "tracker_to_control",
     }
     if not isinstance(motion_trackers, dict) or set(motion_trackers) != motion_fields:
@@ -103,7 +102,6 @@ def launch_bridge(context):
         )
     nested_fields = {
         "serials": {"left", "right"},
-        "activation": {"type", "device"},
         "tracker_to_control": {"left", "right"},
     }
     for name, expected in nested_fields.items():
@@ -138,7 +136,6 @@ def launch_bridge(context):
         "rotation_fast_time_constant",
         "rotation_error_low",
         "rotation_error_high",
-        "activation",
     }
     if not isinstance(hand_roots, dict) or set(hand_roots) != hand_root_fields:
         actual = set(hand_roots) if isinstance(hand_roots, dict) else set()
@@ -146,15 +143,6 @@ def launch_bridge(context):
             f"{path}: input.hand_roots fields differ: "
             f"missing={sorted(hand_root_fields - actual)}, "
             f"unknown={sorted(actual - hand_root_fields)}"
-        )
-    hand_activation = hand_roots["activation"]
-    activation_fields = {"type", "device"}
-    if not isinstance(hand_activation, dict) or set(hand_activation) != activation_fields:
-        actual = set(hand_activation) if isinstance(hand_activation, dict) else set()
-        raise ValueError(
-            f"{path}: input.hand_roots.activation fields differ: "
-            f"missing={sorted(activation_fields - actual)}, "
-            f"unknown={sorted(actual - activation_fields)}"
         )
     return [
         Node(

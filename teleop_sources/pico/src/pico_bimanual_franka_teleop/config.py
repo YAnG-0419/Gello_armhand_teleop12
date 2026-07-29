@@ -59,7 +59,6 @@ class MotionTrackerConfig:
     max_rotation_jump: float
     max_linear_speed: float
     max_angular_speed: float
-    keyboard_device: str
 
 
 @dataclass(frozen=True)
@@ -74,7 +73,6 @@ class HandRootConfig:
     rotation_fast_time_constant: float
     rotation_error_low: float
     rotation_error_high: float
-    keyboard_device: str
 
 
 @dataclass(frozen=True)
@@ -203,7 +201,6 @@ def _load_motion_trackers(raw) -> MotionTrackerConfig:
             "max_rotation_jump",
             "max_linear_speed",
             "max_angular_speed",
-            "activation",
             "tracker_to_control",
         },
         section,
@@ -218,17 +215,6 @@ def _load_motion_trackers(raw) -> MotionTrackerConfig:
         raise ValueError("Both motion tracker serials must be non-empty")
     if serials["left"] == serials["right"]:
         raise ValueError("Left and right motion tracker serials must differ")
-
-    activation = _exact_mapping(
-        trackers["activation"],
-        {"type", "device"},
-        f"{section}.activation",
-    )
-    if activation["type"] != "keyboard":
-        raise ValueError(f"{section}.activation.type must be keyboard")
-    keyboard_device = str(activation["device"]).strip()
-    if not keyboard_device:
-        raise ValueError(f"{section}.activation.device must be non-empty")
 
     return MotionTrackerConfig(
         serials=serials,
@@ -261,7 +247,6 @@ def _load_motion_trackers(raw) -> MotionTrackerConfig:
             trackers["max_angular_speed"],
             f"{section}.max_angular_speed",
         ),
-        keyboard_device=keyboard_device,
     )
 
 
@@ -280,20 +265,9 @@ def _load_hand_roots(raw) -> HandRootConfig:
             "rotation_fast_time_constant",
             "rotation_error_low",
             "rotation_error_high",
-            "activation",
         },
         section,
     )
-    activation = _exact_mapping(
-        hand_roots["activation"],
-        {"type", "device"},
-        f"{section}.activation",
-    )
-    if activation["type"] != "keyboard":
-        raise ValueError(f"{section}.activation.type must be keyboard")
-    keyboard_device = str(activation["device"]).strip()
-    if not keyboard_device:
-        raise ValueError(f"{section}.activation.device must be non-empty")
     rotation_slow = _positive(
         hand_roots["rotation_slow_time_constant"],
         f"{section}.rotation_slow_time_constant",
@@ -343,7 +317,6 @@ def _load_hand_roots(raw) -> HandRootConfig:
         rotation_fast_time_constant=rotation_fast,
         rotation_error_low=rotation_error_low,
         rotation_error_high=rotation_error_high,
-        keyboard_device=keyboard_device,
     )
 
 

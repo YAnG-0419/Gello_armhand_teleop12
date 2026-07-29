@@ -6,27 +6,6 @@ import pytest
 from pico_bimanual_franka_teleop import xr_input
 
 
-class _FakeKeyboard:
-    def __init__(self, _device: str, sides=("left", "right")) -> None:
-        self.sides = tuple(sides)
-        self.active = {"left": False, "right": False}
-
-    def poll(self) -> dict[str, bool]:
-        return dict(self.active)
-
-    def disable_all(self, _reason: str) -> None:
-        self.active = {"left": False, "right": False}
-
-    def deny(self, side: str, _reason: str) -> None:
-        self.active[side] = False
-
-    def show(self, _message: str) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
 class _FakeXrt:
     def __init__(self) -> None:
         self.closed = False
@@ -75,7 +54,6 @@ def _create_tracker_input() -> xr_input.MotionTrackerInput:
         max_rotation_jump=1.0,
         max_linear_speed=3.0,
         max_angular_speed=12.0,
-        keyboard_device="/dev/null",
     )
 
 
@@ -88,7 +66,6 @@ def _remove_tracker(fake_xrt: "_FakeXrt", serial: str) -> None:
 def test_motion_trackers_are_mapped_by_serial(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
 
@@ -107,7 +84,6 @@ def test_single_tracker_startup_does_not_require_the_other(monkeypatch) -> None:
     fake_xrt.serials = ["RIGHT-SN"]
     fake_xrt.poses = [fake_xrt.poses[0]]
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
 
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active["right"] = True
@@ -127,7 +103,6 @@ def test_no_tracker_startup_proceeds_disarmed(monkeypatch) -> None:
     fake_xrt.serials = []
     fake_xrt.poses = []
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
 
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
@@ -144,7 +119,6 @@ def test_no_tracker_startup_proceeds_disarmed(monkeypatch) -> None:
 def test_engaging_a_missing_side_denies_only_that_side(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": False}
     fake_xrt.timestamp += 20_000_000
@@ -163,7 +137,6 @@ def test_engaging_a_missing_side_denies_only_that_side(monkeypatch) -> None:
 def test_tracker_loss_while_engaged_disengages_everything(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -179,7 +152,6 @@ def test_tracker_loss_while_engaged_disengages_everything(monkeypatch) -> None:
 def test_disengaged_tracker_loss_does_not_stop_active_side(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": False, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -198,7 +170,6 @@ def test_reappearing_tracker_reseeds_without_tripping_the_jump_guard(
 ) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": False, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -258,7 +229,6 @@ def test_motion_snapshot_accepts_five_trackers() -> None:
 def test_motion_input_accepts_bounded_motion(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -273,7 +243,6 @@ def test_motion_input_accepts_bounded_motion(monkeypatch) -> None:
 def test_motion_input_disengages_on_pose_jump(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -288,7 +257,6 @@ def test_motion_input_disengages_on_pose_jump(monkeypatch) -> None:
 def test_motion_input_recovers_after_timestamp_restart(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp = 1
@@ -307,7 +275,6 @@ def test_motion_input_recovers_after_timestamp_restart(monkeypatch) -> None:
 def test_inactive_tracker_can_move_freely(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": False, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -322,7 +289,6 @@ def test_inactive_tracker_can_move_freely(monkeypatch) -> None:
 def test_reenabled_tracker_reanchors_safety_baseline(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": False, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -341,7 +307,6 @@ def test_reenabled_tracker_reanchors_safety_baseline(monkeypatch) -> None:
 def test_motion_input_disengages_on_frozen_pose(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -357,7 +322,6 @@ def test_motion_input_disengages_on_frozen_pose(monkeypatch) -> None:
 def test_inactive_frozen_tracker_does_not_stop_active_side(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": False, "right": True}
     tracker_input.last_position_changed_at["left"] -= 2.0
@@ -379,7 +343,6 @@ def test_frozen_position_with_live_rotation_disengages(monkeypatch) -> None:
     # Position and rotation liveness must be judged independently.
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -399,7 +362,6 @@ def test_live_position_with_frozen_rotation_disengages(monkeypatch) -> None:
     # The mirror failure: a dead IMU with a live optical fix must fault too.
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     tracker_input = _create_tracker_input()
     tracker_input.keyboard.active = {"left": True, "right": True}
     fake_xrt.timestamp += 20_000_000
@@ -449,7 +411,6 @@ def _create_hand_root_input(
     monkeypatch, fake_xrt, smoothing_time_constant: float = 0.1
 ) -> xr_input.HandRootInput:
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
     return xr_input.HandRootInput(
         ready_timeout=2.0,
         stale_timeout=0.25,
@@ -457,7 +418,6 @@ def _create_hand_root_input(
         max_position_jump=0.2,
         max_rotation_jump=1.5,
         smoothing_time_constant=smoothing_time_constant,
-        keyboard_device="/dev/null",
     )
 
 
@@ -625,35 +585,3 @@ def test_create_pico_input_refuses_next_to_the_desktop_gui(monkeypatch) -> None:
         assert "4242" in str(error)
     else:
         raise AssertionError("expected create_pico_input to refuse")
-
-
-def test_keyboard_per_side_home_requests():
-    # A real KeyboardActivation on a pty: j/k request one side's home, h both.
-    import os
-    import pty
-    import time
-
-    master, slave = pty.openpty()
-    keyboard = xr_input.KeyboardActivation(
-        os.ttyname(slave), sides=("left", "right")
-    )
-    try:
-        os.write(master, b"j")
-        time.sleep(0.05)
-        keyboard.poll()
-        requests = keyboard.take_requests()
-        assert requests["reset_left"]
-        assert not requests["reset_right"]
-        assert not requests["reset"]
-
-        os.write(master, b"kh")
-        time.sleep(0.05)
-        keyboard.poll()
-        requests = keyboard.take_requests()
-        assert requests["reset_right"]
-        assert requests["reset"]
-        assert not requests["reset_left"]
-    finally:
-        keyboard.close()
-        os.close(master)
-        os.close(slave)

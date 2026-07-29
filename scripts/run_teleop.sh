@@ -8,7 +8,7 @@
 #
 # Extra arguments pass through to teleop_dual_fr3.py and later flags win,
 # so e.g. `scripts/run_teleop.sh --hand-source pico` switches the hand
-# source, and `--ui plain` disables the TUI. TELEOP_RUN_DIR overrides the
+# source. TELEOP_RUN_DIR overrides the
 # run directory.
 set -euo pipefail
 

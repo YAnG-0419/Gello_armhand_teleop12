@@ -15,7 +15,7 @@ PICO tracker ids: config/pico.yaml; re-assign via calibrate_tracker_sides.py
 
 Bringup: `docker compose up franka-control teleop-control pico-bridge
 hand-control` (hand-control = left G20 + right O30i, enabled). Operator:
-`scripts/run_teleop.sh` - fresh RUN_DIR, both debug logs; later flags win.
+`scripts/run_teleop.sh` (headless) + `teleop-operator-gui` on TCP :5590.
 
 Status:
 

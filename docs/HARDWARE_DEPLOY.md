@@ -8,9 +8,9 @@ Orbbec RGB-D, recording, export, and replay.
 The operator is one process. PICO supplies the arm motion trackers and
 MANUS supplies both hand skeletons (`--hand-source manus`, the
 `run_teleop.sh` default; `--hand-sides right` degrades to the old
-right-only behavior). The same `L`, `R`, `Space`, and `X` activation state
-gates each side's arm and hand together; do not run `teleop_full_thumb.py`
-separately.
+right-only behavior). One activation state per side gates that side's arm
+and hand together, driven from the operator GUI; do not run
+`teleop_full_thumb.py` separately.
 
 Each glove only delivers frames once its calibration file exists in
 `teleop_sources/manus/config` (`Calibration_left.mcal` /
@@ -130,17 +130,18 @@ newline once left the command pending at the prompt, and the next paste
 glued onto its log argument, burying the recording.
 
 Tracker presence is per-side at runtime and never blocks the session: with
-zero trackers the operator still starts, `O` (open hands) and `H` (HOME)
-work against the live robot, and each arm becomes engageable the moment its
-own tracker appears. A missing side refuses to engage with the reason, and
+zero trackers the operator still starts, Open hands and Home work against
+the live robot, and each arm becomes engageable the moment its own tracker
+appears. A missing side refuses to engage with the reason, and
 its dropout while disengaged does not disturb the other arm. The left G20
 holds its default pose because there is no left glove yet.
 
-The operator terminal is a TUI by default: a status header updated once per
-second, an operator pane showing only the feedback for keys you pressed, and
-a process pane that captures everything the SDKs and libraries print —
-including native C-level output. `--ui plain` restores ordinary line output;
-use it when redirecting the terminal to a file.
+The operator process is headless: one unified backend serving a JSON-TCP
+control port (default `127.0.0.1:5590`), with the PySide6 GUI as its
+frontend. Install once with `python3 -m pip install --user -e
+teleop_sources/gui`, then run `teleop-operator-gui` next to the operator.
+The GUI reconnects automatically and shows the once-per-second status line
+plus the operator feedback log; the terminal keeps plain process output.
 
 ## Full teleop and recording
 
@@ -198,16 +199,14 @@ Do not use `/tmp` for hardware evidence intended for later comparison. The
 logger truncates an existing filename, so create a new timestamped `RUN_DIR`
 for every diagnostic session.
 
-Controls:
+Controls (operator GUI buttons; any home first disengages the session and
+the untargeted arm holds in place):
 
-- `Space`: toggle both sides
-- `L` / `R`: toggle one side
-- `X`: disengage both sides
-- `O`: open disengaged hands
-- `H`: disengage, open hands, and reset both arms
-- `J` / `K`: disengage all, then home only the left / right arm and hand
-  (the other arm holds in place)
-- `Q`: disengage and exit
+- Engage left / right: toggle one side's arm-and-hand following
+- DISENGAGE ALL: stop both sides immediately
+- Open hands: open the disengaged hands
+- Home left / right / both: open that side's hand and reset that arm
+- Ctrl-C in the operator terminal: disengage and exit
 
 ### Terminal 3 — episode recorder
 

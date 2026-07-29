@@ -55,12 +55,13 @@ def main() -> None:
         required=True,
         choices=("controllers", "motion-trackers", "hand-roots"),
     )
+    parser.add_argument("--control-host", default="127.0.0.1")
     parser.add_argument(
-        "--ui",
-        default="tui",
-        choices=("tui", "plain"),
-        help="tui splits the terminal into status, operator, and process "
-        "panes; plain keeps ordinary line output (default: tui)",
+        "--control-port",
+        type=int,
+        default=5590,
+        help="JSON-TCP operator control port; the PySide6 GUI "
+        "(teleop_sources/gui) connects here (default: 5590)",
     )
     # Hand options are CLI arguments rather than YAML, matching how --arm-source is
     # handled: what is being driven is an explicit choice per run, and this keeps
@@ -188,22 +189,18 @@ def main() -> None:
 
     config = load_config(args.config)
 
-    ui = None
-    if args.ui == "tui":
-        if args.arm_source == "controllers":
-            print("the TUI needs a keyboard-based arm source; plain output")
-        else:
-            from pico_bimanual_franka_teleop.tui import TeleopTui
+    from pico_bimanual_franka_teleop.control_server import (
+        OperatorConsole,
+        OperatorControlServer,
+    )
 
-            device = (
-                config.input.motion_trackers.keyboard_device
-                if args.arm_source == "motion-trackers"
-                else config.input.hand_roots.keyboard_device
-            )
-            try:
-                ui = TeleopTui(device)
-            except OSError as error:
-                print(f"TUI unavailable ({error}); plain output")
+    ui = OperatorConsole()
+    server = OperatorControlServer((args.control_host, args.control_port), ui)
+    server.start()
+    print(
+        f"operator control server on {args.control_host}:{args.control_port} "
+        "- connect the GUI (teleop_sources/gui) to engage"
+    )
 
     try:
         teleop = DualFr3HardwareTeleop(
@@ -232,11 +229,7 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
     finally:
-        # Normally already closed by the input that adopted it; idempotent.
-        # Restoring the terminal here lets a construction-failure traceback
-        # reach the screen instead of the captured pipe.
-        if ui is not None:
-            ui.close()
+        server.close()
     print("\nteleop stopped")
 
 
