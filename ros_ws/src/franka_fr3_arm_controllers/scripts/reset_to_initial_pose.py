@@ -132,6 +132,17 @@ class InitialPoseReset(Node):
             self._reset,
             callback_group=callbacks,
         )
+        # Per-side homing: only the named arm moves; the session-wide
+        # active flag still pauses teleop, so the other arm just holds.
+        for side in SIDES:
+            self.create_service(
+                Trigger,
+                f"/reset_to_initial_pose/{side}",
+                lambda request, response, selected=side: self._reset(
+                    request, response, sides=(selected,)
+                ),
+                callback_group=callbacks,
+            )
         self.create_service(
             Trigger,
             "/capture_initial_pose",
@@ -155,34 +166,36 @@ class InitialPoseReset(Node):
 
     def _publish(self, positions):
         stamp = self.get_clock().now().to_msg()
-        for side in SIDES:
+        for side in positions:
             message = JointState()
             message.header.stamp = stamp
             message.name = self.command_names
             message.position = positions[side]
             self.command_publishers[side].publish(message)
 
-    def _states_are_fresh(self):
+    def _states_are_fresh(self, sides=SIDES):
         now = time.monotonic()
         return all(
             side in self.states
             and side in self.state_times
             and now - self.state_times[side] < STATE_MAX_AGE
-            for side in SIDES
+            for side in sides
         )
 
-    def _wait_for_fresh_states(self, timeout=5.0):
+    def _wait_for_fresh_states(self, sides=SIDES, timeout=5.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self._states_are_fresh():
+            if self._states_are_fresh(sides):
                 return
             time.sleep(0.05)
-        raise RuntimeError("Timed out waiting for fresh dual-arm joint states")
+        raise RuntimeError(
+            "Timed out waiting for fresh joint states: " + ", ".join(sides)
+        )
 
-    def _check_controllers(self):
+    def _check_controllers(self, sides=SIDES):
         missing = [
             side
-            for side in SIDES
+            for side in sides
             if self.count_subscribers(f"/{side}/gello/joint_states") < 1
         ]
         if missing:
@@ -190,15 +203,16 @@ class InitialPoseReset(Node):
 
     def _move(
         self,
+        sides=SIDES,
         max_speed=RESET_MAX_SPEED,
         max_acceleration=RESET_MAX_ACCELERATION,
         rate=50.0,
         tolerance=0.04,
     ):
-        starts = {side: list(self.states[side]) for side in SIDES}
+        starts = {side: list(self.states[side]) for side in sides}
         max_distance = max(
             abs(target - current)
-            for side in SIDES
+            for side in sides
             for current, target in zip(starts[side], self.targets[side])
         )
         duration = reset_duration(
@@ -216,8 +230,8 @@ class InitialPoseReset(Node):
 
         while rclpy.ok():
             cycle_started = time.monotonic()
-            if not self._states_are_fresh():
-                raise RuntimeError("Dual-arm joint state became stale during reset")
+            if not self._states_are_fresh(sides):
+                raise RuntimeError("Joint state became stale during reset")
             elapsed = cycle_started - started
             progress = 1.0 if duration == 0.0 else elapsed / duration
             blend = smootherstep(progress)
@@ -226,7 +240,7 @@ class InitialPoseReset(Node):
                     current + blend * (target - current)
                     for current, target in zip(starts[side], self.targets[side])
                 ]
-                for side in SIDES
+                for side in sides
             }
             self._publish(positions)
             if progress >= 1.0:
@@ -238,12 +252,12 @@ class InitialPoseReset(Node):
         error = math.inf
         while rclpy.ok() and time.monotonic() < deadline:
             cycle_started = time.monotonic()
-            if not self._states_are_fresh():
-                raise RuntimeError("Dual-arm joint state became stale during reset")
-            self._publish(self.targets)
+            if not self._states_are_fresh(sides):
+                raise RuntimeError("Joint state became stale during reset")
+            self._publish({side: self.targets[side] for side in sides})
             error = max(
                 abs(target - current)
-                for side in SIDES
+                for side in sides
                 for current, target in zip(self.states[side], self.targets[side])
             )
             if error <= tolerance:
@@ -257,22 +271,22 @@ class InitialPoseReset(Node):
             f"Reset did not settle; maximum joint error is {error:.4f} rad"
         )
 
-    def _reset(self, _request, response):
+    def _reset(self, _request, response, sides=SIDES):
         if not self.lock.acquire(blocking=False):
             response.success = False
             response.message = "Reset is already running."
             return response
         self.running = True
         try:
-            self._wait_for_fresh_states()
-            self._check_controllers()
+            self._wait_for_fresh_states(sides)
+            self._check_controllers(sides)
             self._set_active(True)
             time.sleep(0.25)
-            duration, error = self._move()
+            duration, error = self._move(sides)
             response.success = True
             response.message = (
-                f"Initial pose reached in {duration:.1f} s "
-                f"(maximum error {error:.4f} rad)."
+                f"Initial pose reached for {', '.join(sides)} in "
+                f"{duration:.1f} s (maximum error {error:.4f} rad)."
             )
         except RuntimeError as exception:
             self.get_logger().error(str(exception))

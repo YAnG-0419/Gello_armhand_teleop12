@@ -15,8 +15,8 @@ from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
-def invoke_reset() -> tuple[bool, str]:
-    """Call /reset_to_initial_pose through the container, blocking until done.
+def invoke_reset(side: str | None = None) -> tuple[bool, str]:
+    """Call /reset_to_initial_pose (optionally one side) via the container.
 
     The operator process is deliberately ROS-free (env_guard), so the reset goes
     through the same `docker compose run` path the runbook documents. The
@@ -24,11 +24,12 @@ def invoke_reset() -> tuple[bool, str]:
     startup; the timeout is generous because killing the call does not stop the
     controller-side trajectory anyway.
     """
+    service = "/reset_to_initial_pose" + (f"/{side}" if side else "")
     completed = subprocess.run(
         [
             "docker", "compose", "run", "--rm", "tools",
             "ros2", "service", "call",
-            "/reset_to_initial_pose", "std_srvs/srv/Trigger", "{}",
+            service, "std_srvs/srv/Trigger", "{}",
         ],
         cwd=REPO_ROOT / "docker",
         capture_output=True,

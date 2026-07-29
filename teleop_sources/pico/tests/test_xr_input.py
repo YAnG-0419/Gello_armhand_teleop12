@@ -625,3 +625,35 @@ def test_create_pico_input_refuses_next_to_the_desktop_gui(monkeypatch) -> None:
         assert "4242" in str(error)
     else:
         raise AssertionError("expected create_pico_input to refuse")
+
+
+def test_keyboard_per_side_home_requests():
+    # A real KeyboardActivation on a pty: j/k request one side's home, h both.
+    import os
+    import pty
+    import time
+
+    master, slave = pty.openpty()
+    keyboard = xr_input.KeyboardActivation(
+        os.ttyname(slave), sides=("left", "right")
+    )
+    try:
+        os.write(master, b"j")
+        time.sleep(0.05)
+        keyboard.poll()
+        requests = keyboard.take_requests()
+        assert requests["reset_left"]
+        assert not requests["reset_right"]
+        assert not requests["reset"]
+
+        os.write(master, b"kh")
+        time.sleep(0.05)
+        keyboard.poll()
+        requests = keyboard.take_requests()
+        assert requests["reset_right"]
+        assert requests["reset"]
+        assert not requests["reset_left"]
+    finally:
+        keyboard.close()
+        os.close(master)
+        os.close(slave)

@@ -204,7 +204,9 @@ Controls:
 - `L` / `R`: toggle one side
 - `X`: disengage both sides
 - `O`: open disengaged hands
-- `H`: disengage, open hands, and reset arms
+- `H`: disengage, open hands, and reset both arms
+- `J` / `K`: disengage all, then home only the left / right arm and hand
+  (the other arm holds in place)
 - `Q`: disengage and exit
 
 ### Terminal 3 — episode recorder
@@ -299,7 +301,10 @@ docker compose run --rm tools \
   ros2 service call /reset_to_initial_pose std_srvs/srv/Trigger '{}'
 ```
 
-The reset is joint-space interpolation, not collision planning.
+Per-side variants move only that arm (`/reset_to_initial_pose/left`,
+`/reset_to_initial_pose/right`); `/capture_initial_pose` saves the current
+measured pose as the new home. The reset is joint-space interpolation, not
+collision planning.
 
 ### Motion trackers with PICO optical hands
 

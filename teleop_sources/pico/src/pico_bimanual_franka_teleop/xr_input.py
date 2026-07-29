@@ -145,7 +145,12 @@ class KeyboardActivation:
         self.device = device
         self.sides = tuple(sides)
         self.active = {side: False for side in SIDES}
-        self.requests = {"open_hands": False, "reset": False}
+        self.requests = {
+            "open_hands": False,
+            "reset": False,
+            "reset_left": False,
+            "reset_right": False,
+        }
         self._escape_tail = ""
         self._in_paste = False
         self.fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
@@ -159,8 +164,8 @@ class KeyboardActivation:
         os.write(self.fd, b"\x1b[?2004h")
         self._show(
             "Keyboard: [space] toggle configured sides, [l]/[r] toggle one side, "
-            "[x] disable all, [o] open hands, [h] reset to initial pose, "
-            "[q] quit"
+            "[x] disable all, [o] open hands, [h] reset both to initial pose, "
+            "[j]/[k] reset only the left/right arm and hand, [q] quit"
         )
         self._show_state()
 
@@ -263,6 +268,12 @@ class KeyboardActivation:
                     self.requests["open_hands"] = True
                 elif key == "h":
                     self.requests["reset"] = True
+                elif key in ("j", "k"):
+                    side = "left" if key == "j" else "right"
+                    if side not in self.sides:
+                        self._show(f"{side}: not configured for this run")
+                        continue
+                    self.requests[f"reset_{side}"] = True
                 elif key == "q":
                     self.active = {side: False for side in SIDES}
                     self._show_state()

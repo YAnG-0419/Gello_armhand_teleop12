@@ -262,3 +262,17 @@ def test_sides_alternate_rather_than_starve(sink):
     assert sent["left"] > 0 and sent["right"] > 0
     ratio = max(sent.values()) / max(1, min(sent.values()))
     assert ratio < 2.0, f"one side is being starved: {sent}"
+
+
+def test_request_open_for_one_side_only(sink):
+    pipeline = make_pipeline(FakeXrt(), sink)
+    inactive = {"left": False, "right": False}
+    try:
+        pipeline.request_open(now=100.0, duration=2.0, sides=("left",))
+        for step in range(40):
+            pipeline.tick(100.0 + step * 0.01, active=inactive)
+        messages = drain(sink)
+    finally:
+        pipeline.close()
+    assert messages, "the selected side must stream its open pose"
+    assert {message["side"] for message in messages} == {"left"}

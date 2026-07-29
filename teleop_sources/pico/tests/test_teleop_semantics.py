@@ -17,7 +17,8 @@ from pico_bimanual_franka_teleop.ik import BimanualPinkIK, classify_step
 from pico_bimanual_franka_teleop.pose_mapping import RelativePoseMapper
 from pico_bimanual_franka_teleop.types import Pose
 
-# The captured hardware home, matching config/initial_pose.yaml.
+# A captured hardware home (2026-07-25). The live initial_pose.yaml may be
+# newer; these tests only need a physically plausible dual-arm posture.
 HOME_Q = np.array([
     -0.110970355570, -0.493441432714, 0.114729285240, -2.441572666170,
     0.119077377021, 2.436770200730, 0.340127378702,

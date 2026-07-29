@@ -292,12 +292,19 @@ class ManusHandPipeline:
 
             self.debug_logger = HandRetargetDebugLogger(debug_log)
 
-    def request_open(self, now: float | None = None, duration: float = 2.0) -> None:
+    def request_open(
+        self,
+        now: float | None = None,
+        duration: float = 2.0,
+        sides: tuple[str, ...] | None = None,
+    ) -> None:
         if duration <= 0.0:
             raise ValueError("Open duration must be positive")
         moment = time.monotonic() if now is None else float(now)
-        for side in self.dynamic_sides:
-            self.open_until[side] = moment + float(duration)
+        selected = self.dynamic_sides if sides is None else sides
+        for side in selected:
+            if side in self.open_until:
+                self.open_until[side] = moment + float(duration)
 
     def _read_side(self, side: str, moment: float) -> bool:
         """Pull the freshest frame for one side; False when the source broke."""

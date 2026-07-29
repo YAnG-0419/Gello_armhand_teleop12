@@ -107,8 +107,14 @@ class HandPipeline:
 
             self.debug_logger = HandRetargetDebugLogger(debug_log)
 
-    def request_open(self, now: float | None = None, duration: float = 2.0) -> None:
-        """Stream the open-hand pose to every side that is not following.
+    def request_open(
+        self,
+        now: float | None = None,
+        duration: float = 2.0,
+        sides: tuple[str, ...] | None = None,
+    ) -> None:
+        """Stream the open-hand pose to the selected (default: every)
+        configured side that is not following.
 
         URDF zeros are the bridge's own home() pose: fingers straight, abduction
         centred. The stream lasts `duration` seconds because the bridge's 250 ms
@@ -119,8 +125,10 @@ class HandPipeline:
         if duration <= 0.0:
             raise ValueError("Open duration must be positive")
         moment = time.monotonic() if now is None else float(now)
-        for side in self.sides:
-            self._open_until[side] = moment + float(duration)
+        selected = self.sides if sides is None else sides
+        for side in selected:
+            if side in self._open_until:
+                self._open_until[side] = moment + float(duration)
 
     def tick(
         self,

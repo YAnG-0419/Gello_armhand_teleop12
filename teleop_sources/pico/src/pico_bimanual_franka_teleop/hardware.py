@@ -91,7 +91,11 @@ class DualFr3HardwareTeleop:
         self.reset_thread: threading.Thread | None = None
         self.reset_outcome: list[tuple[bool, str]] = []
 
-    def _start_reset(self) -> None:
+    def _start_reset(self, side: str | None = None) -> None:
+        """Home both arms, or only `side`. Either way the whole session
+        disengages for the duration: the reset trajectory owns the command
+        bus (the gateway blocks while it is active), so the other arm simply
+        holds where it is."""
         if self.reset_invoker is None:
             self._notify("reset requested, but no reset command is configured")
             return
@@ -102,15 +106,16 @@ class DualFr3HardwareTeleop:
         for mapper in self.mappers.values():
             mapper.reset()
         if self.hands is not None:
-            self.hands.request_open()
+            self.hands.request_open(sides=(side,) if side else None)
+        scope = f"{side} arm" if side else "arms"
         self._notify(
-            "reset: moving arms to the initial pose"
+            f"reset: moving {scope} to the initial pose"
             + ("; opening hands" if self.hands is not None else "")
         )
 
         def worker() -> None:
             try:
-                outcome = self.reset_invoker()
+                outcome = self.reset_invoker(side)
             except Exception as error:  # noqa: BLE001 - report, never crash the loop
                 outcome = (False, str(error))
             self.reset_outcome.append(outcome)
@@ -212,6 +217,10 @@ class DualFr3HardwareTeleop:
                         )
                 if requests.get("reset"):
                     self._start_reset()
+                elif requests.get("reset_left"):
+                    self._start_reset("left")
+                elif requests.get("reset_right"):
+                    self._start_reset("right")
                 if self.reset_thread is not None:
                     # The reset trajectory owns the arms; nothing may engage,
                     # and this tick's sample must not act on stale activations.
