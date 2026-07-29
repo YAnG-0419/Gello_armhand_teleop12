@@ -137,7 +137,9 @@ def canonical_landmarks(frame: ManusFrame) -> np.ndarray:
     return selected
 
 
-def _create_retargeter(side: str, model: str, filter_alpha: float):
+def _create_retargeter(
+    side: str, model: str, filter_alpha: float, thumb_mode: str = "fixed"
+):
     if model == "o30i":
         from .o30i_retarget import O30IRetargeter
 
@@ -151,7 +153,9 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
             filter_alpha=filter_alpha,
         )
     # The G20 profile mirrors the hardware-validated PICO path: the L20
-    # model with the fixed-opposition thumb (hand_profiles.py).
+    # model with the fixed-opposition thumb (hand_profiles.py). "full"
+    # instead solves the thumb CMC from the somehand-style objectives; it
+    # is selected per run for feel-check trials of agenda 1.
     from pico_bimanual_franka_teleop.hand_retarget import (
         L20Retargeter,
         THUMB_OPPOSITION_YAW_ROLL,
@@ -165,7 +169,11 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
         / f"linkerhand_l20_{side}.urdf",
         side,
         filter_alpha=filter_alpha,
-        thumb_opposition_fixed=THUMB_OPPOSITION_YAW_ROLL[side],
+        thumb_opposition_fixed=(
+            None
+            if thumb_mode == "full"
+            else THUMB_OPPOSITION_YAW_ROLL[side]
+        ),
     )
 
 
@@ -205,9 +213,14 @@ class ManusHandPipeline:
         models: dict[str, str] | None = None,
         dynamic_sides: tuple[str, ...] = ("left", "right"),
         bridge_factory=ManusBridge,
+        left_thumb_mode: str = "fixed",
     ) -> None:
         if stale_timeout <= 0.0:
             raise ValueError("MANUS stale timeout must be positive")
+        if left_thumb_mode not in {"fixed", "full"}:
+            raise ValueError(
+                f"left_thumb_mode must be 'fixed' or 'full', got {left_thumb_mode!r}"
+            )
         if not dynamic_sides or set(dynamic_sides).difference(self.sides):
             raise ValueError(f"Invalid dynamic sides: {dynamic_sides}")
         self.dynamic_sides = tuple(
@@ -241,7 +254,12 @@ class ManusHandPipeline:
         try:
             for side in self.dynamic_sides:
                 self.retargeters[side] = _create_retargeter(
-                    side, models[side], filter_alpha
+                    side,
+                    models[side],
+                    filter_alpha,
+                    thumb_mode=(
+                        left_thumb_mode if side == "left" else "fixed"
+                    ),
                 )
         except BaseException:
             for retargeter in self.retargeters.values():
