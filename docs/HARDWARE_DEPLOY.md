@@ -18,7 +18,8 @@ real-world test and is not yet marked validated.
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop/docker
-docker compose up franka-control teleop-control pico-bridge
+# hand-control now defaults to the physical pair: left G20 + right O30i.
+docker compose up franka-control teleop-control pico-bridge hand-control
 
 # Dry-run model and packet validation only:
 cd /home/descfly/hsc/franka_upper_body_teleop
@@ -109,10 +110,13 @@ conda run --no-capture-output --name franka-teleop-pico \
   --hand-source right-only-manus
 ```
 
-Only the right tracker is required; the left LinkerHand holds its default
-pose. The terminal prints per-side tracker and hand-send status once per
-second. `H` still homes both arms. This software path exists, but its complete
-mixed-hardware real-world validation remains pending.
+Both trackers are required by default and both arms teleoperate; the left G20
+holds its default pose because there is no left glove yet. Pass
+`--arm-sides right` to reproduce the earlier right-arm-only bringup when the
+left tracker is unavailable. The terminal prints per-side tracker and
+hand-send status once per second. `H` still homes both arms. This software
+path exists, but its complete mixed-hardware real-world validation remains
+pending.
 
 ## Full teleop and recording
 
@@ -396,8 +400,13 @@ cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output --name franka-teleop-pico \
   pytest -q teleop_sources/pico/tests
 
-cd ros_ws/src/linker_hand_bridge
-PYTHONPATH=. python3 -m pytest -q test/test_core.py
+PYTHONPATH=ros_ws/src/linker_hand_bridge:ros_ws/src/linker_hand_ros2_sdk \
+  python3 -m pytest -q \
+  ros_ws/src/linker_hand_bridge/test/test_core.py \
+  ros_ws/src/linker_hand_bridge/test/test_o30i_profile_limits.py \
+  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_contract.py \
+  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_contract_limits.py \
+  ros_ws/src/linker_hand_ros2_sdk/test/test_o30i_transport.py
 ```
 
 Shutdown order: disengage PICO, stop the PICO process, stop Compose, then

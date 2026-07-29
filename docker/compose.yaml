@@ -54,12 +54,13 @@ services:
 
   hand-control:
     <<: *runtime
-    # Privileged for SocketCAN: with the host network namespace the container
-    # binds can0/can1 directly, verified on this machine. This service's
-    # defaults are the current right-only-manus mode's operational
-    # configuration: both G20s, with the source holding the left at its default
-    # pose and driving the right from MANUS. The bridge listens on UDP 5570,
-    # reachable from the host because the network is shared.
+    # Privileged for SocketCAN and the O30i USB-CANFD adapter: with the host
+    # network namespace and privileged devices the container reaches can0 and
+    # the vendor USB adapter directly, verified on this machine. This service's
+    # defaults match the physical hands: left G20 on can0, right O30i through
+    # libcanbus USB, driven by the right-only-manus source with the left held
+    # at its default pose. The bridge listens on UDP 5570, reachable from the
+    # host because the network is shared.
     privileged: true
     command:
       - ros2
@@ -68,14 +69,21 @@ services:
       - hands.launch.py
       - sides:=both
       - left_model:=g20
-      - right_model:=g20
+      - right_model:=o30i
       - enabled:=true
+      # The 0/255 default tick mapping over each URDF joint range is the
+      # validated O30i runtime mapping; calibration_verified acknowledges it.
+      - o30_calibration_verified:=true
       # abduction_invert stays at its default (false). The unified MANUS mode
       # feeds the same L20 retargeter as the validated PICO path (offline check
       # 2026-07-27: identical skeleton chirality in both sessions' logs), so the
       # bridge's derived per-side polarity is already correct. The flag exists
       # for senders with their own, unverified abduction convention.
+      # G20 slews at the full 1500 units/s; the O30i profile caps its own side
+      # at 12 rad/s regardless of this value.
       - max_command_rate:=1500.0
+      # Speed/torque apply to the G20 only; the O30i profile has no startup
+      # settings.
       - initial_speed:=255
       - initial_torque:=200
       - initial_thumb_torque:=250

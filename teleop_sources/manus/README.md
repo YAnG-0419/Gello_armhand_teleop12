@@ -87,8 +87,9 @@ multi-pose recording rather than an embedded correction.
 ## Primary O30i operator
 
 Run arm and hand teleoperation in one operator process. This is the primary
-command; it requires only the right motion tracker and uses the same `R`,
-`Space`, and `X` state to gate both the right arm and right hand. For this
+command; it drives both arms from the motion trackers (pass `--arm-sides
+right` for a right-arm-only run) and uses the same `R`, `Space`, and `X`
+state to gate each arm, with the right hand following its arm. For this
 source, `--right-hand-model` defaults to `o30i`:
 
 ```bash

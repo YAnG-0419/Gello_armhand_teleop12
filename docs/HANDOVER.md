@@ -70,10 +70,11 @@ conda run --no-capture-output --name franka-teleop-pico \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
 
-The legacy `docker compose up -d hand-control` service still starts the
-dual-G20 configuration. Use the explicit O30i wrapper scripts below for the
-current hand. Launching `hands.launch.py` directly keeps output disabled unless
-`enabled:=true` is supplied.
+`docker compose up -d hand-control` now brings up the physical pair: left G20
+on can0 plus right O30i through libcanbus USB, with the validated 0/255 tick
+mapping acknowledged. `run_o30_robot.sh` remains the right-O30i-only wrapper
+for hand experiments. Launching `hands.launch.py` directly keeps output
+disabled unless `enabled:=true` is supplied.
 
 ## Hand system: current implementation
 
@@ -187,8 +188,10 @@ The validated hand-only entrypoints are
 `teleop_dual_fr3.py --arm-source motion-trackers --hand-source
 right-only-manus`: one process owns both SDK clients and ticks MANUS from the
 arm loop, so `R`, `Space`, and `X` gate the right arm and hand together while
-the left hand holds its default pose. Only the right tracker is required in
-this mode. `H` remains a global workcell HOME and resets both arms.
+the left hand holds its default pose. Both trackers are required by default
+and both arms teleoperate; `--arm-sides right` reproduces the earlier
+right-arm-only bringup. `H` remains a global workcell HOME and resets both
+arms.
 
 ## Research agenda
 
@@ -203,12 +206,12 @@ The next integration task is a physical run with left G20 and right O30i:
   right O30i, is a later implementation and validation task. It is not
   implemented as of this handover.
 
-The model-aware bridge and `hands.launch.py` support the mixed physical models,
-but the current real-hardware wrapper starts only right O30i. Before the mixed
-test, add or verify a privileged robot-side launch that owns left G20 and right
-O30i together, then test activation, stale-input behavior, and independent
-per-side status. Do not describe this as validated until it has run on both
-physical hands.
+The robot-side bringup for the mixed pair now exists: the Compose
+`hand-control` service owns left G20 and right O30i together, and the host
+default is bimanual arms (`--arm-sides right` restores the old single-arm
+flow). What remains is the physical run itself: test activation, stale-input
+behavior, and independent per-side status on both hands. Do not describe this
+as validated until it has run on both physical hands.
 
 ### 2. Systematic MANUS-to-O30i precision
 
