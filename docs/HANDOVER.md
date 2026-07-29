@@ -1,7 +1,7 @@
 # Repository handover
 
-State as of 2026-07-29. Runbook: [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md);
-camera: [ORBBEC_CAMERA.md](ORBBEC_CAMERA.md). History lives in the git log.
+State as of 2026-07-29 evening. Runbook: [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md);
+camera: ORBBEC_CAMERA.md. History lives in the git log.
 
 ## Setup
 
@@ -14,87 +14,87 @@ PICO tracker ids: config/pico.yaml; re-assign via calibrate_tracker_sides.py
 ```
 
 Bringup: `docker compose up franka-control teleop-control pico-bridge
-hand-control` (hand-control = left G20 + right O30i, enabled). Operator:
-`scripts/run_teleop.sh` (headless) + gui/operator_gui.py on TCP :5590.
+hand-control`. Operator: `scripts/run_teleop.sh` (headless backend) +
+`python teleop_sources/gui/operator_gui.py` (PySide6, TCP :5590, base env).
+All engage/home/open actions are GUI buttons; GUI loss disengages all.
 
 Status:
 
-- Arms are settled (impedance gains, FOH interpolation, 200 Hz broadcasters,
-  tracker input; quiet EE tremor 3.4 mrad / 0.83 mm). Do not retune without
-  reading the git history; hand-roots input is the occlusion fallback.
-- The mixed stack ran on hardware 2026-07-29 (teleop + 3.4 min recording;
-  engage/disengage cycles validated the recoverable O30i watchdog). Pending:
-  per-side tracker fault drills, feel-check of the 2026-07-29 retargeting
-  change (segment-direction + pinch terms), a left-G20 grasp in mixed mode.
-- Hand path: MANUS -> canonical landmarks -> per-side solver (right O30i,
-  left G20 via the PICO-validated fixed-opposition L20 profile) -> UDP
-  :5570 -> bridge (250 ms watchdog, per-model slew) -> drivers. Bimanual
-  MANUS implemented 2026-07-29, unvalidated; the left glove sends nothing
-  until Calibration_left.mcal exists (probe: inspect_manus_gloves.py).
+- Arms are settled (quiet EE tremor 3.4 mrad / 0.83 mm); do not retune
+  without reading the git history. Contact is RESOLVED (auto thresholds +
+  torque gating, [CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md)); IK
+  failures are classified live and per tick (follow-debug.v4). Initial pose
+  recaptured 2026-07-29; per-side home services exist. Gateway verdicts
+  stream back (protocol v2): a rejected engage shows its reason in the GUI.
+- Bimanual MANUS ran on hardware 2026-07-29 evening; both gloves stream
+  (probe: inspect_manus_gloves.py), engage/disengage cycles work after the
+  re-engage-deadlock fix. Pending: per-side tracker fault drills, feel-check
+  of the O30i thumb change, left-G20 grasp quality (agenda 1).
+- Hand path: MANUS -> canonical landmarks -> per-side solver (right O30i
+  full-thumb; left G20 = L20 profile, FIXED thumb opposition) -> UDP :5570
+  -> bridge (250 ms watchdog, per-model slew) -> drivers.
 
 ## Research agenda
 
-### 1. Contact-rich tolerance: why does table contact red-light the arm?
+### 1. G20 thumb: replace the fixed opposition with real retargeting
 
-RESOLVED 2026-07-29; evidence, sign-probe results, and the trial record:
-[CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md). Collision thresholds
-are applied automatically at bringup (verify both "accepted" lines); the
-gateway gates commands on measured external joint torques (always on, a
-loaded joint may only move toward unloading, transitions logged, stale data
-fails open). Validated: pressing a surface holds without reflex, releases
-on retreat. Wrenching the held arm still reflexes at 50 N - by design.
+The G20 thumb's CMC yaw/roll are frozen at THUMB_OPPOSITION_YAW_ROLL
+(hand_retarget.py ~L66-86; right operator-tuned 2026-07-26, left an
+UNTUNED copy - the mirrored URDF may want a different roll); only the curl
+is live (bend 0.25-1.30 rad -> full pitch+flex). Known costs: 16 mm
+contact gap mimicking the human root (2026-07-26 recordings); one fixed
+orientation cannot serve pinch, wrap, and lateral grasps. Solve it
+systematically, not by re-tuning constants:
 
-### 2. IK transparency: unreachable pose, or IK failure?
+- Prior art: the O30i solver's segment-direction + pinch terms took thumb
+  MCP deficit to ~0 deg and pinch-at-touch from 17 to 5.7 mm offline
+  (manus_teleop/o30i_retarget.py). The same method - explicit objectives
+  replayed against recorded landmarks - should drive the G20/L20 thumb.
+- Define grasp metrics first (thumb-tip vs finger-tip distances,
+  opposition plane angle); evaluate on replayed `hand_fidelity*.jsonl` and
+  a NEW recorded pose set (pinch / power wrap / lateral), then feel.
+- Constraint: no G20 URDF exists; models are L20. Decide explicitly
+  whether the L20 thumb model is the limit or the mapping is.
+- Tools: analyze_hand_retarget_log.py, inspect_thumb_configuration.py,
+  tune_thumb_opposition.py, diagnose_o30i_retarget.py (metric-loop model).
 
-Instrumented 2026-07-29: `ik.py` classifies every step (ok / joint-limit /
-speed-clamp / workspace), the STATE line shows each side's worst cause once
-per second, and `follow-debug.v4` logs it per tick. Replaying all 14
-sessions: past deficits were mostly j7 at its limit and workspace edges;
-an operator staged-reach check (stretch, j7 stop, fast sweep) pends.
-
-### 3. Collision awareness (low priority)
+### 2. Collision awareness (low priority)
 
 The bimanual IK knows nothing about self- or table collision; only the
 Franka reflex intervenes. Candidate: pink collision barriers, validated in
 the mujoco harness before hardware.
 
-### 4. Hands (parked)
+### 3. Hands, parked
 
 - MANUS->O30i precision: record all four layers (landmarks, radians,
   commands, feedback ticks) over a repeatable pose set before more tuning.
-- G20: no G20 URDF exists (models are L20); fixed-opposition thumb is the
-  answer - full-thumb retargeting is research, not a bugfix.
 - Force: touch sensors and motor current are unread; a force-gated press is
   implementable against the existing bridge.
 
 ## Invariants and traps
 
-- One SDK client owns PICO input; never run RobotLinuxDemo beside it.
-- `detected=[]` with the SDK connected = the headset stopped sending (seen
-  after 2-day service uptime). Diagnose: `ss -tnp | grep 60061`, then
-  `inspect_motion_trackers.py` alone, then headset re-enter / service restart.
-- `isActive` + array-change liveness stay mandatory (SDK serves cached poses).
-- Trackers are per-side, never blocking: zero trackers still starts (O/H
-  work); absent sides cannot engage; loss while engaged disengages all.
-- O30i driver: command gaps hold position; feedback loss disables
-  recoverably; only a rejected disable is terminal.
-- The host process stays ROS-free (`env_guard.py`); `config/pico.yaml` is
-  validated by both the host parser and the pico bridge launch file.
-- `H` and robot replay move hardware; keep PICO disengaged.
-- After any reflex, save `docker compose logs franka-control` BEFORE
-  `down`; treat the first engagement after a restart as suspect
-  (unresolved 2026-07-26 violent right-arm reflex, logs lost).
+- One SDK client owns PICO input, one owns MANUS; never run RobotLinuxDemo
+  or a second operator/hands-only script beside a live session.
+- `detected=[]` = the headset stopped sending; probe with
+  inspect_motion_trackers.py alone. isActive + array-change liveness stay
+  mandatory. Trackers are per-side; loss while engaged disengages all.
+- O30i driver: command gaps hold; feedback loss disables recoverably; only a
+  rejected disable is terminal. O30i silent on CANFD: probe_o30i_identity.py.
+- The host stays ROS-free (env_guard.py); pico.yaml is validated by host
+  parser and bridge launch; .msg changes need a colcon rebuild.
+- Home buttons and robot replay move hardware. After any reflex or bug,
+  save `docker compose logs franka-control teleop-control` BEFORE `down`
+  (two incidents lost logs); first engagement after a restart is suspect.
 
 ## Tests
 
-Pico suite (110): `pytest -q teleop_sources/pico/tests` in the conda env.
-ROS-side (59): see HARDWARE_DEPLOY verification. teleop_data (20) runs in
-the tools container. Python changes need only a service restart.
+Pico (124): `pytest -q teleop_sources/pico/tests` in franka-teleop-pico.
+Gateway/protocol (10): `PYTHONPATH=ros_ws/src/teleop_core python3 -m pytest
+-q ros_ws/src/teleop_core/test/`. Container suites: HARDWARE_DEPLOY.
 
 ## Data
 
-Under `/home/descfly/franka_teleop_data/`: `hand_coexistence.jsonl` (only
-tracker-vs-skeleton dataset); `diagnostics/20260726_*` (tracker sessions,
-incl. the 8.7 min screwdriver run); `diagnostics/20260729_143116` (first
-mixed session; drove the retargeting change). `hand_fidelity*.jsonl` files
-are exact retarget inputs, replayable offline.
+Under `/home/descfly/franka_teleop_data/`: `hand_coexistence.jsonl`;
+`diagnostics/20260726_*` (tracker sessions, thumb-gap evidence);
+`diagnostics/20260729_*` (mixed sessions). `hand_fidelity*.jsonl` are exact
+retarget inputs, replayable offline - the substrate for agenda 1.
