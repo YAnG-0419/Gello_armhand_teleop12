@@ -62,12 +62,14 @@ class FollowDebugLogger:
         self._file.write(
             json.dumps(
                 {
-                    "schema": "follow-debug.v2",
+                    "schema": "follow-debug.v3",
                     "written_at": time.time(),
                     "fields": "t monotonic; q_measured, q_commanded 14 joints; "
                     "per side: engaged, raw_tracker/tracker/target/ee_cmd/"
                     "ee_meas poses with rotations as world-frame rotation "
-                    "vectors",
+                    "vectors; ik = {ep m, eo rad, sat 1-based saturated "
+                    "joints, lim [joint, margin rad] near position limits} "
+                    "for sides the IK stepped",
                 }
             )
             + "\n"
@@ -84,6 +86,7 @@ class FollowDebugLogger:
         ee_poses: dict,
         raw_tracker_poses: dict | None = None,
         measured_ee_poses: dict | None = None,
+        ik_diagnostics: dict | None = None,
     ) -> None:
         if self._failed:
             return
@@ -95,6 +98,7 @@ class FollowDebugLogger:
             }
             raw_tracker_poses = raw_tracker_poses or {}
             measured_ee_poses = measured_ee_poses or {}
+            ik_diagnostics = ik_diagnostics or {}
             for side in SIDES:
                 row[side] = {
                     "engaged": bool(engaged.get(side, False)),
@@ -106,6 +110,17 @@ class FollowDebugLogger:
                     "ee_cmd": _pose_record(ee_poses.get(side)),
                     "ee_meas": _pose_record(measured_ee_poses.get(side)),
                 }
+                diag = ik_diagnostics.get(side)
+                if diag is not None:
+                    row[side]["ik"] = {
+                        "ep": round(float(diag["position_error"]), 6),
+                        "eo": round(float(diag["orientation_error"]), 6),
+                        "sat": list(diag["saturated_joints"]),
+                        "lim": [
+                            [joint, round(margin, 5)]
+                            for joint, margin in diag["limit_joints"]
+                        ],
+                    }
             self._file.write(json.dumps(row, separators=(",", ":")) + "\n")
             self._rows += 1
             if self._rows % self._flush_every == 0:

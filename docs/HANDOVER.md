@@ -36,21 +36,21 @@ Status:
 
 ### 1. Contact-rich tolerance: why does table contact red-light the arm?
 
-Touching the table trips the Franka reflex almost immediately. Suspects in
-order: low default collision-behavior thresholds (audit what
-`scripts/set_bi_collision_behavior.py` currently sets), stiff impedance
-turning position error into force while the operator pushes the target into
-the table, and zero compliance in the command path. First steps: read the
-active thresholds, measure force at reflex from franka-control logs, then
-choose between raising contact thresholds and task-space compliance.
+Audited offline 2026-07-29; evidence and the operator plan:
+[CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md). The collision-behavior
+script never ran (nothing invokes it) and would have sent zero acceleration
+thresholds; fixed, response-checked, now a manual bringup step. Structural
+cause: the gateway slew walks the command into an obstacle while the stiff
+impedance turns deviation into torque - a per-joint deviation cap is
+prepared in the gateway (`max_command_deviation`, default off); trials pend.
 
 ### 2. IK transparency: unreachable pose, or IK failure?
 
-The differential IK (pink QP + posture attractor + speed clamp) fails
-silently: joint limits, singularities, and workspace edges all look like
-"the arm stopped following". `ee_jitter.jsonl` already records target vs
-commanded vs measured EE per tick - classify failures offline first, then
-surface the live cause (which joint at limit, tracking error) in the TUI.
+Instrumented 2026-07-29: `ik.py` classifies every step (ok / joint-limit /
+speed-clamp / workspace), the STATE line shows each side's worst cause once
+per second, and `follow-debug.v3` logs it per tick. Replaying all 14
+sessions: past deficits were mostly j7 at its limit and workspace edges.
+Pending: an operator staged-reach check (stretch, j7 stop, fast sweep).
 
 ### 3. Collision awareness (low priority)
 

@@ -34,6 +34,20 @@ import numpy as np  # noqa: E402
 SIDES = ("left", "right")
 CLAMP_DEFAULT = 0.5  # keep in sync with host.max_joint_speed in config/pico.yaml
 
+# FR3 position limits in command order (left j1-7 then right j1-7); keep in
+# sync with teleop_core/safety.py. The analyzer stays ROS- and URDF-free.
+LOWER_LIMITS = np.array(
+    [-2.9007400167, -1.8360900167, -2.9007400167, -3.0770200167,
+     -2.87630335, 0.43982265, -3.05083335] * 2
+)
+UPPER_LIMITS = np.array(
+    [2.9007400167, 1.8360900167, 2.9007400167, -0.1169370833,
+     2.87630335, 4.62163335, 3.05083335] * 2
+)
+LIMIT_MARGIN = 0.05  # rad; keep in sync with pico_bimanual_franka_teleop.ik
+IK_DEFICIT = 0.010  # m of target->EE(cmd) error that deserves a cause
+PROGRESS_EPSILON = 0.0002  # m/tick; keep in sync with pico_bimanual_franka_teleop.ik
+
 
 def load(path):
     rows = []
@@ -170,6 +184,87 @@ def report_quiet_jitter(seg, side):
         )
 
 
+def attribute_ik_deficits(seg, side, clamp):
+    """Classify each deficit tick by its binding constraint.
+
+    A deficit tick has more than IK_DEFICIT of target->EE(cmd) error. The
+    cause falls out of the logged series alone, so v2 logs classify the same
+    way as v3: a side joint inside LIMIT_MARGIN of a position limit is a
+    limit hit; the command moving at the clamp while the error shrinks is
+    still catching up; anything else means the QP settled short of the
+    target - out of reach. The smoothed-progress test mirrors classify_step
+    in pico_bimanual_franka_teleop.ik: at a workspace edge the clamp chatters
+    without net progress, so saturation alone would misread stuck as lag.
+    """
+    t = np.array([row["t"] for row in seg])
+    target = positions(seg, side, "target")
+    ee_cmd_key = "ee_cmd" if has_pose(seg, side, "ee_cmd") else "ee"
+    ee_cmd = positions(seg, side, ee_cmd_key)
+    q_cmd = np.array([row["q_cmd"] for row in seg], dtype=float)
+    offset = 0 if side == "left" else 7
+    side_q = q_cmd[:, offset:offset + 7]
+    margins = np.minimum(
+        side_q - LOWER_LIMITS[offset:offset + 7],
+        UPPER_LIMITS[offset:offset + 7] - side_q,
+    )
+    near_limit = (margins < LIMIT_MARGIN).any(axis=1)
+    speed = np.abs(np.diff(side_q, axis=0)) / np.diff(t)[:, None]
+    saturated = np.concatenate(([False], (speed > clamp * 0.98).any(axis=1)))
+    error = np.linalg.norm(ee_cmd - target, axis=1)
+    progress = np.empty(len(error))
+    progress[0] = np.inf
+    average = None
+    for index, sample in enumerate(-np.diff(error), start=1):
+        average = sample if average is None else 0.8 * average + 0.2 * sample
+        progress[index] = average
+    deficit = error > IK_DEFICIT
+    total = int(deficit.sum())
+    if not total:
+        print(f"        IK deficit ticks (> {IK_DEFICIT*1e3:.0f} mm): none")
+        return
+    limit_ticks = int((deficit & near_limit).sum())
+    clamp_ticks = int(
+        (deficit & ~near_limit & saturated & (progress > PROGRESS_EPSILON)).sum()
+    )
+    unreachable = total - limit_ticks - clamp_ticks
+    print(
+        f"        IK deficit ticks (> {IK_DEFICIT*1e3:.0f} mm): "
+        f"{total} ({100 * total / len(seg):.1f}% of segment) -> "
+        f"joint-limit {limit_ticks}, speed-clamp {clamp_ticks}, "
+        f"unreachable {unreachable}"
+    )
+    if limit_ticks:
+        worst = margins[deficit & near_limit]
+        joints = ", ".join(
+            f"j{index + 1} ({int((worst[:, index] < LIMIT_MARGIN).sum())} ticks)"
+            for index in range(7)
+            if (worst[:, index] < LIMIT_MARGIN).any()
+        )
+        print(f"        joints at their limit during deficits: {joints}")
+
+
+def report_limit_proximity(q_cmd):
+    margins = np.minimum(q_cmd - LOWER_LIMITS, UPPER_LIMITS - q_cmd)
+    closest = margins.min(axis=0)
+    flagged = [
+        (index, closest[index], float(np.mean(margins[:, index] < LIMIT_MARGIN) * 100))
+        for index in np.argsort(closest)
+        if closest[index] < 2 * LIMIT_MARGIN
+    ]
+    if not flagged:
+        print(
+            "commanded joints stay clear of position limits "
+            f"(closest {closest.min():.3f} rad)"
+        )
+        return
+    for index, margin, share in flagged:
+        side = "left" if index < 7 else "right"
+        print(
+            f"commanded {side} j{index % 7 + 1} came within {margin:.3f} rad of "
+            f"its limit ({share:.1f}% of ticks inside {LIMIT_MARGIN:g} rad)"
+        )
+
+
 def analyze(path, clamp):
     rows = load(path)
     if not rows:
@@ -189,6 +284,22 @@ def analyze(path, clamp):
         f"command minus measured joints: median "
         f"{np.median(cmd_vs_meas):.3f} rad, p95 {np.percentile(cmd_vs_meas, 95):.3f} rad"
     )
+    # Per-joint p99 over engaged ticks sizes the gateway's
+    # max_command_deviation cap: it must sit above the free-space lag of
+    # every joint (see teleop_control.yaml). Disengaged ticks are excluded -
+    # resets legitimately move the arm away from the held command.
+    deviation = np.abs(q_cmd - q_meas)
+    for side, offset in (("left", 0), ("right", 7)):
+        engaged = np.array(
+            [bool((row.get(side) or {}).get("engaged")) for row in rows]
+        )
+        if not engaged.any():
+            print(f"per-joint |cmd - meas| p99 {side} j1-7: never engaged")
+            continue
+        per_joint = np.percentile(deviation[engaged, offset:offset + 7], 99, axis=0)
+        joints = "/".join(f"{value:.3f}" for value in per_joint)
+        print(f"per-joint engaged |cmd - meas| p99 {side} j1-7: {joints} rad")
+    report_limit_proximity(q_cmd)
 
     for side in SIDES:
         segs = [s for s in segments(rows, side) if len(s) >= 100]
@@ -231,6 +342,7 @@ def analyze(path, clamp):
                 f"        IK lag (target->EE cmd)  median {np.median(ik_err)*1e3:.0f} mm"
                 f"  p95 {np.percentile(ik_err, 95)*1e3:.0f} mm  max {ik_err.max()*1e3:.0f} mm"
             )
+            attribute_ik_deficits(seg, side, clamp)
             print(
                 f"        amplitude transfer x/y/z: "
                 + "/".join("-" if not np.isfinite(r) else f"{r*100:.0f}%" for r in transfer)

@@ -4,7 +4,7 @@ import time
 import numpy as np
 
 from .config import InputConfig
-from .ik import BimanualPinkIK, IKError
+from .ik import BimanualPinkIK, IKError, classify_step
 from .pose_mapping import RelativePoseMapper
 from .robot_udp import UdpRobotBackend
 from .types import SIDES
@@ -133,8 +133,39 @@ class DualFr3HardwareTeleop:
         # re-anchor the IK posture reference before anything can re-engage.
         self.hold_q = None
 
+    @staticmethod
+    def _ik_status(worst: dict) -> str:
+        """One operator-readable clause per side, worst tick since the last
+        report: the IK failure cause, or 'ok' while tracking is transparent."""
+        parts = []
+        for side in SIDES:
+            diagnostics = worst.get(side)
+            if diagnostics is None:
+                continue
+            cause = classify_step(diagnostics)
+            if cause == "ok":
+                parts.append(f"{side} ok")
+                continue
+            detail = (
+                f"{diagnostics['position_error'] * 1e3:.0f}mm/"
+                f"{np.degrees(diagnostics['orientation_error']):.0f}deg"
+            )
+            if cause == "joint-limit":
+                joints = ",".join(
+                    f"j{joint}" for joint, _ in diagnostics["limit_joints"]
+                )
+                parts.append(f"{side} LIMIT {joints} off {detail}")
+            elif cause == "speed-clamp":
+                parts.append(f"{side} clamped off {detail}")
+            else:
+                parts.append(f"{side} UNREACHABLE off {detail}")
+        return " | ".join(parts)
+
     def run(self) -> None:
         next_status_report = 0.0
+        # Worst IK step per side since the last status report; a transient
+        # at the report instant must not hide a limit hit seconds earlier.
+        ik_worst: dict[str, dict] = {}
         previous_hand_sent = (
             {} if self.hands is None else {side: 0 for side in self.hands.sides}
         )
@@ -206,6 +237,13 @@ class DualFr3HardwareTeleop:
                 except IKError:
                     self.robot.send_command(q, ())
                     raise
+                for side, diagnostics in self.ik.last_diagnostics.items():
+                    worst = ik_worst.get(side)
+                    if (
+                        worst is None
+                        or diagnostics["position_error"] > worst["position_error"]
+                    ):
+                        ik_worst[side] = diagnostics
                 active_sides = tuple(side for side in SIDES if side in targets)
                 self.robot.send_command(self.hold_q, active_sides)
                 if self.debug_logger is not None:
@@ -225,6 +263,7 @@ class DualFr3HardwareTeleop:
                         self.ik.frame_poses(self.hold_q),
                         raw_tracker_poses=raw_poses,
                         measured_ee_poses=self.ik.frame_poses(q),
+                        ik_diagnostics=self.ik.last_diagnostics,
                     )
                 # Hands go after the arm command so the deadline-critical work
                 # is never queued behind a hand solve. Each hand follows only
@@ -243,6 +282,10 @@ class DualFr3HardwareTeleop:
                         status_summary() if status_summary is not None else ""
                     )
                     parts = [f"trackers: {input_summary}"] if input_summary else []
+                    ik_summary = self._ik_status(ik_worst)
+                    if ik_summary:
+                        parts.append(f"ik: {ik_summary}")
+                    ik_worst = {}
                     if self.hands is not None:
                         hand_parts = []
                         for side in self.hands.sides:

@@ -13,7 +13,7 @@ import numpy as np
 import pinocchio as pin
 import pytest
 
-from pico_bimanual_franka_teleop.ik import BimanualPinkIK
+from pico_bimanual_franka_teleop.ik import BimanualPinkIK, classify_step
 from pico_bimanual_franka_teleop.pose_mapping import RelativePoseMapper
 from pico_bimanual_franka_teleop.types import Pose
 
@@ -138,6 +138,68 @@ def test_configuration_evolves_continuously():
         q_next = ik.step(q, targets)
         assert np.abs(q_next - q).max() <= bound
         q = q_next
+
+
+def test_ik_diagnostics_report_ok_for_a_reached_target():
+    ik = make_ik()
+    home = {side: ik.frame_pose(HOME_Q, side) for side in ("left", "right")}
+    q = HOME_Q.copy()
+    targets = {
+        side: Pose(home[side].position + np.array([0.05, 0.0, 0.05]), home[side].rotation)
+        for side in ("left", "right")
+    }
+    for _ in range(600):
+        q = ik.step(q, targets)
+    for side in ("left", "right"):
+        diagnostics = ik.last_diagnostics[side]
+        assert classify_step(diagnostics) == "ok"
+        assert diagnostics["position_error"] < 0.005
+        assert not diagnostics["saturated_joints"]
+        assert not diagnostics["limit_joints"]
+
+
+def test_ik_diagnostics_flag_the_speed_clamp_while_catching_up():
+    # A large instantaneous target step cannot be covered in one clamped tick;
+    # the deficit is transient and must be attributed to the speed clamp.
+    ik = make_ik()
+    home = {side: ik.frame_pose(HOME_Q, side) for side in ("left", "right")}
+    targets = {
+        side: Pose(home[side].position + np.array([0.3, 0.0, 0.0]), home[side].rotation)
+        for side in ("left", "right")
+    }
+    ik.step(HOME_Q.copy(), targets)
+    for side in ("left", "right"):
+        diagnostics = ik.last_diagnostics[side]
+        assert diagnostics["position_error"] > 0.2
+        assert diagnostics["saturated_joints"]
+        assert classify_step(diagnostics) == "speed-clamp"
+
+
+def test_ik_diagnostics_attribute_an_out_of_reach_target():
+    # A target far outside the workspace: the configuration settles and the
+    # residual must be attributed to a pinned joint or the workspace edge,
+    # never reported as ok or still-catching-up.
+    ik = make_ik()
+    home = {side: ik.frame_pose(HOME_Q, side) for side in ("left", "right")}
+    q = HOME_Q.copy()
+    targets = {
+        side: Pose(
+            home[side].position + np.array([1.5, 0.0, 0.0]), home[side].rotation
+        )
+        for side in ("left", "right")
+    }
+    for _ in range(1200):
+        q = ik.step(q, targets)
+    for side in ("left", "right"):
+        diagnostics = ik.last_diagnostics[side]
+        assert diagnostics["position_error"] > 0.1
+        assert classify_step(diagnostics) in ("joint-limit", "workspace")
+
+
+def test_ik_diagnostics_clear_without_targets():
+    ik = make_ik()
+    ik.step(HOME_Q.copy(), {})
+    assert ik.last_diagnostics == {}
 
 
 def test_fk_pose_snapshots_do_not_change_after_a_later_fk_update():
