@@ -63,6 +63,19 @@ THUMB_FRAME_WEIGHTS = (2.0, 1.8)
 THUMB_DISTANCE_WEIGHTS = (2000.0, 1500.0, 1000.0, 800.0)
 THUMB_DISTANCE_THRESHOLD = 0.04
 
+# Near-open thumb poses leave the CMC position objective almost degenerate
+# across (yaw, roll, pitch), and the faded orientation terms then decide
+# between far-apart, near-equivalent minima: on the 20260730 left-glove
+# recording the raw thumb solution jumped >0.3 rad in one tick 121 times,
+# always while the orientation activation flickered near zero and never
+# explained by input motion. Two guards remove the snaps: the activation
+# releases through an exponential decay (its rise stays instant so pinch
+# engages the same tick), and the thumb solve is bounded to a trust region
+# around its warm start so a basin change becomes a multi-tick ramp. At the
+# 30 Hz hand rate 0.35 rad/tick is ~10 rad/s, well above human thumb speed.
+THUMB_ACTIVATION_RELEASE = 0.85
+THUMB_TRUST_REGION = 0.35
+
 # Fixed-opposition thumb mode. At roll 0 the yaw, pitch, MCP, and IP axes of
 # the G20 thumb are parallel, so (yaw, roll) set the direction of the thumb's
 # curl plane while pitch and the coupled MCP/IP flex curl within it. Locking
@@ -321,6 +334,7 @@ class L20Retargeter:
         )
         self.filtered_qpos: np.ndarray | None = None
         self._q_current = self.last_qpos.copy()
+        self._thumb_activation_state = 0.0
 
         self.robot_finger_lengths = self._robot_finger_lengths()
         (
@@ -692,6 +706,11 @@ class L20Retargeter:
                     thumb_flex_fraction * thumb_flex_fraction,
                     proximity_activation,
                 )
+                self._thumb_activation_state = max(
+                    thumb_orientation_activation,
+                    THUMB_ACTIVATION_RELEASE * self._thumb_activation_state,
+                )
+                thumb_orientation_activation = self._thumb_activation_state
 
             def objective(finger_q: np.ndarray) -> tuple[float, np.ndarray]:
                 q_work[joint_indices] = finger_q
@@ -831,17 +850,21 @@ class L20Retargeter:
                 gradient += 2.0 * self.smooth_weight * delta
                 return loss, gradient
 
+            lower_bounds = self._active_lower[joint_indices]
+            upper_bounds = self._active_upper[joint_indices]
+            if finger == "thumb":
+                lower_bounds = np.maximum(
+                    lower_bounds, start[joint_indices] - THUMB_TRUST_REGION
+                )
+                upper_bounds = np.minimum(
+                    upper_bounds, start[joint_indices] + THUMB_TRUST_REGION
+                )
             result = minimize(
                 objective,
                 start[joint_indices],
                 method="L-BFGS-B",
                 jac=True,
-                bounds=list(
-                    zip(
-                        self._active_lower[joint_indices],
-                        self._active_upper[joint_indices],
-                    )
-                ),
+                bounds=list(zip(lower_bounds, upper_bounds)),
                 options={
                     "maxiter": (
                         max(40, self.max_iterations)
@@ -950,6 +973,7 @@ class L20Retargeter:
         )
         self.filtered_qpos = None
         self._q_current = self.last_qpos.copy()
+        self._thumb_activation_state = 0.0
 
     def close(self) -> None:
         """Kept for API compatibility; pinocchio holds no external resources."""

@@ -405,3 +405,60 @@ def test_abduction_polarity_matches_urdf_geometry(side):
             f"{side}: slot 255 must move the index toward the thumb side, as "
             f"observed on hardware"
         )
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_thumb_orientation_activation_releases_gradually(side):
+    # A raw activation that flickers around zero re-tilts the near-degenerate
+    # open-thumb CMC valley and used to flip the solve between far-apart
+    # minima (121 raw jumps >0.3 rad on the 20260730 recording). The rise
+    # must stay instant so pinch engages the same tick; only release decays.
+    from pico_bimanual_franka_teleop.hand_retarget import (
+        THUMB_ACTIVATION_RELEASE,
+    )
+
+    with L20Retargeter(urdf_for(side), side) as retargeter:
+        open_hand = retargeter.robot_landmarks()
+        pinch = open_hand.copy()
+        pinch[4] = pinch[8]  # human thumb tip touching the index tip
+
+        _, stats = retargeter.retarget(pinch)
+        engaged = stats["thumb_orientation_activation"]
+        assert engaged == pytest.approx(1.0)
+
+        _, stats = retargeter.retarget(open_hand)
+        assert stats["thumb_orientation_activation"] == pytest.approx(
+            THUMB_ACTIVATION_RELEASE * engaged
+        )
+        for _ in range(60):
+            _, stats = retargeter.retarget(open_hand)
+        assert stats["thumb_orientation_activation"] < 0.01
+
+        retargeter.reset()
+        _, stats = retargeter.retarget(open_hand)
+        assert stats["thumb_orientation_activation"] < 0.05
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_thumb_solution_is_trust_region_bounded_per_call(side):
+    # An activation step may move the thumb equilibrium across the whole CMC
+    # box; the raw solution must ramp there over multiple calls, never snap
+    # in one tick.
+    from pico_bimanual_franka_teleop.hand_retarget import THUMB_TRUST_REGION
+
+    with L20Retargeter(urdf_for(side), side) as retargeter:
+        thumb_cols = [
+            retargeter._active_joint_names.index(name)
+            for name in ("thumb_cmc_yaw", "thumb_cmc_roll", "thumb_cmc_pitch")
+        ]
+        open_hand = retargeter.robot_landmarks()
+        pinch = open_hand.copy()
+        pinch[4] = pinch[8]
+
+        previous = retargeter.last_qpos[thumb_cols].copy()
+        for landmarks in (pinch, pinch, open_hand, pinch, open_hand):
+            retargeter.retarget(landmarks)
+            current = retargeter.last_qpos[thumb_cols].copy()
+            step = np.abs(current - previous)
+            assert np.all(step <= THUMB_TRUST_REGION + 1e-9), step
+            previous = current
