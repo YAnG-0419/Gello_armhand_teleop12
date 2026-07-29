@@ -54,13 +54,6 @@ def main() -> None:
         required=True,
         choices=("controllers", "motion-trackers", "hand-roots"),
     )
-    parser.add_argument(
-        "--arm-sides",
-        default="both",
-        choices=("left", "right", "both"),
-        help="which arms are teleoperated; a single side drops the other "
-        "tracker's presence requirement (motion-trackers only, default: both)",
-    )
     # Hand options are CLI arguments rather than YAML, matching how --arm-source is
     # handled: what is being driven is an explicit choice per run, and this keeps
     # existing configuration files valid.
@@ -115,16 +108,6 @@ def main() -> None:
     args = parser.parse_args()
     if args.hand_debug_log and args.hand_source == "none":
         parser.error("--hand-debug-log requires a hand source")
-    if args.arm_sides != "both" and args.arm_source != "motion-trackers":
-        parser.error("--arm-sides applies only to --arm-source motion-trackers")
-    if args.arm_sides == "left" and args.hand_source == "right-only-manus":
-        parser.error(
-            "--arm-sides left would never engage the right MANUS hand: "
-            "the right hand follows only while the right arm is engaged"
-        )
-    required_input_sides = (
-        ("left", "right") if args.arm_sides == "both" else (args.arm_sides,)
-    )
 
     hand_sender_factory = None
     if args.hand_source == "pico":
@@ -200,7 +183,6 @@ def main() -> None:
         robot_state_wait_timeout=config.host.robot_state_wait_timeout,
         input_config=config.input,
         input_type=args.arm_source,
-        required_input_sides=required_input_sides,
         hand_sender_factory=hand_sender_factory,
         debug_logger=debug_logger,
         reset_invoker=invoke_reset,

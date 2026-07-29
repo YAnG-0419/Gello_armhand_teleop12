@@ -26,13 +26,10 @@ class DualFr3HardwareTeleop:
         robot_state_wait_timeout: float,
         input_config: InputConfig,
         input_type: str,
-        required_input_sides: tuple[str, ...] = SIDES,
         hand_sender_factory=None,
         debug_logger=None,
         reset_invoker=None,
     ) -> None:
-        if not required_input_sides or set(required_input_sides).difference(SIDES):
-            raise ValueError(f"Invalid required input sides: {required_input_sides}")
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
         self.robot = UdpRobotBackend(
@@ -43,9 +40,7 @@ class DualFr3HardwareTeleop:
             state_timeout=state_timeout,
         )
         try:
-            self.teleop_input = create_pico_input(
-                input_config, input_type, sides=tuple(required_input_sides)
-            )
+            self.teleop_input = create_pico_input(input_config, input_type)
         except BaseException:
             self.robot.close()
             raise

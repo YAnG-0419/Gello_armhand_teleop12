@@ -87,10 +87,10 @@ multi-pose recording rather than an embedded correction.
 ## Primary O30i operator
 
 Run arm and hand teleoperation in one operator process. This is the primary
-command; it drives both arms from the motion trackers (pass `--arm-sides
-right` for a right-arm-only run) and uses the same `R`, `Space`, and `X`
-state to gate each arm, with the right hand following its arm. For this
-source, `--right-hand-model` defaults to `o30i`:
+command; it drives whichever arms have live trackers (per-side at runtime —
+a right-arm-only session just means leaving the left tracker off) and uses
+the same `R`, `Space`, and `X` state to gate each arm, with the right hand
+following its arm. For this source, `--right-hand-model` defaults to `o30i`:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop

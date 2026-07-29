@@ -17,6 +17,9 @@ class _FakeKeyboard:
     def disable_all(self, _reason: str) -> None:
         self.active = {"left": False, "right": False}
 
+    def deny(self, side: str, _reason: str) -> None:
+        self.active[side] = False
+
     def show(self, _message: str) -> None:
         pass
 
@@ -61,9 +64,7 @@ def _identity_transforms() -> dict[str, dict[str, list[float]]]:
     return {"left": dict(transform), "right": dict(transform)}
 
 
-def _create_tracker_input(
-    sides=("left", "right"),
-) -> xr_input.MotionTrackerInput:
+def _create_tracker_input() -> xr_input.MotionTrackerInput:
     return xr_input.MotionTrackerInput(
         serials={"left": "LEFT-SN", "right": "RIGHT-SN"},
         tracker_to_control=_identity_transforms(),
@@ -75,8 +76,13 @@ def _create_tracker_input(
         max_linear_speed=3.0,
         max_angular_speed=12.0,
         keyboard_device="/dev/null",
-        sides=sides,
     )
+
+
+def _remove_tracker(fake_xrt: "_FakeXrt", serial: str) -> None:
+    index = fake_xrt.serials.index(serial)
+    fake_xrt.serials.pop(index)
+    fake_xrt.poses.pop(index)
 
 
 def test_motion_trackers_are_mapped_by_serial(monkeypatch) -> None:
@@ -96,26 +102,25 @@ def test_motion_trackers_are_mapped_by_serial(monkeypatch) -> None:
     assert fake_xrt.closed
 
 
-def test_right_only_tracker_does_not_require_left(monkeypatch) -> None:
+def test_single_tracker_startup_does_not_require_the_other(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     fake_xrt.serials = ["RIGHT-SN"]
     fake_xrt.poses = [fake_xrt.poses[0]]
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
     monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
 
-    tracker_input = _create_tracker_input(sides=("right",))
+    tracker_input = _create_tracker_input()
     tracker_input.keyboard.active["right"] = True
     sample = tracker_input.sample()
 
     assert sample is not None
     assert sample.activations == {"left": False, "right": True}
-    assert tracker_input.readiness["left"] == "not required"
+    assert tracker_input.readiness["left"].startswith("missing (LEFT-SN)")
     assert tracker_input.readiness["right"] == "ready"
-    assert "left=not required" in tracker_input.status_summary()
     tracker_input.close()
 
 
-def test_right_only_timeout_reports_each_side(monkeypatch) -> None:
+def test_no_tracker_timeout_reports_each_side(monkeypatch) -> None:
     fake_xrt = _FakeXrt()
     fake_xrt.serials = []
     fake_xrt.poses = []
@@ -123,11 +128,91 @@ def test_right_only_timeout_reports_each_side(monkeypatch) -> None:
     monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
 
     with pytest.raises(TimeoutError) as captured:
-        _create_tracker_input(sides=("right",))
+        _create_tracker_input()
 
     message = str(captured.value)
-    assert "left=not required" in message
+    assert "left=missing (LEFT-SN); detected=[]" in message
     assert "right=missing (RIGHT-SN); detected=[]" in message
+
+
+def test_engaging_a_missing_side_denies_only_that_side(monkeypatch) -> None:
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": True, "right": False}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    _remove_tracker(fake_xrt, "RIGHT-SN")
+    tracker_input.keyboard.active["right"] = True
+    fake_xrt.timestamp += 20_000_000
+    sample = tracker_input.sample()
+
+    assert sample is not None
+    assert sample.activations == {"left": True, "right": False}
+    assert tracker_input.keyboard.active["right"] is False
+
+
+def test_tracker_loss_while_engaged_disengages_everything(monkeypatch) -> None:
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": True, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    _remove_tracker(fake_xrt, "LEFT-SN")
+    fake_xrt.timestamp += 20_000_000
+
+    assert tracker_input.sample() is None
+    assert tracker_input.keyboard.active == {"left": False, "right": False}
+
+
+def test_disengaged_tracker_loss_does_not_stop_active_side(monkeypatch) -> None:
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": False, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    _remove_tracker(fake_xrt, "LEFT-SN")
+    fake_xrt.timestamp += 20_000_000
+    sample = tracker_input.sample()
+
+    assert sample is not None
+    assert sample.activations == {"left": False, "right": True}
+
+
+def test_reappearing_tracker_reseeds_without_tripping_the_jump_guard(
+    monkeypatch,
+) -> None:
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    monkeypatch.setattr(xr_input, "KeyboardActivation", _FakeKeyboard)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": False, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    removed_pose = list(fake_xrt.poses[1])
+    _remove_tracker(fake_xrt, "LEFT-SN")
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    # The tracker reappears far from where it vanished, and is engaged.
+    removed_pose[0] += 0.9
+    fake_xrt.serials.append("LEFT-SN")
+    fake_xrt.poses.append(removed_pose)
+    tracker_input.keyboard.active["left"] = True
+    fake_xrt.timestamp += 20_000_000
+    sample = tracker_input.sample()
+
+    assert sample is not None
+    assert sample.activations == {"left": True, "right": True}
 
 
 def test_motion_snapshot_rejects_inconsistent_count() -> None:
@@ -135,7 +220,6 @@ def test_motion_snapshot_rejects_inconsistent_count() -> None:
     fake_xrt.serials = ["LEFT-SN"]
     tracker_input = object.__new__(xr_input.MotionTrackerInput)
     tracker_input.xrt = fake_xrt
-    tracker_input.sides = ("left", "right")
     tracker_input.serials = {"left": "LEFT-SN", "right": "RIGHT-SN"}
     tracker_input.detected_serials = []
     tracker_input.readiness = {"left": "waiting", "right": "waiting"}
@@ -152,7 +236,6 @@ def test_motion_snapshot_accepts_five_trackers() -> None:
     ]
     tracker_input = object.__new__(xr_input.MotionTrackerInput)
     tracker_input.xrt = fake_xrt
-    tracker_input.sides = ("left", "right")
     tracker_input.serials = {"left": "SN-3", "right": "SN-1"}
     tracker_input.detected_serials = []
     tracker_input.readiness = {"left": "waiting", "right": "waiting"}

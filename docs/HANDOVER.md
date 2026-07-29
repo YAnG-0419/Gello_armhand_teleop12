@@ -188,10 +188,12 @@ The validated hand-only entrypoints are
 `teleop_dual_fr3.py --arm-source motion-trackers --hand-source
 right-only-manus`: one process owns both SDK clients and ticks MANUS from the
 arm loop, so `R`, `Space`, and `X` gate the right arm and hand together while
-the left hand holds its default pose. Both trackers are required by default
-and both arms teleoperate; `--arm-sides right` reproduces the earlier
-right-arm-only bringup. `H` remains a global workcell HOME and resets both
-arms.
+the left hand holds its default pose. Tracker presence is per-side at
+runtime: startup needs at least one tracker, a side whose tracker is absent
+simply cannot engage (the keyboard refuses with the reason), a disengaged
+side's tracker dropout never disturbs the other arm, and losing a tracker
+WHILE engaged disengages everything, exactly like a freeze. `H` remains a
+global workcell HOME and resets both arms.
 
 ## Research agenda
 
@@ -208,8 +210,8 @@ The next integration task is a physical run with left G20 and right O30i:
 
 The robot-side bringup for the mixed pair now exists: the Compose
 `hand-control` service owns left G20 and right O30i together, and the host
-default is bimanual arms (`--arm-sides right` restores the old single-arm
-flow). What remains is the physical run itself: test activation, stale-input
+drives whichever arms have live trackers (per-side at runtime, no flag).
+What remains is the physical run itself: test activation, stale-input
 behavior, and independent per-side status on both hands. Do not describe this
 as validated until it has run on both physical hands.
 

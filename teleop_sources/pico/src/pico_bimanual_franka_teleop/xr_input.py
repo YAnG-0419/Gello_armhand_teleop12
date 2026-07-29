@@ -222,6 +222,13 @@ class KeyboardActivation:
             self._show(f"Teleop disabled: {reason}")
             self._show_state()
 
+    def deny(self, side: str, reason: str) -> None:
+        """Refuse an attempted engagement of one side, leaving the other alone."""
+        if self.active.get(side):
+            self.active[side] = False
+            self._show(f"{side} cannot engage: {reason}")
+            self._show_state()
+
     def close(self) -> None:
         if self.fd is None:
             return
@@ -266,6 +273,15 @@ def _apply_local_transform(pose: Pose, transform: Pose) -> Pose:
 
 
 class MotionTrackerInput:
+    """Arm teleoperation from PICO motion trackers, with per-side availability.
+
+    Tracker presence is a runtime, per-side property, not a launch choice: a
+    side whose tracker is absent or invalid simply cannot engage, and its
+    dropout while disengaged never disturbs the other arm. Losing a tracker
+    WHILE its arm is engaged is treated exactly like a freeze and disengages
+    everything. Startup requires at least one configured tracker.
+    """
+
     def __init__(
         self,
         serials: dict[str, str],
@@ -278,15 +294,12 @@ class MotionTrackerInput:
         max_linear_speed: float,
         max_angular_speed: float,
         keyboard_device: str,
-        sides: tuple[str, ...] = SIDES,
     ) -> None:
         import xrobotoolkit_sdk as xrt
 
-        if not sides or set(sides).difference(SIDES):
-            raise ValueError(f"Invalid motion tracker sides: {sides}")
         if set(serials) != set(SIDES) or any(not value for value in serials.values()):
             raise ValueError("Both motion tracker serial numbers are required")
-        if len(sides) > 1 and serials["left"] == serials["right"]:
+        if serials["left"] == serials["right"]:
             raise ValueError("Left and right motion tracker serials must differ")
         if set(tracker_to_control) != set(SIDES):
             raise ValueError("Both tracker-to-control transforms are required")
@@ -303,7 +316,6 @@ class MotionTrackerInput:
             raise ValueError("Tracker timeouts and motion limits must be positive")
 
         self.xrt = xrt
-        self.sides = tuple(sides)
         self.serials = dict(serials)
         self.transforms = {
             side: _local_transform(tracker_to_control[side], side)
@@ -322,11 +334,8 @@ class MotionTrackerInput:
         self.last_rotation_changed_at = {side: None for side in SIDES}
         self.last_activations = {side: False for side in SIDES}
         self.detected_serials: list[str] = []
-        self.readiness = {
-            side: "waiting" if side in self.sides else "not required"
-            for side in SIDES
-        }
-        self.keyboard = KeyboardActivation(keyboard_device, sides=self.sides)
+        self.readiness = {side: "waiting" for side in SIDES}
+        self.keyboard = KeyboardActivation(keyboard_device)
         try:
             self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
@@ -335,6 +344,13 @@ class MotionTrackerInput:
             raise
 
     def _snapshot(self):
+        """Return (timestamp, per-side raw poses, serials), or None.
+
+        None means the SDK feed itself is unusable. A tracker that is merely
+        absent or serving an invalid pose is a per-side condition: it is
+        reported in `readiness`, omitted from the returned poses, and the
+        other side keeps working.
+        """
         for _ in range(3):
             timestamp_before = int(self.xrt.get_motion_timestamp_ns())
             count = int(self.xrt.num_motion_data_available())
@@ -346,9 +362,7 @@ class MotionTrackerInput:
         else:
             self.detected_serials = serials
             for side in SIDES:
-                if side not in self.sides:
-                    self.readiness[side] = "not required"
-                elif self.serials[side] not in serials:
+                if self.serials[side] not in serials:
                     self.readiness[side] = (
                         f"missing ({self.serials[side]}); detected={serials}"
                     )
@@ -364,7 +378,7 @@ class MotionTrackerInput:
             or len(set(serials)) != len(serials)
         ):
             self.detected_serials = serials
-            for side in self.sides:
+            for side in SIDES:
                 self.readiness[side] = (
                     f"inconsistent SDK frame count={count}, "
                     f"serials={len(serials)}, poses={len(poses)}"
@@ -375,45 +389,35 @@ class MotionTrackerInput:
             serial: np.asarray(pose, dtype=float)
             for serial, pose in zip(serials, poses)
         }
-        missing = [
-            side for side in self.sides if self.serials[side] not in by_serial
-        ]
+        selected = {}
         for side in SIDES:
-            if side not in self.sides:
-                self.readiness[side] = "not required"
-            elif side in missing:
+            raw_pose = by_serial.get(self.serials[side])
+            if raw_pose is None:
                 self.readiness[side] = (
                     f"missing ({self.serials[side]}); detected={serials}"
                 )
+            elif not is_valid_xr_pose(raw_pose):
+                self.readiness[side] = "invalid pose"
             else:
-                raw_pose = by_serial[self.serials[side]]
-                self.readiness[side] = (
-                    "ready" if is_valid_xr_pose(raw_pose) else "invalid pose"
-                )
-        if missing:
-            return None
-        selected = {
-            side: by_serial[self.serials[side]]
-            for side in self.sides
-        }
-        if not all(is_valid_xr_pose(pose) for pose in selected.values()):
-            return None
+                self.readiness[side] = "ready"
+                selected[side] = raw_pose
         return timestamp_after, selected, serials
 
     def _wait_until_ready(self, timeout: float) -> None:
+        """Wait for at least one configured tracker; report the other side."""
         deadline = time.monotonic() + timeout
         next_report = 0.0
         while time.monotonic() < deadline:
             self.keyboard.poll()
             snapshot = self._snapshot()
-            if snapshot is not None:
+            if snapshot is not None and snapshot[1]:
                 timestamp, raw_poses, _ = snapshot
                 now = time.monotonic()
                 self.last_motion_timestamp = timestamp
                 self.last_motion_update_at = now
-                for side in self.sides:
+                for side, raw_pose in raw_poses.items():
                     self.last_poses[side] = _apply_local_transform(
-                        xr_pose_to_world(raw_poses[side]), self.transforms[side]
+                        xr_pose_to_world(raw_pose), self.transforms[side]
                     )
                     self.last_position_changed_at[side] = now
                     self.last_rotation_changed_at[side] = now
@@ -430,7 +434,7 @@ class MotionTrackerInput:
                 next_report = now + 1.0
             time.sleep(0.05)
         raise TimeoutError(
-            "Timed out waiting for motion trackers; per-side state: "
+            "Timed out waiting for any motion tracker; per-side state: "
             + self.status_summary()
         )
 
@@ -456,7 +460,7 @@ class MotionTrackerInput:
         if previous_timestamp is None:
             return None
         if timestamp < previous_timestamp:
-            for side in self.sides:
+            for side in SIDES:
                 self.readiness[side] = "SDK motion timestamp moved backwards"
             return "motion tracker timestamp moved backwards"
         if timestamp == previous_timestamp:
@@ -464,7 +468,7 @@ class MotionTrackerInput:
 
         elapsed = (timestamp - previous_timestamp) * 1e-9
         faults = []
-        for side in self.sides:
+        for side in poses:
             previous_pose = self.last_poses[side]
             if (
                 not activations[side]
@@ -548,7 +552,7 @@ class MotionTrackerInput:
         ):
             if snapshot is not None and self.last_motion_update_at is not None:
                 age = now - self.last_motion_update_at
-                for side in self.sides:
+                for side in SIDES:
                     self.readiness[side] = (
                         f"stale: no new SDK motion frame for {age:.2f}s"
                     )
@@ -556,21 +560,37 @@ class MotionTrackerInput:
             return None
         poses = {
             side: _apply_local_transform(
-                xr_pose_to_world(raw_poses[side]),
+                xr_pose_to_world(raw_pose),
                 self.transforms[side],
             )
-            for side in self.sides
+            for side, raw_pose in raw_poses.items()
         }
         for side in SIDES:
-            if side not in poses:
-                poses[side] = Pose(np.zeros(3), np.eye(3))
-                activations[side] = False
+            if side in poses:
+                continue
+            # This side's tracker is absent or invalid right now.
+            if activations[side] and self.last_activations[side]:
+                # Lost mid-engagement: exactly as dangerous as a freeze.
+                self.last_motion_timestamp = timestamp
+                self.disable_all(f"{side} tracker lost: {self.readiness[side]}")
+                return None
+            # An attempted engage of an unavailable side is refused without
+            # touching the other side; its baselines reset so reappearance
+            # re-seeds rather than tripping the jump guard.
+            self.keyboard.deny(side, self.readiness[side])
+            activations[side] = False
+            self.last_poses[side] = None
+            self.last_position_changed_at[side] = None
+            self.last_rotation_changed_at[side] = None
         motion_fault = self._motion_fault(poses, activations, timestamp, now)
         self.last_motion_timestamp = timestamp
         if motion_fault is not None:
             self.disable_all(motion_fault)
             return None
         self.last_activations = dict(activations)
+        for side in SIDES:
+            if side not in poses:
+                poses[side] = Pose(np.zeros(3), np.eye(3))
         return TeleopSample(poses, activations, now)
 
     def take_requests(self) -> dict[str, bool]:
@@ -905,7 +925,6 @@ class HandRootInput:
 def create_pico_input(
     config: InputConfig,
     input_type: str,
-    sides: tuple[str, ...] = SIDES,
 ):
     # The desktop GUI and the Python SDK compete for the PC Service feedback
     # stream; whichever connects last can leave the other client open but no
@@ -950,7 +969,6 @@ def create_pico_input(
             max_linear_speed=trackers.max_linear_speed,
             max_angular_speed=trackers.max_angular_speed,
             keyboard_device=trackers.keyboard_device,
-            sides=sides,
         )
     if input_type == "hand-roots":
         hand_roots = config.hand_roots
