@@ -50,12 +50,18 @@ class CommandSafetyGate:
         self.active = {side: False for side in SIDES}
         self.last_output = {side: None for side in SIDES}
         self.last_time = {side: None for side in SIDES}
+        # 1-based joints currently held by the contact gate, per side; the
+        # gateway logs the transitions so trials have direct evidence of
+        # when gating engaged (2026-07-29: had to be inferred from EE
+        # geometry after the fact).
+        self.pressing_joints = {side: () for side in SIDES}
 
     def reset(self):
         for side in SIDES:
             self.active[side] = False
             self.last_output[side] = None
             self.last_time[side] = None
+            self.pressing_joints[side] = ()
 
     def validate(self, active_sides, names, positions, measured_q, now,
                  external_torques=None):
@@ -84,6 +90,7 @@ class CommandSafetyGate:
                 self.active[side] = False
                 self.last_output[side] = None
                 self.last_time[side] = None
+                self.pressing_joints[side] = ()
                 continue
             side_names = COMMAND_JOINT_NAMES[offset:offset + 7]
             target = np.asarray([values[name] for name in side_names], dtype=float)
@@ -119,6 +126,11 @@ class CommandSafetyGate:
                     np.abs(torques) > self.contact_torque_thresholds
                 ) & (np.sign(step) == np.sign(torques))
                 command = np.where(pressing, self.last_output[side], command)
+                self.pressing_joints[side] = tuple(
+                    int(index) + 1 for index in np.nonzero(pressing)[0]
+                )
+            else:
+                self.pressing_joints[side] = ()
             self.last_output[side] = command
             self.last_time[side] = now
             output_names.extend(side_names)

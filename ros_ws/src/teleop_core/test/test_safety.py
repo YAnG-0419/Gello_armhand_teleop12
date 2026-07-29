@@ -75,6 +75,9 @@ def test_pressing_against_external_torque_is_held():
     deviation = np.asarray(out.positions) - HOME[:7]
     assert deviation[0] == 0.0
     assert np.allclose(deviation[1:], 0.3)
+    assert gate.pressing_joints["left"] == (1,)
+    send(gate, target, HOME, now=now + 0.01, torques={"left": None})
+    assert gate.pressing_joints["left"] == ()
 
 
 def test_unloading_direction_always_passes():

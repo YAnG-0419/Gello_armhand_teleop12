@@ -56,6 +56,7 @@ class SafetyGateway(Node):
         self.state_at = {"left": None, "right": None}
         self.tau_ext = {"left": None, "right": None}
         self.tau_ext_at = {"left": None, "right": None}
+        self.gated = {"left": (), "right": ()}
         self.rejected = 0
         self.reset_active = False
 
@@ -152,6 +153,30 @@ class SafetyGateway(Node):
             return None
         return np.concatenate((self.state["left"], self.state["right"]))
 
+    def _report_gating(self):
+        """Log contact-gate transitions: direct evidence for contact trials
+        (2026-07-29 the gate's engagement had to be inferred from EE
+        geometry after a reflex). Transition-only, so it cannot spam."""
+        for side in ("left", "right"):
+            now_held = self.gate.pressing_joints[side]
+            if now_held == self.gated[side]:
+                continue
+            if now_held:
+                torques = self.tau_ext[side]
+                detail = ", ".join(
+                    f"j{joint}"
+                    + (
+                        f" {torques[joint - 1]:+.1f}Nm"
+                        if torques is not None
+                        else ""
+                    )
+                    for joint in now_held
+                )
+                self.get_logger().info(f"contact gate holds {side}: {detail}")
+            else:
+                self.get_logger().info(f"contact gate released {side}")
+            self.gated[side] = now_held
+
     def _reject(self, reason):
         self.rejected += 1
         if self.rejected <= 3 or self.rejected % 100 == 0:
@@ -187,6 +212,7 @@ class SafetyGateway(Node):
         except ValueError as exc:
             self._reject(str(exc))
             return
+        self._report_gating()
         if validated is None:
             self.gate.reset()
             return
