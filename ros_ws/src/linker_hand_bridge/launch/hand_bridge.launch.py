@@ -1,8 +1,8 @@
 """Launch the model-profiled LinkerHand safety bridge.
 
-Hardware output is off by default. Bring it up in dry-run first, inspect
-`/linker_hand_bridge/{side}/mapped_command`, and only then relaunch with
-`enabled:=true` and a conservative slew rate.
+Hardware output is always on (the dry-run mode was removed 2026-07-29);
+`/linker_hand_bridge/{side}/mapped_command` still mirrors every command
+for inspection.
 """
 
 from launch import LaunchDescription
@@ -22,11 +22,6 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument("left_model", default_value="g20"),
         DeclareLaunchArgument("right_model", default_value="g20"),
-        DeclareLaunchArgument(
-            "enabled",
-            default_value="false",
-            description="Publish to the vendor control topics. Off by default.",
-        ),
         DeclareLaunchArgument(
             "publish_rate",
             default_value="30.0",
@@ -54,7 +49,6 @@ def generate_launch_description() -> LaunchDescription:
                 "sides": LaunchConfiguration("sides"),
                 "left_model": LaunchConfiguration("left_model"),
                 "right_model": LaunchConfiguration("right_model"),
-                "enabled": LaunchConfiguration("enabled"),
                 "publish_rate": LaunchConfiguration("publish_rate"),
                 "watchdog_timeout": LaunchConfiguration("watchdog_timeout"),
                 "max_command_rate": LaunchConfiguration("max_command_rate"),

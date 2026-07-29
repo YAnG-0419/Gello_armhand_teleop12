@@ -70,7 +70,6 @@ services:
       - sides:=both
       - left_model:=g20
       - right_model:=o30i
-      - enabled:=true
       # The 0/255 default tick mapping over each URDF joint range is the
       # validated O30i runtime mapping; calibration_verified acknowledges it.
       - o30_calibration_verified:=true

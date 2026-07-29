@@ -34,12 +34,11 @@ hardware-validated.
 cd /home/descfly/hsc/franka_upper_body_teleop/docker
 # hand-control now defaults to the physical pair: left G20 + right O30i.
 docker compose up franka-control teleop-control pico-bridge hand-control
-
-# Dry-run model and packet validation only:
-cd /home/descfly/hsc/franka_upper_body_teleop
-ros2 launch linker_hand_bridge hands.launch.py \
-  sides:=both left_model:=g20 right_model:=o30i enabled:=false
 ```
+
+Hand hardware output is always on (the dry-run `enabled` flag was removed
+2026-07-29); `/linker_hand_bridge/{side}/mapped_command` mirrors every
+command for inspection.
 
 Bringup applies the raised collision thresholds automatically (a one-shot
 node in `robot_control.launch.py`; nothing else sets them). Verify both
@@ -52,10 +51,9 @@ The connected `a8fa:8598` CANFD Analyser uses the packaged `libcanbus`
 transport and does not create a `can1` interface. Run the O30i driver through
 the privileged Compose `hand-control` service so it can access the USB device.
 The alternative transparent SocketCAN adapter can still select
-`o30_transport:=socketcan`.
-The read-only launch publishes uncalibrated vendor ticks on
-`/linker_hand_o30i/raw_state`; it deliberately does not publish those values
-as canonical radians.
+`o30_transport:=socketcan`. The O30i node also publishes uncalibrated
+vendor ticks on `/linker_hand_o30i/raw_state`; it deliberately does not
+publish those values as canonical radians.
 
 The current physical tests use the vendor's normalized full-range mapping:
 each URDF joint lower limit maps to tick 0 and its upper limit maps to tick
@@ -80,26 +78,11 @@ arrive; only a rejected disable is terminal and requires a node restart.
 
 ### Right-hand-only MANUS/O30i test
 
-Validate MANUS and retargeting without hardware output first:
+The hand-only operator (`teleop_sources/manus/scripts/teleop_o30i.py`)
+starts disengaged. `Space` or `R` enables right-hand following, `X` stops
+sending, `O` requests an open pose while disengaged, and `Q` exits.
 
-```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
-docker compose run --rm tools ros2 launch linker_hand_bridge \
-  hand_bridge.launch.py sides:=right right_model:=o30i enabled:=false
-
-# In a second terminal:
-cd /home/descfly/hsc/franka_upper_body_teleop
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/manus/scripts/teleop_o30i.py
-```
-
-The hand-only operator starts disengaged. `Space` or `R` enables right-hand
-following, `X` stops sending, `O` requests an open pose while disengaged, and
-`Q` exits. For a real test, replace the dry-run bridge with the calibrated
-`hands.launch.py sides:=right right_model:=o30i enabled:=true` invocation
-through the privileged `hand-control` service.
-
-For the real two-terminal workflow, use the wrapper scripts. The robot wrapper
+For the two-terminal workflow, use the wrapper scripts. The robot wrapper
 uses the vendor's normalized full-range mapping (URDF lower limit = tick 0,
 URDF upper limit = tick 255) unless per-device endpoint vectors are supplied:
 

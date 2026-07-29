@@ -21,7 +21,6 @@ exec docker compose run --rm hand-control \
   sides:=right \
   right_model:=o30i \
   o30_transport:=libcanbus \
-  enabled:=true \
   o30_calibration_verified:=true \
   o30_tick_at_lower:="${O30_TICKS_AT_LOWER}" \
   o30_tick_at_upper:="${O30_TICKS_AT_UPPER}" \

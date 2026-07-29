@@ -1,9 +1,10 @@
 """ROS 2 node bridging hand qpos datagrams to model-specific hand commands.
 
-Ported from the sibling WiLoR repository's bridge node. Safety behaviour is
-deliberately preserved: output is disabled unless explicitly enabled at startup,
+Ported from the sibling WiLoR repository's bridge node. Safety behaviour:
 a fresh valid packet is required before anything is published, motion is
 slew-limited, and there is no automatic return-home on watchdog expiry.
+Hardware output is always on - the former dry-run mode was removed
+2026-07-29 once the real paths were validated.
 
 This node is the only place hand commands reach the vendor driver. It is
 separate from the arm safety gateway on purpose: the arm gateway owns the FR3
@@ -58,7 +59,6 @@ class LinkerHandBridge(Node):
         self.declare_parameter("sides", "both")
         self.declare_parameter("left_model", "g20")
         self.declare_parameter("right_model", "g20")
-        self.declare_parameter("enabled", False)
         self.declare_parameter("publish_rate", 30.0)
         self.declare_parameter("watchdog_timeout", 0.25)
         self.declare_parameter("max_command_rate", 200.0)
@@ -75,9 +75,6 @@ class LinkerHandBridge(Node):
             side: str(self.get_parameter(f"{side}_model").value).strip().lower()
             for side in ("left", "right")
         }
-        # Read once at construction. Enabling hardware output must not be
-        # possible through a live parameter update.
-        self.enabled = bool(self.get_parameter("enabled").value)
         publish_rate = float(self.get_parameter("publish_rate").value)
         self.watchdog_timeout = float(self.get_parameter("watchdog_timeout").value)
         max_command_rate = float(self.get_parameter("max_command_rate").value)
@@ -194,7 +191,6 @@ class LinkerHandBridge(Node):
         self.invalid_count = 0
         self.out_of_order_count = 0
 
-        mode = "ENABLED" if self.enabled else "DRY-RUN (no vendor commands published)"
         effective_slew_rates = {
             side: min(max_command_rate, profile.max_slew_rate)
             for side, profile in self.profiles.items()
@@ -204,14 +200,13 @@ class LinkerHandBridge(Node):
             f"sides={self.sides}; rate={publish_rate:g}Hz; "
             f"models={configured_models}; "
             f"effective_slew_rates={effective_slew_rates}; "
-            f"abduction_invert={abduction_invert}; mode={mode}"
+            f"abduction_invert={abduction_invert}"
         )
-        if self.enabled:
-            self.get_logger().warn(
-                "Hardware output is enabled. Commands begin only after a fresh "
-                "valid packet and are slew-limited. There is no automatic "
-                "return-home on watchdog expiry."
-            )
+        self.get_logger().warn(
+            "Hardware output is enabled. Commands begin only after a fresh "
+            "valid packet and are slew-limited. There is no automatic "
+            "return-home on watchdog expiry."
+        )
 
     def _send_initial_speed(self) -> None:
         """Set a conservative joint speed on each side, once, then stop.
@@ -331,8 +326,6 @@ class LinkerHandBridge(Node):
             message.name = list(self.profiles[side].command_joint_names)
             message.position = list(command)
             self.debug_publishers[side].publish(message)
-            if not self.enabled:
-                continue
             self.command_publishers[side].publish(message)
             side_state.published_count += 1
 

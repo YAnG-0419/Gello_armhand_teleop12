@@ -61,16 +61,7 @@ The default discovery scope is localhost, matching the installed MANUS
 Robotics Service. Use `--network-discovery` only when MANUS Core runs on
 another host.
 
-## O30i robot-side dry run
-
-This validates model tags, joint order, limits, and retargeting without opening
-the O30i CAN-FD device:
-
-```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-ros2 launch linker_hand_bridge hands.launch.py \
-  sides:=both left_model:=g20 right_model:=o30i enabled:=false
-```
+## O30i robot side
 
 The real-test wrapper uses the vendor's normalized full-range mapping by
 default: tick 0 at each URDF lower limit and tick 255 at each upper limit.
@@ -106,7 +97,7 @@ diagnostic, not the O30i path.
 
 For an O30i hand-only test, use `scripts/teleop_o30i.py`. It starts disengaged
 and requires `Space` or `R` before it sends right-hand packets. See
-`docs/HARDWARE_DEPLOY.md` for the dry-run and real robot-side commands.
+`docs/HARDWARE_DEPLOY.md` for the robot-side commands.
 
 The normal real-hardware entry points are `scripts/run_o30_robot.sh` in the
 robot terminal and `scripts/run_o30_manus.sh` in the MANUS terminal.

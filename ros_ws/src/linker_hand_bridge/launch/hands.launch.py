@@ -41,9 +41,6 @@ def _nodes(context):
     }
     if any(not model for model in models.values()):
         raise ValueError("left_model and right_model must be non-empty")
-    enabled = LaunchConfiguration("enabled").perform(context).strip().lower()
-    if enabled not in {"true", "false"}:
-        raise ValueError("enabled must be true or false")
     calibration_verified = (
         LaunchConfiguration("o30_calibration_verified")
         .perform(context)
@@ -90,11 +87,11 @@ def _nodes(context):
             raise ValueError(f"{argument} must be an integer") from error
         if selected_o30 and index < 0:
             raise ValueError(f"{argument} must not be negative")
-    if enabled == "true" and selected_o30 and calibration_verified != "true":
+    if selected_o30 and calibration_verified != "true":
         raise ValueError(
             "real O30i output requires o30_calibration_verified:=true"
         )
-    if enabled == "true" and selected_o30:
+    if selected_o30:
         if any(
             lower == upper
             for lower, upper in zip(tick_at_lower, tick_at_upper, strict=True)
@@ -115,9 +112,6 @@ def _nodes(context):
         if sides not in ("both", side):
             continue
         if models[side] == "o30i":
-            # A dry-run bridge never opens or enables the O30i CAN-FD device.
-            if enabled != "true":
-                continue
             drivers.append(
                 Node(
                     package="linker_hand_ros2_sdk",
@@ -191,7 +185,6 @@ def _nodes(context):
                 "sides": LaunchConfiguration("sides"),
                 "left_model": models["left"],
                 "right_model": models["right"],
-                "enabled": LaunchConfiguration("enabled"),
                 "max_command_rate": LaunchConfiguration("max_command_rate"),
                 "initial_speed": LaunchConfiguration("initial_speed"),
                 "initial_torque": LaunchConfiguration("initial_torque"),
@@ -273,11 +266,6 @@ def generate_launch_description() -> LaunchDescription:
                 "Seconds without valid O30i position feedback before the driver "
                 "disables all joints terminally."
             ),
-        ),
-        DeclareLaunchArgument(
-            "enabled",
-            default_value="false",
-            description="Publish to the vendor control topics.",
         ),
         DeclareLaunchArgument(
             "max_command_rate",
