@@ -93,6 +93,7 @@ class O30IDriver(Node):
         self.last_state_at: float | None = None
         self.motors_enabled = False
         self.stopped = False
+        self._command_idle = False
 
         channel: str | int
         if transport == "libcanbus":
@@ -239,7 +240,7 @@ class O30IDriver(Node):
     def _command(self, message: JointState) -> None:
         if self.stopped:
             self.get_logger().error(
-                "rejecting O30i command after terminal watchdog stop; restart node"
+                "rejecting O30i command after a rejected disable; restart node"
             )
             return
         try:
@@ -257,14 +258,16 @@ class O30IDriver(Node):
                 if not self.controller.setup():
                     raise RuntimeError("O30i position-mode/enable setup was rejected")
                 self.motors_enabled = True
+                self.get_logger().info("O30i motors enabled")
             if not self.controller.set_target_position(ticks):
                 raise RuntimeError("O30i position command was rejected")
             self.last_command_at = now
+            if self._command_idle:
+                self._command_idle = False
+                self.get_logger().info("O30i command stream resumed")
         except Exception as error:  # noqa: BLE001 - reject malformed hardware input
             if self.motors_enabled:
-                self._disable_terminal(
-                    f"O30i command failed after enable: {error}"
-                )
+                self._disable(f"O30i command failed after enable: {error}")
                 return
             self.get_logger().warning(f"rejecting O30i command: {error}")
 
@@ -325,31 +328,42 @@ class O30IDriver(Node):
         if not self.motors_enabled:
             return
         now = time.monotonic()
+        # A command gap is NORMAL in teleoperation: a disengaged side simply
+        # stops streaming, and every layer above holds rather than faults.
+        # The hand holds its last position; nothing to disable.
         command_stale = (
             self.last_command_at is None
             or now - self.last_command_at > self.command_timeout
         )
-        state_stale = (
+        if command_stale and not self._command_idle:
+            self._command_idle = True
+            self.get_logger().info("O30i command stream idle; holding position")
+        if (
             self.last_state_at is None
             or now - self.last_state_at > self.state_timeout
-        )
-        if not command_stale and not state_stale:
-            return
-        reason = (
-            "command watchdog expired"
-            if command_stale
-            else "position feedback became stale"
-        )
-        self._disable_terminal(f"O30i {reason}")
+        ):
+            self._disable("O30i position feedback became stale")
 
-    def _disable_terminal(self, reason: str) -> None:
+    def _disable(self, reason: str) -> None:
+        """Disable all joints, recoverably.
+
+        The next valid command re-enables, and it is already gated on fresh
+        in-calibration feedback; the bridge slew-ramps from measured state on
+        reacquisition, so re-enabling cannot jump. Only a REJECTED disable is
+        terminal: the hardware state is then unknown and needs eyes on it.
+        """
         accepted = self.controller.set_joint_enable([0] * 20)
         self.motors_enabled = False
-        self.stopped = True
-        message = f"{reason}; all joints disabled and node requires restart"
         if accepted is False:
-            message += " (disable command was rejected)"
-        self.get_logger().error(message)
+            self.stopped = True
+            self.get_logger().error(
+                f"{reason}; the disable command was rejected - restart the node"
+            )
+            return
+        self.get_logger().warning(
+            f"{reason}; joints disabled until fresh feedback and a new "
+            "command arrive"
+        )
 
     def destroy_node(self) -> bool:
         try:

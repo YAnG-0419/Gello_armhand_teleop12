@@ -76,9 +76,10 @@ The real-test wrapper uses the vendor's normalized full-range mapping by
 default: tick 0 at each URDF lower limit and tick 255 at each upper limit.
 Supplying `O30_TICKS_AT_LOWER` and `O30_TICKS_AT_UPPER` overrides it with
 per-device endpoints. The O30i driver does not enable its motors before the
-first complete valid radians command. A 250 ms command timeout or 500 ms
-valid-feedback timeout disables every O30i joint terminally and requires a
-node restart.
+first complete valid radians command. A command gap (a disengaged side stops
+streaming) just holds position; a 500 ms valid-feedback loss disables every
+joint until fresh feedback and a new command arrive. Only a rejected disable
+is terminal.
 
 The O30i retargeter contains no operator-specific or per-finger PIP/DIP gain.
 Any future operator calibration should be an explicit profile derived from a

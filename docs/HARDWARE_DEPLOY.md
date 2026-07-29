@@ -52,8 +52,10 @@ teleop_sources/manus/scripts/run_o30_robot.sh
 
 The O30i node verifies the device model and right-hand identity before it can
 enable motors. It also requires fresh, in-calibration position feedback before
-the first command. Command loss, feedback loss, or a rejected command disables
-all 20 joints terminally; restart the node after resolving the fault.
+the first command. Command gaps are normal in teleoperation - a disengaged
+side simply stops streaming and the hand holds position. Feedback loss or a
+failed command disables all 20 joints until fresh feedback and a new command
+arrive; only a rejected disable is terminal and requires a node restart.
 
 ### Right-hand-only MANUS/O30i test
 

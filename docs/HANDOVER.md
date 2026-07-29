@@ -116,8 +116,9 @@ The physical right hand reports identity
 vendor `libcanbus` USB transport, not SocketCAN. The O30i node does not enable
 motors on connection. Before the first command it requires the reported model
 and right-hand identity, mapping acknowledgement, and fresh in-range position
-feedback. Command/feedback timeout or command rejection disables all joints
-terminally.
+feedback. Command gaps are normal (a disengaged side stops streaming; the
+hand holds). Feedback loss or a failed command disables all joints until
+fresh feedback and a new command arrive; only a rejected disable is terminal.
 
 For recording, "layout" means the model identifier plus the ordered joint
 names, units, bounds, and vector width used for each state/action. The O30i URDF
