@@ -138,14 +138,20 @@ holds its default pose because there is no left glove yet.
 
 The operator process is headless: one unified backend serving a JSON-TCP
 control port (default `127.0.0.1:5590`), with the PySide6 GUI as its
-frontend (installed in the conda base env; re-install with
-`conda activate base && pip install -i
-https://pypi.tuna.tsinghua.edu.cn/simple -e teleop_sources/gui`). Run
-`teleop-operator-gui` next to the operator: it reconnects automatically
-and shows the once-per-second status line plus the operator feedback log;
-the terminal keeps plain process output. Engage starts a side following
-your motion; disengage stops following and the arm holds (not a power
-cut - the physical e-stop stays the top-level stop).
+frontend - a single directly-run script (PySide6 lives in the conda base
+env; if missing: `conda activate base && pip install -i
+https://pypi.tuna.tsinghua.edu.cn/simple PySide6`):
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop
+conda activate base && python teleop_sources/gui/operator_gui.py
+```
+
+It reconnects automatically and shows the once-per-second status line
+plus the operator feedback log; the operator terminal keeps plain process
+output. Engage starts a side following your motion; disengage stops
+following and the arm holds (not a power cut - the physical e-stop stays
+the top-level stop).
 
 ## Full teleop and recording
 
