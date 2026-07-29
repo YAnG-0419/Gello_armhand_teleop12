@@ -50,6 +50,8 @@ class CommandSafetyGate:
         self.active = {side: False for side in SIDES}
         self.last_output = {side: None for side in SIDES}
         self.last_time = {side: None for side in SIDES}
+        # Per-message reasons for sides dropped by validate().
+        self.side_faults: list[str] = []
         # 1-based joints currently held by the contact gate, per side; the
         # gateway logs the transitions so trials have direct evidence of
         # when gating engaged (2026-07-29: had to be inferred from EE
@@ -82,6 +84,7 @@ class CommandSafetyGate:
         if names != command_names(active_sides) or len(positions) != len(names):
             raise ValueError("Command names do not match active sides.")
         values = dict(zip(names, positions))
+        self.side_faults = []
         output_names = []
         output_positions = []
         for side in SIDES:
@@ -93,20 +96,37 @@ class CommandSafetyGate:
                 self.pressing_joints[side] = ()
                 continue
             side_names = COMMAND_JOINT_NAMES[offset:offset + 7]
-            target = np.asarray([values[name] for name in side_names], dtype=float)
-            if not np.all(np.isfinite(target)):
-                raise ValueError(f"{side} command contains non-finite positions.")
-            if np.any(target < LOWER_LIMITS[offset:offset + 7]) or np.any(
-                target > UPPER_LIMITS[offset:offset + 7]
-            ):
-                raise ValueError(f"{side} command exceeds FR3 joint limits.")
-            if not self.active[side]:
-                current = measured[offset:offset + 7]
-                if np.max(np.abs(target - current)) > self.max_initial_delta:
-                    raise ValueError(f"{side} first target is too far from measured state.")
-                self.last_output[side] = current.copy()
-                self.last_time[side] = now - self.nominal_dt
-                self.active[side] = True
+            try:
+                target = np.asarray(
+                    [values[name] for name in side_names], dtype=float
+                )
+                if not np.all(np.isfinite(target)):
+                    raise ValueError(
+                        f"{side} command contains non-finite positions."
+                    )
+                if np.any(target < LOWER_LIMITS[offset:offset + 7]) or np.any(
+                    target > UPPER_LIMITS[offset:offset + 7]
+                ):
+                    raise ValueError(f"{side} command exceeds FR3 joint limits.")
+                if not self.active[side]:
+                    current = measured[offset:offset + 7]
+                    if np.max(np.abs(target - current)) > self.max_initial_delta:
+                        raise ValueError(
+                            f"{side} first target is too far from measured state."
+                        )
+                    self.last_output[side] = current.copy()
+                    self.last_time[side] = now - self.nominal_dt
+                    self.active[side] = True
+            except ValueError as error:
+                # One side's fault must not silence the other: drop only
+                # this side (2026-07-29 a rejected right re-engage froze the
+                # left arm too, because the whole message was discarded).
+                self.active[side] = False
+                self.last_output[side] = None
+                self.last_time[side] = None
+                self.pressing_joints[side] = ()
+                self.side_faults.append(str(error))
+                continue
             dt = min(0.1, max(self.nominal_dt, now - self.last_time[side]))
             max_step = self.max_joint_speed * dt
             command = self.last_output[side] + np.clip(

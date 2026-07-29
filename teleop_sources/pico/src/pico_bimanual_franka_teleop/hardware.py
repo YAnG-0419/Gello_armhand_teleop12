@@ -240,6 +240,12 @@ class DualFr3HardwareTeleop:
                     )
                     if target is not None:
                         targets[side] = target
+                if not targets and self.reset_thread is None:
+                    # Fully disengaged with a live robot: re-seed the held
+                    # command from the measured state, so any divergence
+                    # (phantom IK drift, a rejected engage) heals before
+                    # the next engage anchors to it.
+                    self.hold_q = np.asarray(q, dtype=float).copy()
                 try:
                     if targets:
                         self.hold_q = self.ik.step(self.hold_q, targets)

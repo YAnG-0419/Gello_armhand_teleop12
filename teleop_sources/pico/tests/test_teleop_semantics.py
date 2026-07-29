@@ -217,3 +217,27 @@ def test_fk_pose_snapshots_do_not_change_after_a_later_fk_update():
     for side, pose in before.items():
         np.testing.assert_array_equal(pose.position, saved[side][0])
         np.testing.assert_array_equal(pose.rotation, saved[side][1])
+
+
+def test_uncommanded_side_never_moves():
+    # Regression: with only one side engaged, the posture attractor used to
+    # walk the other side's joints toward the reference at the speed clamp
+    # (0.35 rad of phantom drift in 0.75 s, measured 2026-07-29), while the
+    # real, uncommanded arm stayed put - deadlocking its re-engage against
+    # the gateway's initial-delta check.
+    ik = make_ik()
+    home = {side: ik.frame_pose(HOME_Q, side) for side in ("left", "right")}
+    q = HOME_Q.copy()
+    # Drive both arms away from the posture reference first.
+    targets = {
+        side: Pose(home[side].position + np.array([0.2, 0.0, 0.1]), home[side].rotation)
+        for side in ("left", "right")
+    }
+    for _ in range(400):
+        q = ik.step(q, targets)
+    # Now command only the left side for a while.
+    left_only = {"left": targets["left"]}
+    right_before = q[7:].copy()
+    for _ in range(200):
+        q = ik.step(q, left_only)
+    np.testing.assert_array_equal(q[7:], right_before)

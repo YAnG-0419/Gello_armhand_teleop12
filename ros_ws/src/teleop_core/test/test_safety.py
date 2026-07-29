@@ -130,3 +130,33 @@ def test_ordered_external_torques_by_name_and_position():
         ordered_external_torques(["fr3_joint1"], [1.0])
     with pytest.raises(ValueError):
         ordered_external_torques([], [1.0, 2.0])
+
+
+def test_one_side_fault_does_not_block_the_other():
+    # Regression 2026-07-29: a right re-engage rejected by the initial-delta
+    # check silenced the whole message, freezing the healthy left arm too.
+    gate = make_gate()
+    names = command_names(("left", "right"))
+    left_target = HOME[:7]
+    far_right = HOME[7:] + 0.3
+    out = gate.validate(
+        ("left", "right"),
+        names,
+        list(left_target) + list(far_right),
+        HOME,
+        now=0.0,
+    )
+    assert out is not None
+    assert out.names == command_names(("left",))
+    assert gate.side_faults and "right" in gate.side_faults[0]
+    assert gate.active["left"] and not gate.active["right"]
+    # Once the command comes back within range, the right side re-engages.
+    out = gate.validate(
+        ("left", "right"),
+        names,
+        list(left_target) + list(HOME[7:]),
+        HOME,
+        now=0.01,
+    )
+    assert out.names == command_names(("left", "right"))
+    assert not gate.side_faults

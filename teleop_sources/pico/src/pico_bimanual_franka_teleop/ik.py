@@ -199,6 +199,16 @@ class BimanualPinkIK:
             self.model.lowerPositionLimit,
             self.model.upperPositionLimit,
         )
+        # A side without a target has no frame task pinning it, so the
+        # posture attractor would walk its joints toward the reference at
+        # the speed clamp - while the real arm, which is not being
+        # commanded, stays put (measured 2026-07-29: 0.35 rad of phantom
+        # drift within 0.75 s of a single-side engage, deadlocking the
+        # other side's re-engage against the gateway's initial-delta
+        # check). An uncommanded side's joints never move.
+        for side, joints in (("left", slice(0, 7)), ("right", slice(7, 14))):
+            if side not in targets:
+                result[joints] = self.configuration.q[joints]
         self._record_diagnostics(result, raw_velocity, targets)
         return result
 

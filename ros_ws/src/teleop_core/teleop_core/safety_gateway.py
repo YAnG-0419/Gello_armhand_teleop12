@@ -212,6 +212,8 @@ class SafetyGateway(Node):
         except ValueError as exc:
             self._reject(str(exc))
             return
+        for fault in self.gate.side_faults:
+            self._reject(fault)
         self._report_gating()
         if validated is None:
             self.gate.reset()
