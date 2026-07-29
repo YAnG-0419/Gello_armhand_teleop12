@@ -136,15 +136,20 @@ Phase A - verify bringup and calibrate the gating thresholds:
 
 Phase B - contact trial (one side engaged, pad on the table):
 
-5. Descend slowly onto the pad, keep pushing the tracker downward 2-3 s,
-   retreat. Expect: the arm stops at the surface with a bounded push
-   (roughly the threshold torque), no reflex, and immediate release on
-   retreat. Keep the bag recording running to read the settled
-   `tau_ext` plateau.
-6. If a reflex still fires, save `docker compose logs franka-control`
-   before `down` and read the wrench at the reflex from the bag; that
-   number decides between raising reflex thresholds further and lowering
-   the gating thresholds.
+5. VALIDATED 2026-07-29 (operator trial): pressing into a surface holds
+   at contact without a reflex and releases on retreat. The gateway now
+   logs `contact gate holds/released <side>` transitions, so later
+   trials have direct evidence. Scenario boundary established the same
+   day: the gate bounds arm-initiated contact against passive obstacles;
+   actively wrenching the held arm lets the human choose the force, and
+   the 50 N cartesian reflex is the correct protection there (measured:
+   final-second EE motion perpendicular to the command direction, the
+   reflex force was operator-supplied).
+6. Remaining, both optional: re-run the sign probe on the left arm
+   opportunistically (the convention is a libfranka property, not
+   per-unit), and tighten `contact_torque_thresholds` from a free-space
+   recording if lighter contact is wanted - rest noise measured
+   0.01-0.05 Nm, so the placeholders are likely conservative.
 7. Threshold philosophy for any adjustment, from Franka's own teleop
    example: proximal reflex ceilings high (they run 85 Nm), wrist
    thresholds tight (they run 11 Nm on joints 5-7) - the wrist is what

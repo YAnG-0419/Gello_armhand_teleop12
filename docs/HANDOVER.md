@@ -36,13 +36,13 @@ Status:
 
 ### 1. Contact-rich tolerance: why does table contact red-light the arm?
 
-Audited offline 2026-07-29; evidence and the operator plan:
-[CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md). The collision-behavior
-script never ran and was doubly broken; fixed, and applied automatically at
-bringup (verify both "accepted" lines). The gateway now gates commands on
-measured external joint torques, always on: a loaded joint may only move
-toward unloading; stale torque data fails open. Pending: calibrate the
-per-joint thresholds from a free-space tau_ext bag, then the pad trial.
+RESOLVED 2026-07-29; evidence, sign-probe results, and the trial record:
+[CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md). Collision thresholds
+are applied automatically at bringup (verify both "accepted" lines); the
+gateway gates commands on measured external joint torques (always on, a
+loaded joint may only move toward unloading, transitions logged, stale data
+fails open). Validated: pressing a surface holds without reflex, releases
+on retreat. Wrenching the held arm still reflexes at 50 N - by design.
 
 ### 2. IK transparency: unreachable pose, or IK failure?
 
