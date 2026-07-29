@@ -114,9 +114,14 @@ Tracker presence is per-side at runtime: startup needs at least one tracker,
 and each arm engages only while its own tracker is live — a missing tracker's
 side refuses to engage with the reason, and its dropout while disengaged does
 not disturb the other arm. The left G20 holds its default pose because there
-is no left glove yet. The terminal prints per-side tracker and hand-send
-status once per second. `H` still homes both arms. This software path exists,
+is no left glove yet. `H` still homes both arms. This software path exists,
 but its complete mixed-hardware real-world validation remains pending.
+
+The operator terminal is a TUI by default: a status header updated once per
+second, an operator pane showing only the feedback for keys you pressed, and
+a process pane that captures everything the SDKs and libraries print —
+including native C-level output. `--ui plain` restores ordinary line output;
+use it when redirecting the terminal to a file.
 
 ## Full teleop and recording
 

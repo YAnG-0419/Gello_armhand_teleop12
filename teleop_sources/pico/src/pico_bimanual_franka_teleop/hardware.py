@@ -29,7 +29,13 @@ class DualFr3HardwareTeleop:
         hand_sender_factory=None,
         debug_logger=None,
         reset_invoker=None,
+        ui=None,
     ) -> None:
+        # `ui` doubles as the keyboard the input adopts and as the operator
+        # display: set_status carries the once-per-second state line and
+        # show() carries operator-action feedback. None keeps plain printing.
+        self.ui = ui
+        self._notify = ui.show if ui is not None else print
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
         self.robot = UdpRobotBackend(
@@ -40,7 +46,9 @@ class DualFr3HardwareTeleop:
             state_timeout=state_timeout,
         )
         try:
-            self.teleop_input = create_pico_input(input_config, input_type)
+            self.teleop_input = create_pico_input(
+                input_config, input_type, keyboard=ui
+            )
         except BaseException:
             self.robot.close()
             raise
@@ -85,17 +93,17 @@ class DualFr3HardwareTeleop:
 
     def _start_reset(self) -> None:
         if self.reset_invoker is None:
-            print("reset requested, but no reset command is configured")
+            self._notify("reset requested, but no reset command is configured")
             return
         if self.reset_thread is not None:
-            print("reset already in progress")
+            self._notify("reset already in progress")
             return
         self.teleop_input.disable_all("resetting to initial pose")
         for mapper in self.mappers.values():
             mapper.reset()
         if self.hands is not None:
             self.hands.request_open()
-        print(
+        self._notify(
             "reset: moving arms to the initial pose"
             + ("; opening hands" if self.hands is not None else "")
         )
@@ -119,7 +127,7 @@ class DualFr3HardwareTeleop:
         succeeded, message = (
             self.reset_outcome.pop() if self.reset_outcome else (False, "no result")
         )
-        print(f"reset {'done' if succeeded else 'FAILED'}: {message}")
+        self._notify(f"reset {'done' if succeeded else 'FAILED'}: {message}")
         # The arms are wherever the reset left them, so the pre-reset hold_q is
         # a lie. Dropping it makes the loop re-seed from measured state and
         # re-anchor the IK posture reference before anything can re-engage.
@@ -164,9 +172,13 @@ class DualFr3HardwareTeleop:
                 if requests.get("open_hands"):
                     if self.hands is not None:
                         self.hands.request_open()
-                        print("hands: opening (sides not currently following)")
+                        self._notify(
+                            "hands: opening (sides not currently following)"
+                        )
                     else:
-                        print("hands: not running, start with --hand-source")
+                        self._notify(
+                            "hands: not running, start with --hand-source"
+                        )
                 if requests.get("reset"):
                     self._start_reset()
                 if self.reset_thread is not None:
@@ -245,7 +257,11 @@ class DualFr3HardwareTeleop:
                             hand_parts.append(f"{side}={state}")
                         parts.append("hands: " + " | ".join(hand_parts))
                     if parts:
-                        print("STATE | " + " | ".join(parts), flush=True)
+                        line = "STATE | " + " | ".join(parts)
+                        if self.ui is not None:
+                            self.ui.set_status(line)
+                        else:
+                            print(line, flush=True)
                     next_status_report = now + 1.0
                 remaining = self.dt - (time.monotonic() - started_at)
                 if remaining > 0.0:

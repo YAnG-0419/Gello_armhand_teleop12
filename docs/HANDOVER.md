@@ -70,6 +70,9 @@ conda run --no-capture-output --name franka-teleop-pico \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
 ```
 
+The operator terminal runs a three-pane TUI by default (status, operator
+feedback, captured process output); `--ui plain` restores line output.
+
 `docker compose up -d hand-control` now brings up the physical pair: left G20
 on can0 plus right O30i through libcanbus USB, with the validated 0/255 tick
 mapping acknowledged. `run_o30_robot.sh` remains the right-O30i-only wrapper

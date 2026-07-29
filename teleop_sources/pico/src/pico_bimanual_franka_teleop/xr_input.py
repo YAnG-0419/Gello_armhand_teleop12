@@ -171,6 +171,30 @@ class KeyboardActivation:
     def show(self, message: str) -> None:
         self._show(message)
 
+    @staticmethod
+    def _command_keys(keys: bytes):
+        """Yield command letters, swallowing CSI/SS3 escape sequences.
+
+        Home sends ESC [ H; handling bytes one at a time would read that H as
+        the reset command and move the robots. Arrow and function keys alias
+        the same way, so whole escape sequences are dropped.
+        """
+        data = keys.decode(errors="ignore")
+        index = 0
+        while index < len(data):
+            char = data[index]
+            index += 1
+            if char != "\x1b":
+                yield char.lower()
+                continue
+            if index < len(data) and data[index] in "[O":
+                index += 1
+                while index < len(data) and not (
+                    data[index].isalpha() or data[index] == "~"
+                ):
+                    index += 1
+                index += 1
+
     def poll(self) -> dict[str, bool]:
         changed = False
         while True:
@@ -180,7 +204,7 @@ class KeyboardActivation:
                 break
             if not keys:
                 break
-            for key in keys.decode(errors="ignore").lower():
+            for key in self._command_keys(keys):
                 if key == " ":
                     activate = not any(self.active[side] for side in self.sides)
                     self.active = {
@@ -294,6 +318,7 @@ class MotionTrackerInput:
         max_linear_speed: float,
         max_angular_speed: float,
         keyboard_device: str,
+        keyboard=None,
     ) -> None:
         import xrobotoolkit_sdk as xrt
 
@@ -335,7 +360,10 @@ class MotionTrackerInput:
         self.last_activations = {side: False for side in SIDES}
         self.detected_serials: list[str] = []
         self.readiness = {side: "waiting" for side in SIDES}
-        self.keyboard = KeyboardActivation(keyboard_device)
+        # An injected keyboard (e.g. the TUI) is adopted, lifecycle included.
+        self.keyboard = (
+            KeyboardActivation(keyboard_device) if keyboard is None else keyboard
+        )
         try:
             self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
@@ -736,6 +764,7 @@ class HandRootInput:
         rotation_fast_time_constant: float | None = None,
         rotation_error_low: float | None = None,
         rotation_error_high: float | None = None,
+        keyboard=None,
     ) -> None:
         import xrobotoolkit_sdk as xrt
 
@@ -775,7 +804,9 @@ class HandRootInput:
         }
         self.smoothed: dict[str, Pose | None] = {side: None for side in SIDES}
         self.last_activations = {side: False for side in SIDES}
-        self.keyboard = KeyboardActivation(keyboard_device)
+        self.keyboard = (
+            KeyboardActivation(keyboard_device) if keyboard is None else keyboard
+        )
         try:
             self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
@@ -925,6 +956,7 @@ class HandRootInput:
 def create_pico_input(
     config: InputConfig,
     input_type: str,
+    keyboard=None,
 ):
     # The desktop GUI and the Python SDK compete for the PC Service feedback
     # stream; whichever connects last can leave the other client open but no
@@ -969,6 +1001,7 @@ def create_pico_input(
             max_linear_speed=trackers.max_linear_speed,
             max_angular_speed=trackers.max_angular_speed,
             keyboard_device=trackers.keyboard_device,
+            keyboard=keyboard,
         )
     if input_type == "hand-roots":
         hand_roots = config.hand_roots
@@ -988,6 +1021,7 @@ def create_pico_input(
             ),
             rotation_error_low=hand_roots.rotation_error_low,
             rotation_error_high=hand_roots.rotation_error_high,
+            keyboard=keyboard,
         )
     raise ValueError(f"Unsupported PICO input type: {input_type}")
 

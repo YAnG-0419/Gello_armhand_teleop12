@@ -54,6 +54,13 @@ def main() -> None:
         required=True,
         choices=("controllers", "motion-trackers", "hand-roots"),
     )
+    parser.add_argument(
+        "--ui",
+        default="tui",
+        choices=("tui", "plain"),
+        help="tui splits the terminal into status, operator, and process "
+        "panes; plain keeps ordinary line output (default: tui)",
+    )
     # Hand options are CLI arguments rather than YAML, matching how --arm-source is
     # handled: what is being driven is an explicit choice per run, and this keeps
     # existing configuration files valid.
@@ -170,30 +177,57 @@ def main() -> None:
         print(f"debug log -> {args.debug_log}")
 
     config = load_config(args.config)
-    teleop = DualFr3HardwareTeleop(
-        command_host=config.udp.command_host,
-        command_port=config.udp.command_port,
-        state_host=config.udp.state_host,
-        state_port=config.udp.state_port,
-        state_timeout=config.udp.state_timeout,
-        translation_scale=config.host.translation_scale,
-        rotation_scale=config.host.rotation_scale,
-        control_rate=config.host.control_rate,
-        max_joint_speed=config.host.max_joint_speed,
-        robot_state_wait_timeout=config.host.robot_state_wait_timeout,
-        input_config=config.input,
-        input_type=args.arm_source,
-        hand_sender_factory=hand_sender_factory,
-        debug_logger=debug_logger,
-        reset_invoker=invoke_reset,
-    )
-    # The keyboard's `q` (and Ctrl-C) surface as KeyboardInterrupt; run()'s
-    # finally block has already closed hands, robot, and input by the time it
-    # reaches here.
+
+    ui = None
+    if args.ui == "tui":
+        if args.arm_source == "controllers":
+            print("the TUI needs a keyboard-based arm source; plain output")
+        else:
+            from pico_bimanual_franka_teleop.tui import TeleopTui
+
+            device = (
+                config.input.motion_trackers.keyboard_device
+                if args.arm_source == "motion-trackers"
+                else config.input.hand_roots.keyboard_device
+            )
+            try:
+                ui = TeleopTui(device)
+            except OSError as error:
+                print(f"TUI unavailable ({error}); plain output")
+
     try:
-        teleop.run()
-    except KeyboardInterrupt:
-        print("\nteleop stopped")
+        teleop = DualFr3HardwareTeleop(
+            command_host=config.udp.command_host,
+            command_port=config.udp.command_port,
+            state_host=config.udp.state_host,
+            state_port=config.udp.state_port,
+            state_timeout=config.udp.state_timeout,
+            translation_scale=config.host.translation_scale,
+            rotation_scale=config.host.rotation_scale,
+            control_rate=config.host.control_rate,
+            max_joint_speed=config.host.max_joint_speed,
+            robot_state_wait_timeout=config.host.robot_state_wait_timeout,
+            input_config=config.input,
+            input_type=args.arm_source,
+            hand_sender_factory=hand_sender_factory,
+            debug_logger=debug_logger,
+            reset_invoker=invoke_reset,
+            ui=ui,
+        )
+        # The keyboard's `q` (and Ctrl-C) surface as KeyboardInterrupt; run()'s
+        # finally block has already closed hands, robot, and input by the time
+        # it reaches here.
+        try:
+            teleop.run()
+        except KeyboardInterrupt:
+            pass
+    finally:
+        # Normally already closed by the input that adopted it; idempotent.
+        # Restoring the terminal here lets a construction-failure traceback
+        # reach the screen instead of the captured pipe.
+        if ui is not None:
+            ui.close()
+    print("\nteleop stopped")
 
 
 if __name__ == "__main__":
