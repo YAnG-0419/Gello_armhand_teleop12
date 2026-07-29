@@ -41,7 +41,17 @@ class SafetyGateway(Node):
             max_joint_speed=float(self._required_parameter("max_joint_speed")),
             max_initial_delta=float(self._required_parameter("max_initial_delta")),
             nominal_dt=float(self._required_parameter("nominal_dt")),
+            max_command_deviation=self.declare_parameter(
+                "max_command_deviation", [0.0]
+            ).value,
         )
+        if self.gate.max_command_deviation is not None:
+            self.get_logger().info(
+                "Command deviation cap active (rad per joint): "
+                + ", ".join(
+                    f"{value:.3f}" for value in self.gate.max_command_deviation
+                )
+            )
         self.state = {"left": None, "right": None}
         self.state_at = {"left": None, "right": None}
         self.rejected = 0

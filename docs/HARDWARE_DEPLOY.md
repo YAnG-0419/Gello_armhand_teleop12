@@ -27,6 +27,15 @@ ros2 launch linker_hand_bridge hands.launch.py \
   sides:=both left_model:=g20 right_model:=o30i enabled:=false
 ```
 
+Once both arms are up, apply the raised collision thresholds - they are not
+set anywhere else, and the script fails loudly if an arm rejects them (see
+[CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md)):
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose run --rm tools ros2 run franka_fr3_arm_controllers set_bi_collision_behavior.py
+```
+
 The connected `a8fa:8598` CANFD Analyser uses the packaged `libcanbus`
 transport and does not create a `can1` interface. Run the O30i driver through
 the privileged Compose `hand-control` service so it can access the USB device.
