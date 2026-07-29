@@ -16,8 +16,18 @@ from pico_bimanual_franka_teleop.hand_landmarks import (
 from pico_bimanual_franka_teleop.hand_retarget import (
     CANONICAL_FINGERS,
     CHAIN_WEIGHTS,
+    THUMB_DISTANCE_THRESHOLD,
+    THUMB_DISTANCE_WEIGHTS,
     orthonormal_palm_frame,
 )
+
+# Per-segment direction objectives, applied to every finger. Pure position
+# matching reproduced the human's inter-segment bend but under-flexed the MCP
+# knuckle against the palm by 15-19 degrees at full curl (measured on the
+# 2026-07-29 session): the solver dumped curl into the saturated distal
+# joints. Matching each segment's DIRECTION pins the joint distribution to
+# the human's, which position residuals alone leave underdetermined.
+SEGMENT_DIRECTION_WEIGHTS = (1.0, 1.0, 0.9)
 
 _TARGET_LINKS = {
     "thumb": (
@@ -73,11 +83,17 @@ class O30IRetargeter:
         smooth_weight: float = 2.5e-3,
         filter_alpha: float = 0.7,
         max_iterations: int = 30,
+        direction_weight: float = 1.0,
+        pinch_weight: float = 1.0,
     ) -> None:
         if side != "right":
             raise ValueError("the checked-in O30i retargeter currently supports right only")
         if not 0.0 < filter_alpha <= 1.0:
             raise ValueError("filter_alpha must be in (0, 1]")
+        if direction_weight < 0.0 or pinch_weight < 0.0:
+            raise ValueError("direction_weight and pinch_weight must not be negative")
+        self.direction_weight = float(direction_weight)
+        self.pinch_weight = float(pinch_weight)
         self.side = side
         self.urdf_path = Path(urdf_path).resolve()
         if not self.urdf_path.is_file():
@@ -210,16 +226,74 @@ class O30IRetargeter:
         self, landmarks: np.ndarray
     ) -> tuple[np.ndarray, dict[str, float | int | bool]]:
         wanted = self.target_positions(landmarks)
+        raw = np.asarray(landmarks, dtype=np.float64)
+
+        # Activated pinch objectives: when the human thumb tip approaches a
+        # fingertip, the robot thumb is pulled toward that fingertip's solved
+        # position. Distances are hand-scale-normalized and only EXCESS robot
+        # distance is penalized, so open-hand poses are unaffected. Ported
+        # from the L20 solver; unlike the G20 mechanism, the O30i URDF can
+        # close the thumb-index gap to exactly zero (measured oracle), so the
+        # term can genuinely converge.
+        middle_chain = CANONICAL_FINGERS["middle"]
+        human_middle = sum(
+            float(np.linalg.norm(raw[middle_chain[i + 1]] - raw[middle_chain[i]]))
+            for i in range(3)
+        )
+        distance_scale = self.robot_finger_lengths["middle"] / max(
+            human_middle, 1e-8
+        )
+        pinch_terms = []
+        pinch_activation = 0.0
+        if self.pinch_weight > 0.0:
+            for finger_name, tip_landmark, weight in zip(
+                ("index", "middle", "ring", "pinky"),
+                (8, 12, 16, 20),
+                THUMB_DISTANCE_WEIGHTS,
+            ):
+                raw_distance = float(np.linalg.norm(raw[4] - raw[tip_landmark]))
+                activation = max(
+                    0.0, 1.0 - raw_distance / THUMB_DISTANCE_THRESHOLD
+                )
+                if activation <= 0.0:
+                    continue
+                pinch_activation = max(pinch_activation, activation)
+                pinch_terms.append(
+                    (
+                        self._frames[finger_name][-1],
+                        raw_distance * distance_scale,
+                        self.pinch_weight * weight * activation,
+                    )
+                )
+        thumb_tip_frame = self._frames["thumb"][-1]
+
         start = np.clip(self.last_qpos, self.lower, self.upper)
         solution = start.copy()
         total_loss = 0.0
         iterations = 0
         evaluations = 0
         success = True
+        # Thumb last, so its pinch terms see the ordinary fingers' solved tips.
         for finger in ("index", "middle", "ring", "pinky", "thumb"):
             indices = self._joint_indices[finger]
             frames = self._frames[finger]
-            targets = wanted[list(CANONICAL_FINGERS[finger])]
+            chain = CANONICAL_FINGERS[finger]
+            targets = wanted[list(chain)]
+            direction_terms = []
+            if self.direction_weight > 0.0:
+                for pair, weight in enumerate(SEGMENT_DIRECTION_WEIGHTS):
+                    desired = wanted[chain[pair + 1]] - wanted[chain[pair]]
+                    length = float(np.linalg.norm(desired))
+                    if length < 1e-8:
+                        continue
+                    direction_terms.append(
+                        (
+                            frames[pair],
+                            frames[pair + 1],
+                            desired / length,
+                            self.direction_weight * weight,
+                        )
+                    )
             anchor = start[indices]
             q_work = solution.copy()
 
@@ -228,18 +302,58 @@ class O30IRetargeter:
                 self._update(q_work, jacobians=True)
                 loss = 0.0
                 gradient = np.zeros(len(indices), dtype=np.float64)
-                for frame_id, target, weight in zip(
-                    frames, targets, CHAIN_WEIGHTS, strict=True
-                ):
-                    residual = self.data.oMf[frame_id].translation - target
-                    jacobian = pin.getFrameJacobian(
+                # One Jacobian extraction per frame; the position, direction,
+                # and pinch terms all reuse these four slices.
+                jacobians = {
+                    frame_id: pin.getFrameJacobian(
                         self.model,
                         self.data,
                         frame_id,
                         pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
                     )[:3, indices]
+                    for frame_id in frames
+                }
+                for frame_id, target, weight in zip(
+                    frames, targets, CHAIN_WEIGHTS, strict=True
+                ):
+                    residual = self.data.oMf[frame_id].translation - target
                     loss += weight * float(residual @ residual)
-                    gradient += 2.0 * weight * (jacobian.T @ residual)
+                    gradient += 2.0 * weight * (jacobians[frame_id].T @ residual)
+                for origin_id, target_id, desired, weight in direction_terms:
+                    vector = (
+                        self.data.oMf[target_id].translation
+                        - self.data.oMf[origin_id].translation
+                    )
+                    length = float(np.linalg.norm(vector))
+                    if length < 1e-8:
+                        continue
+                    direction = vector / length
+                    cosine = float(direction @ desired)
+                    loss += weight * (1.0 - cosine)
+                    derivative = -(desired - cosine * direction) / length
+                    gradient += weight * (
+                        derivative @ (jacobians[target_id] - jacobians[origin_id])
+                    )
+                if finger == "thumb":
+                    for finger_tip_id, desired_distance, weight in pinch_terms:
+                        vector = (
+                            self.data.oMf[finger_tip_id].translation
+                            - self.data.oMf[thumb_tip_frame].translation
+                        )
+                        distance = float(np.linalg.norm(vector))
+                        if distance < 1e-8:
+                            continue
+                        excess = distance - desired_distance
+                        if excess <= 0.0:
+                            continue
+                        loss += weight * excess * excess
+                        # The fingertip frame does not move with thumb joints.
+                        gradient += (
+                            -2.0
+                            * weight
+                            * excess
+                            * ((vector / distance) @ jacobians[thumb_tip_frame])
+                        )
                 delta = finger_q - anchor
                 loss += self.smooth_weight * float(delta @ delta)
                 gradient += 2.0 * self.smooth_weight * delta
@@ -252,9 +366,16 @@ class O30IRetargeter:
                 jac=True,
                 bounds=list(zip(self.lower[indices], self.upper[indices])),
                 options={
-                    "maxiter": self.max_iterations,
-                    "ftol": 1e-15,
-                    "gtol": 1e-10,
+                    "maxiter": (
+                        max(40, self.max_iterations)
+                        if finger == "thumb"
+                        else self.max_iterations
+                    ),
+                    # The L20 solver's tolerances: the direction terms' O(1)
+                    # gradient scale makes tighter ones burn iterations for
+                    # sub-micrometre gains.
+                    "ftol": 1e-9,
+                    "gtol": 1e-6,
                 },
             )
             solution[indices] = np.clip(
@@ -276,6 +397,7 @@ class O30IRetargeter:
             "loss": total_loss,
             "iterations": iterations,
             "function_evaluations": evaluations,
+            "pinch_activation": pinch_activation,
         }
 
     def reset(self) -> None:

@@ -177,6 +177,22 @@ is currently no per-finger gain compensation in the O30i retargeter. Slight
 O30i motion jitter has been observed but not yet localized to MANUS input,
 retargeting, command transport, or hardware feedback.
 
+Retargeting objective, measured and changed 2026-07-29 (replay of
+`diagnostics/20260729_143116/hand_fidelity_rescued.jsonl`, 6141 samples,
+rescued from another mangled RUN_DIR paste): pure position matching
+under-flexed the MCP knuckle against the palm by 19/14 deg (index/middle) at
+full curl - the operator's "grasp not firm" - and left a 17 mm thumb-index
+gap at human tip contact even though the O30i URDF can close that gap to
+exactly zero (reachability oracle, unlike the G20's 16 mm floor). Two
+model-level terms were added to the O30i solver, both validated by replaying
+that session: per-segment direction matching on every finger (MCP deficit
+-> ~0 deg on all four fingers) and the L20-style activated
+thumb-to-fingertip distance term (gap at human touch 17.2 -> 5.7 mm). Cost:
+tip position RMSE 10 -> 14 mm (grasp quality is angle-dominated) and solve
+1.2 -> 2.3 ms mean / 3.0 ms p95, still inside the tick budget. Both terms
+are constructor-tunable (`direction_weight`, `pinch_weight`; 0 disables).
+Physical validation of the firmer curl and pinch is pending.
+
 Abduction polarity: the bridge's derived per-side baseline is correct for the
 unified MANUS mode and `abduction_invert` stays false. Offline comparison of
 the 2026-07-27 session logs (PICO 12:27 vs MANUS 13:55) shows identical

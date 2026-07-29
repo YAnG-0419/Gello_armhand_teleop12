@@ -86,6 +86,50 @@ def test_o30i_ordinary_finger_targets_follow_anatomical_joint_frames():
         assert retargeter._frames[finger][:-1] == expected
 
 
+def test_o30i_curl_keeps_the_mcp_knuckle_flexed():
+    # The regression this locks: pure position matching under-flexed the MCP
+    # against the palm by 15-19 degrees at full curl (2026-07-29 session),
+    # dumping curl into the distal joints - the operator felt it as a weak
+    # grasp. The segment-direction terms must preserve the distribution.
+    retargeter = O30IRetargeter(
+        URDF, "right", smooth_weight=0.0, filter_alpha=1.0, max_iterations=200
+    )
+    desired = np.zeros(20)
+    for finger in ("index", "middle", "ring", "pinky"):
+        desired[retargeter.joint_names.index(f"{finger}_mcp_pitch")] = 1.2
+        desired[retargeter.joint_names.index(f"{finger}_pip")] = 1.0
+        desired[retargeter.joint_names.index(f"{finger}_dip")] = 0.4
+    landmarks = retargeter.robot_landmarks(desired)
+    solved, _ = retargeter.retarget(landmarks)
+    for finger in ("index", "middle", "ring", "pinky"):
+        mcp = solved[retargeter.joint_names.index(f"{finger}_mcp_pitch")]
+        assert abs(mcp - 1.2) < 0.15, f"{finger} mcp {mcp:.2f}"
+
+
+def test_o30i_pinch_closes_the_thumb_index_gap():
+    # Thumb and index tips touching in the input must nearly touch on the
+    # robot. The pose below is the measured reachability oracle: the URDF can
+    # close this gap to zero, so a large residual is a solver failure.
+    retargeter = O30IRetargeter(URDF, "right", filter_alpha=1.0)
+    pinch = np.zeros(20)
+    for name, value in (
+        ("thumb_cmc_yaw", 1.61),
+        ("thumb_mcp", 0.26),
+        ("thumb_ip", 1.57),
+        ("index_mcp_pitch", 1.26),
+        ("index_pip", 0.90),
+        ("index_dip", 0.38),
+    ):
+        pinch[retargeter.joint_names.index(name)] = value
+    landmarks = retargeter.robot_landmarks(pinch)
+    for _ in range(3):  # warm-started convergence, as in a live stream
+        qpos, stats = retargeter.retarget(landmarks)
+    assert stats["pinch_activation"] > 0.5
+    achieved = retargeter.robot_landmarks(qpos)
+    gap = np.linalg.norm(achieved[4] - achieved[8])
+    assert gap < 0.008, f"thumb-index gap {1000 * gap:.1f} mm"
+
+
 def test_o30i_retargeting_assigns_distal_motion_to_dip():
     retargeter = O30IRetargeter(
         URDF,
