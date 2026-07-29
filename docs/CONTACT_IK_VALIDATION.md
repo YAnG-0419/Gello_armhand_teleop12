@@ -99,18 +99,33 @@ Phase A - verify bringup and calibrate the gating thresholds:
    answers `command exception error`, the running control loop refused
    the thresholds: note the timing and re-run the setter through the
    tools container before the first engagement.
-2. Record calibration data: `ros2 bag record` both
-   `/{left,right}/franka_robot_state_broadcaster/external_joint_torques`
-   into the session RUN_DIR while doing 2-3 min of normal free-space
-   teleop, including fast sweeps.
-3. Offline, compute each joint's |tau_ext| p99 from the bag and set each
-   `contact_torque_thresholds` entry in `config/teleop_control.yaml`
-   comfortably above it. The shipped placeholders
-   `[6, 6, 6, 6, 3, 3, 3]` Nm are a guess: a false trigger only briefly
-   holds one joint's advance in one direction (mild), but calibrate
-   before trusting the feel.
-4. Free-space regression with the calibrated thresholds: normal teleop
-   must feel unchanged and the gateway log must show no torque warnings.
+2. Sign probe (mandatory before the first contact trial; 2026-07-29: a
+   blocked reaching arm hit `cartesian_reflex` with gating active, and an
+   inverted tau_ext sign convention is one of the two candidate causes).
+   With both arms up and teleop disengaged, record while pushing and
+   pulling each arm gently in varied directions - hands off for the
+   first five seconds:
+
+   ```bash
+   cd /home/descfly/hsc/franka_upper_body_teleop/docker
+   docker compose run --rm tools python3 \
+     /workspace/franka_upper_body_teleop/scripts/record_tau_ext_probe.py \
+     --output /data/diagnostics/tau_probe_$(date +%Y%m%d_%H%M%S).jsonl \
+     --duration 60
+   ```
+
+3. `python3 scripts/analyze_tau_ext_probe.py <recording>` decides the
+   sign convention mechanically (ground truth is the impedance spring:
+   a push deflects each joint in the push direction, so sign(dq) labels
+   every sample) and prints per-joint quiet noise plus a suggested
+   threshold. MATCH: proceed. INVERTED: flip the gating comparison in
+   `teleop_core/safety.py` first. Until this verdict exists, treat the
+   gating as absent.
+4. Set `contact_torque_thresholds` from the suggestions (shipped
+   placeholders are `[6, 6, 6, 6, 3, 3, 3]` Nm), then a free-space
+   regression: 2-3 min of normal teleop including fast sweeps must feel
+   unchanged, with no torque warnings in the gateway log. If fast sweeps
+   graze the thresholds, raise to the analyzer's suggestion times two.
 
 Phase B - contact trial (one side engaged, pad on the table):
 
