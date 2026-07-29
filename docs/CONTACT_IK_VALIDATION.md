@@ -99,12 +99,18 @@ Phase A - verify bringup and calibrate the gating thresholds:
    answers `command exception error`, the running control loop refused
    the thresholds: note the timing and re-run the setter through the
    tools container before the first engagement.
-2. Sign probe (mandatory before the first contact trial; 2026-07-29: a
-   blocked reaching arm hit `cartesian_reflex` with gating active, and an
-   inverted tau_ext sign convention is one of the two candidate causes).
-   With both arms up and teleop disengaged, record while pushing and
-   pulling each arm gently in varied directions - hands off for the
-   first five seconds:
+2. Sign probe - DONE for the right arm, 2026-07-29
+   (`tau_probe_20260729_180752.jsonl`): six joints, 1700-3200 samples
+   each, corr -0.93 to -1.00 - `tau_ext_hat_filtered` carries the sign
+   OPPOSITE to the external push. The gate originally assumed the raw
+   external sign, i.e. it was inverted (which is why the blocked reaching
+   arm still hit `cartesian_reflex` earlier that day: the inverted gate
+   passed every pressing step). The comparison in `teleop_core/safety.py`
+   now encodes the measured convention, and the analyzer verdict is
+   relative to it: expect MATCH. Quiet-rest noise measured 0.01-0.05 Nm
+   per joint. The left arm had no push samples; the convention is a
+   libfranka property, not per-unit, so re-probing the left is
+   opportunistic, not blocking. Probe procedure, for reuse:
 
    ```bash
    cd /home/descfly/hsc/franka_upper_body_teleop/docker
@@ -114,13 +120,14 @@ Phase A - verify bringup and calibrate the gating thresholds:
      --duration 60
    ```
 
-3. `python3 scripts/analyze_tau_ext_probe.py <recording>` decides the
-   sign convention mechanically (ground truth is the impedance spring:
-   a push deflects each joint in the push direction, so sign(dq) labels
-   every sample) and prints per-joint quiet noise plus a suggested
-   threshold. MATCH: proceed. INVERTED: flip the gating comparison in
-   `teleop_core/safety.py` first. Until this verdict exists, treat the
-   gating as absent.
+   Hands off for the first five seconds, then gentle varied pushes,
+   10-20 N - no need to push anywhere near the 50 N reflex.
+
+3. `python3 scripts/analyze_tau_ext_probe.py <recording>` prints the
+   verdict mechanically (ground truth is the impedance spring: a push
+   deflects each joint in the push direction, so sign(dq) labels every
+   sample) plus per-joint quiet noise and a suggested threshold.
+   MATCH: proceed. INVERTED: flip the gate comparison first.
 4. Set `contact_torque_thresholds` from the suggestions (shipped
    placeholders are `[6, 6, 6, 6, 3, 3, 3]` Nm), then a free-space
    regression: 2-3 min of normal teleop including fast sweeps must feel

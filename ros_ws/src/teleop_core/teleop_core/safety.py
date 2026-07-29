@@ -109,12 +109,15 @@ class CommandSafetyGate:
             if torques is not None:
                 torques = np.asarray(torques, dtype=float)
                 step = command - self.last_output[side]
-                # Loaded joint stepping against its external torque = pressing
-                # harder; hold that joint. The unloading direction always
-                # passes, so retreat releases immediately.
+                # Sign convention measured on hardware (2026-07-29 probe,
+                # right arm: corr <= -0.93 on six joints, 1700+ samples each):
+                # tau_ext_hat_filtered carries the sign OPPOSITE to the
+                # external push, so a step with the same sign as the reported
+                # torque presses harder. Hold that joint; the unloading
+                # direction always passes, so retreat releases immediately.
                 pressing = (
                     np.abs(torques) > self.contact_torque_thresholds
-                ) & (np.sign(step) == -np.sign(torques))
+                ) & (np.sign(step) == np.sign(torques))
                 command = np.where(pressing, self.last_output[side], command)
             self.last_output[side] = command
             self.last_time[side] = now

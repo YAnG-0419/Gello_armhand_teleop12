@@ -62,9 +62,12 @@ def test_pressing_against_external_torque_is_held():
     gate = make_gate()
     target = HOME[:7] + 0.3
     send(gate, HOME[:7], HOME, now=0.0)
-    # The environment pushes joint 1 negative while the command advances
-    # positive: pressing. Joint 2 is loaded below threshold and advances.
-    torques = {"left": np.array([-10.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
+    # The environment resists joint 1's positive advance. Measured hardware
+    # convention (2026-07-29 probe): the broadcaster reports that resisting
+    # torque with the sign of the robot's push, here positive - so a
+    # positive step into a positive reported torque is pressing. Joint 2 is
+    # loaded below threshold and advances.
+    torques = {"left": np.array([10.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
     now, out = 0.0, None
     for _ in range(100):
         now += 0.01
@@ -79,9 +82,9 @@ def test_unloading_direction_always_passes():
     target = HOME[:7].copy()
     target[0] -= 0.2
     send(gate, HOME[:7], HOME, now=0.0)
-    # Same negative torque on joint 1, but the command retreats negative -
-    # the direction the external torque pushes toward. Never held.
-    torques = {"left": np.array([-10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
+    # Same reported torque on joint 1, but the command retreats negative -
+    # unloading under the measured convention. Never held.
+    torques = {"left": np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
     now, out = 0.0, None
     for _ in range(100):
         now += 0.01
@@ -93,7 +96,7 @@ def test_gating_releases_when_the_load_disappears():
     gate = make_gate()
     target = HOME[:7] + 0.1
     send(gate, HOME[:7], HOME, now=0.0)
-    torques = {"left": np.array([-10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
+    torques = {"left": np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
     now = 0.0
     for _ in range(50):
         now += 0.01

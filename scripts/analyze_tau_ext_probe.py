@@ -3,10 +3,12 @@
 
 Reads a scripts/record_tau_ext_probe.py recording and prints, per joint:
 
-- the sign verdict: MATCH means positive tau_ext is an external torque
-  pushing the joint toward positive q, which is what the safety gateway's
-  contact gating assumes; INVERTED means the gate's comparison must be
-  flipped before any contact trial.
+- the sign verdict against the convention compiled into the safety
+  gateway's contact gating. Measured 2026-07-29 (right arm, six joints,
+  corr <= -0.93): tau_ext_hat_filtered carries the sign OPPOSITE to the
+  external push, and the gate expects exactly that. MATCH means the
+  recording confirms it; INVERTED means the gate's comparison in
+  teleop_core/safety.py must be flipped before any contact trial.
 - the quiet-baseline noise and a suggested contact_torque_threshold.
 
 Ground truth needs no reported push direction: with the impedance
@@ -102,13 +104,16 @@ def analyze(path, baseline_seconds):
                     f"suggested threshold {suggested:.1f} Nm"
                 )
                 continue
+            # The gate expects the reported torque sign OPPOSITE to the push
+            # (measured 2026-07-29), so gateway-agreement means
+            # sign(dtau) == -sign(dq).
             agree = float(
-                np.mean(np.sign(dtau[valid, j]) == np.sign(dq[valid, j]))
+                np.mean(np.sign(dtau[valid, j]) == -np.sign(dq[valid, j]))
             )
             corr = float(np.corrcoef(dtau[valid, j], dq[valid, j])[0, 1])
-            if agree > 0.8 and corr > 0.5:
+            if agree > 0.8 and corr < -0.5:
                 verdict = "MATCH"
-            elif agree < 0.2 and corr < -0.5:
+            elif agree < 0.2 and corr > 0.5:
                 verdict = "INVERTED"
             else:
                 verdict = "AMBIGUOUS"
@@ -131,13 +136,13 @@ def analyze(path, baseline_seconds):
         print("VERDICT: no usable data - re-run the probe with firmer pushes.")
         return 1
     if all(v == "MATCH" for v in verdicts.values()):
-        print("VERDICT: tau_ext sign MATCHES the gating assumption; "
-              "no code change needed.")
+        print("VERDICT: tau_ext sign MATCHES the gateway's compiled "
+              "convention; no code change needed.")
         return 0
     if all(v == "INVERTED" for v in verdicts.values()):
-        print("VERDICT: tau_ext sign is INVERTED versus the gating "
-              "assumption - flip the comparison in teleop_core/safety.py "
-              "before any contact trial.")
+        print("VERDICT: tau_ext sign is INVERTED versus the gateway's "
+              "compiled convention - flip the comparison in "
+              "teleop_core/safety.py before any contact trial.")
         return 0
     print(f"VERDICT: inconsistent across sides/joints ({verdicts}) - "
           "re-run with slower, firmer single-direction pushes.")
