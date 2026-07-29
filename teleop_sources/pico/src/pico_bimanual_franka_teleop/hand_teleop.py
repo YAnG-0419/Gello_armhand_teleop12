@@ -47,7 +47,10 @@ class HandPipeline:
         debug_log: str | Path | None = None,
     ) -> None:
         if xrt is None:
-            raise ValueError("HandPipeline requires an initialized SDK module")
+            raise ValueError(
+                "PICO optical hands need an initialized PICO SDK client; "
+                "the selected arm source does not own one"
+            )
         if not sides or set(sides).difference(SIDES):
             raise ValueError(f"Invalid hand sides: {sides}")
         self.sides = tuple(sides)

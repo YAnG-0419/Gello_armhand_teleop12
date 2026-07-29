@@ -54,14 +54,21 @@ class DualFr3HardwareTeleop:
         }
         self.hold_q: np.ndarray | None = None
 
-        # The hand pipeline shares this process's single SDK client and is ticked
-        # synchronously from the loop below: a solve costs about 1.5 ms and the
-        # pipeline runs at most one per tick, so it fits the arm's 10 ms budget.
-        # Constructing it must never prevent the arms from running.
+        # The hand pipeline is ticked synchronously from the loop below: a
+        # solve costs about 1.5 ms and the pipeline runs at most one per tick,
+        # so it fits the arm's 10 ms budget. Constructing it must never
+        # prevent the arms from running.
+        #
+        # The factory receives the arm input's shared PICO SDK client, or None
+        # for arm sources that do not own one (a future GELLO/VIVE input):
+        # PICO optical hands need the client and refuse None with a clear
+        # error, while the MANUS pipeline ignores it.
         self.hands = None
         if hand_sender_factory is not None:
             try:
-                self.hands = hand_sender_factory(self.teleop_input.xrt)
+                self.hands = hand_sender_factory(
+                    getattr(self.teleop_input, "xrt", None)
+                )
             except BaseException:
                 self.robot.close()
                 self.teleop_input.close()
