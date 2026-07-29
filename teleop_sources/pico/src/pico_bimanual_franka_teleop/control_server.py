@@ -112,6 +112,16 @@ class OperatorConsole:
 
 
 class _RequestHandler(socketserver.StreamRequestHandler):
+    def setup(self) -> None:
+        super().setup()
+        self.server.client_connected()
+
+    def finish(self) -> None:
+        try:
+            super().finish()
+        finally:
+            self.server.client_disconnected()
+
     def handle(self) -> None:
         while True:
             line = self.rfile.readline()
@@ -153,6 +163,8 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
         self.keyboard = console
         self.snapshot = console.snapshot
         self._thread: threading.Thread | None = None
+        self._clients = 0
+        self._clients_lock = threading.Lock()
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -163,6 +175,18 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
     def close(self) -> None:
         self.shutdown()
         self.server_close()
+        self.keyboard.disable_all("operator server stopped")
+
+    def client_connected(self) -> None:
+        with self._clients_lock:
+            self._clients += 1
+
+    def client_disconnected(self) -> None:
+        with self._clients_lock:
+            self._clients = max(0, self._clients - 1)
+            last_client = self._clients == 0
+        if last_client:
+            self.keyboard.disable_all("operator frontend disconnected")
 
     # -- commands ---------------------------------------------------------
 

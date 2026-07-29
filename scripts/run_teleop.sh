@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-command unified teleop: fresh RUN_DIR, both debug logs, TUI.
+# One-command teleop backend: fresh RUN_DIR and both debug logs.
+# The operator GUI is a separate process (teleop_sources/gui/operator_gui.py).
 #
 # Exists because the equivalent multi-line paste has now buried three
 # recordings: a clipboard missing its final newline leaves the command
@@ -13,8 +14,21 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_DIR="${TELEOP_RUN_DIR:-/home/descfly/franka_teleop_data/diagnostics/$(date +%Y%m%d_%H%M%S)}"
-mkdir -p "$RUN_DIR"
+RUN_PARENT="/home/descfly/franka_teleop_data/diagnostics"
+if [[ -n "${TELEOP_RUN_DIR:-}" ]]; then
+  RUN_DIR="$TELEOP_RUN_DIR"
+  if [[ -e "$RUN_DIR" ]]; then
+    echo "Refusing to reuse TELEOP_RUN_DIR: $RUN_DIR" >&2
+    exit 1
+  fi
+  if ! mkdir -- "$RUN_DIR"; then
+    echo "Could not create TELEOP_RUN_DIR: $RUN_DIR" >&2
+    exit 1
+  fi
+else
+  mkdir -p -- "$RUN_PARENT"
+  RUN_DIR="$(mktemp -d "$RUN_PARENT/$(date +%Y%m%d_%H%M%S).XXXXXX")"
+fi
 echo "RUN_DIR=$RUN_DIR"
 
 cd "$REPO_ROOT"

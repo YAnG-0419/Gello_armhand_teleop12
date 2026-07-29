@@ -681,6 +681,10 @@ class MotionTrackerInput:
         self.keyboard.disable_all(reason)
         self.last_activations = {side: False for side in SIDES}
 
+    def deny(self, side: str, reason: str) -> None:
+        self.keyboard.deny(side, reason)
+        self.last_activations[side] = False
+
     def close(self) -> None:
         try:
             if getattr(self, "xrt", None) is not None:
@@ -993,6 +997,10 @@ class HandRootInput:
     def disable_all(self, reason: str) -> None:
         self.keyboard.disable_all(reason)
         self.last_activations = {side: False for side in SIDES}
+
+    def deny(self, side: str, reason: str) -> None:
+        self.keyboard.deny(side, reason)
+        self.last_activations[side] = False
 
     def close(self) -> None:
         try:

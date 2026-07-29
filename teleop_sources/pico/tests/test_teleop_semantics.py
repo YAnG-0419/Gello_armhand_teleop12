@@ -13,6 +13,7 @@ import numpy as np
 import pinocchio as pin
 import pytest
 
+from pico_bimanual_franka_teleop.hardware import reseed_inactive_joints
 from pico_bimanual_franka_teleop.ik import BimanualPinkIK, classify_step
 from pico_bimanual_franka_teleop.pose_mapping import RelativePoseMapper
 from pico_bimanual_franka_teleop.types import Pose
@@ -35,6 +36,33 @@ def make_ik() -> BimanualPinkIK:
 
 def engage(mapper, hand, robot):
     assert mapper.update(hand, True, robot) is not None
+
+
+def test_inactive_and_newly_engaging_sides_reseed_independently():
+    held = np.arange(14, dtype=float)
+    measured = held + 100.0
+
+    # Left is already tracking and must retain its command. Right is newly
+    # engaging, so its anchor must use measured hardware even though left
+    # remains active.
+    result = reseed_inactive_joints(
+        held,
+        measured,
+        {"left": True, "right": True},
+        {"left": True, "right": False},
+    )
+    np.testing.assert_array_equal(result[:7], held[:7])
+    np.testing.assert_array_equal(result[7:], measured[7:])
+
+    # An explicitly inactive side is continuously healed from measured state.
+    result = reseed_inactive_joints(
+        held,
+        measured,
+        {"left": False, "right": True},
+        {"left": True, "right": True},
+    )
+    np.testing.assert_array_equal(result[:7], measured[:7])
+    np.testing.assert_array_equal(result[7:], held[7:])
 
 
 def test_translation_maps_one_to_one():

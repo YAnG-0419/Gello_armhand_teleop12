@@ -11,6 +11,16 @@ from .types import SIDES
 from .xr_input import create_pico_input
 
 
+def reseed_inactive_joints(held, measured, activations, mapper_active):
+    """Keep every inactive or newly engaging side aligned to hardware."""
+    result = np.asarray(held, dtype=float).copy()
+    measured = np.asarray(measured, dtype=float)
+    for side, joints in (("left", slice(0, 7)), ("right", slice(7, 14))):
+        if not activations.get(side, False) or not mapper_active.get(side, False):
+            result[joints] = measured[joints]
+    return result
+
+
 class DualFr3HardwareTeleop:
     def __init__(
         self,
@@ -202,6 +212,17 @@ class DualFr3HardwareTeleop:
                     # Anchor the IK null-space attractor at the pose the session
                     # started from, normally the captured hardware home.
                     self.ik.set_posture_reference(self.hold_q)
+                for fault in self.robot.take_gateway_faults():
+                    rejected = tuple(
+                        side for side in SIDES if fault.startswith(f"{side} ")
+                    )
+                    deny = getattr(self.teleop_input, "deny", None)
+                    if len(rejected) == 1 and deny is not None:
+                        deny(rejected[0], f"safety gateway: {fault}")
+                    else:
+                        self.teleop_input.disable_all(
+                            f"safety gateway: {fault}"
+                        )
                 sample = self.teleop_input.sample()
                 take_requests = getattr(self.teleop_input, "take_requests", None)
                 requests = take_requests() if take_requests is not None else {}
@@ -226,6 +247,21 @@ class DualFr3HardwareTeleop:
                     # and this tick's sample must not act on stale activations.
                     self.teleop_input.disable_all("reset in progress")
                     sample = None
+                if self.reset_thread is None:
+                    activations = (
+                        {side: False for side in SIDES}
+                        if sample is None
+                        else sample.activations
+                    )
+                    self.hold_q = reseed_inactive_joints(
+                        self.hold_q,
+                        q,
+                        activations,
+                        {
+                            side: self.mappers[side].active
+                            for side in SIDES
+                        },
+                    )
                 targets = {}
                 current_poses = self.ik.frame_poses(self.hold_q)
                 for side in SIDES:
@@ -240,12 +276,6 @@ class DualFr3HardwareTeleop:
                     )
                     if target is not None:
                         targets[side] = target
-                if not targets and self.reset_thread is None:
-                    # Fully disengaged with a live robot: re-seed the held
-                    # command from the measured state, so any divergence
-                    # (phantom IK drift, a rejected engage) heals before
-                    # the next engage anchors to it.
-                    self.hold_q = np.asarray(q, dtype=float).copy()
                 try:
                     if targets:
                         self.hold_q = self.ik.step(self.hold_q, targets)

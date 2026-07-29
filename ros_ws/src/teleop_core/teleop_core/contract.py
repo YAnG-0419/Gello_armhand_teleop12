@@ -10,6 +10,7 @@ COMMAND_JOINT_NAMES = LEFT_COMMAND_JOINT_NAMES + RIGHT_COMMAND_JOINT_NAMES
 CONTROLLER_JOINT_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
 
 SOURCE_COMMAND_TOPIC = "/teleop/arm_commands"
+COMMAND_STATUS_TOPIC = "/teleop/arm_command_status"
 VALIDATED_COMMAND_TOPIC = "/teleop/validated_arm_commands"
 ARM_COMMAND_TOPIC = "/target_robot/joint_commands"
 ARM_STATE_TOPIC = "/{side}/franka/joint_states"

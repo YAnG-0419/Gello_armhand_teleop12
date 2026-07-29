@@ -151,7 +151,9 @@ It reconnects automatically and shows the once-per-second status line
 plus the operator feedback log; the operator terminal keeps plain process
 output. Engage starts a side following your motion; disengage stops
 following and the arm holds (not a power cut - the physical e-stop stays
-the top-level stop).
+the top-level stop). Closing the GUI or losing its TCP connection
+automatically disengages every side; re-engagement is always explicit after
+the GUI reconnects.
 
 ## Full teleop and recording
 

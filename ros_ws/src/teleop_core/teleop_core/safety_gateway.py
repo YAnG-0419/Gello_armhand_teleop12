@@ -12,12 +12,13 @@ from rclpy.qos import (
 )
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
-from teleop_interfaces.msg import ArmCommand
+from teleop_interfaces.msg import ArmCommand, ArmCommandStatus
 
 from .arbitration import SourceArbiter
 from .contract import (
     ARM_COMMAND_TOPIC,
     ARM_STATE_TOPIC,
+    COMMAND_STATUS_TOPIC,
     EXTERNAL_TORQUES_TOPIC,
     RESET_ACTIVE_TOPIC,
     SOURCE_COMMAND_TOPIC,
@@ -87,6 +88,9 @@ class SafetyGateway(Node):
         )
         self.hardware_publisher = self.create_publisher(
             JointState, ARM_COMMAND_TOPIC, 10
+        )
+        self.status_publisher = self.create_publisher(
+            ArmCommandStatus, COMMAND_STATUS_TOPIC, 10
         )
         self.get_logger().info(
             "Teleoperation safety gateway is forwarding validated commands."
@@ -182,15 +186,28 @@ class SafetyGateway(Node):
         if self.rejected <= 3 or self.rejected % 100 == 0:
             self.get_logger().warn(f"Rejected command: {reason}")
 
+    def _publish_status(self, message, accepted_sides=(), faults=()):
+        status = ArmCommandStatus()
+        status.header.stamp = self.get_clock().now().to_msg()
+        status.source = message.source
+        status.session_id = message.session_id
+        status.sequence = message.sequence
+        status.accepted_sides = list(accepted_sides)
+        status.faults = list(faults)
+        self.status_publisher.publish(status)
+
     def _command(self, message):
         if self.reset_active:
+            self._publish_status(message, faults=("reset is active",))
             return
         now = time.monotonic()
         measured = self._measured(now)
         if measured is None:
             self.arbiter.reset()
             self.gate.reset()
-            self._reject("dual-arm state is missing or stale")
+            reason = "dual-arm state is missing or stale"
+            self._reject(reason)
+            self._publish_status(message, faults=(reason,))
             return
         try:
             new_session = self.arbiter.accept(
@@ -211,13 +228,25 @@ class SafetyGateway(Node):
             )
         except ValueError as exc:
             self._reject(str(exc))
+            self._publish_status(message, faults=(str(exc),))
             return
         for fault in self.gate.side_faults:
             self._reject(fault)
         self._report_gating()
         if validated is None:
             self.gate.reset()
+            self._publish_status(message)
             return
+        accepted_sides = tuple(
+            side
+            for side in ("left", "right")
+            if any(side in name for name in validated.names)
+        )
+        self._publish_status(
+            message,
+            accepted_sides=accepted_sides,
+            faults=self.gate.side_faults,
+        )
         output = JointState()
         output.header.stamp = self.get_clock().now().to_msg()
         output.header.frame_id = message.source

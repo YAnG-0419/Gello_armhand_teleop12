@@ -25,6 +25,8 @@ class UdpRobotBackend:
         self.sequence = 0
         self.last_state_sequence = -1
         self.last_state_at: float | None = None
+        self.last_gateway_status_sequence = -1
+        self.gateway_faults: tuple[str, ...] = ()
         self.q: np.ndarray | None = None
 
     def receive_state(self) -> np.ndarray | None:
@@ -39,6 +41,12 @@ class UdpRobotBackend:
             if packet.names != COMMAND_JOINT_NAMES:
                 raise ValueError("State packet does not contain all 14 joints in order")
             self.q = np.asarray(packet.positions, dtype=float)
+            if (
+                packet.command_stream_id == self.stream_id
+                and packet.command_sequence > self.last_gateway_status_sequence
+            ):
+                self.last_gateway_status_sequence = packet.command_sequence
+                self.gateway_faults += packet.faults
             self.last_state_sequence = packet.sequence
             self.last_state_at = time.monotonic()
         if self.last_state_at is None:
@@ -47,6 +55,11 @@ class UdpRobotBackend:
             return None
         assert self.q is not None
         return self.q.copy()
+
+    def take_gateway_faults(self) -> tuple[str, ...]:
+        faults = self.gateway_faults
+        self.gateway_faults = ()
+        return faults
 
     def wait_for_state(self, timeout: float) -> np.ndarray:
         deadline = time.monotonic() + timeout

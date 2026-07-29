@@ -10,6 +10,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from teleop_core.contract import (
     ARM_STATE_TOPIC,
+    COMMAND_STATUS_TOPIC,
     COMMAND_JOINT_NAMES,
     SOURCE_COMMAND_TOPIC,
 )
@@ -20,7 +21,7 @@ from teleop_core.protocol import (
     decode_packet,
     encode_packet,
 )
-from teleop_interfaces.msg import ArmCommand
+from teleop_interfaces.msg import ArmCommand, ArmCommandStatus
 
 
 class PicoTeleopBridge(Node):
@@ -54,6 +55,9 @@ class PicoTeleopBridge(Node):
         self.state_sequence = 0
         self.command_stream_id = None
         self.command_sequence = -1
+        self.gateway_status_sequence = -1
+        self.gateway_active_sides = ()
+        self.gateway_faults = ()
         self.rejected = 0
 
         for side in ("left", "right"):
@@ -65,6 +69,9 @@ class PicoTeleopBridge(Node):
             )
         self.publisher = self.create_publisher(
             ArmCommand, SOURCE_COMMAND_TOPIC, 10
+        )
+        self.create_subscription(
+            ArmCommandStatus, COMMAND_STATUS_TOPIC, self._gateway_status, 10
         )
         self.create_timer(0.01, self._tick)
         self.get_logger().info(
@@ -104,9 +111,12 @@ class PicoTeleopBridge(Node):
             stream_id=self.state_stream_id,
             sequence=self.state_sequence,
             timestamp=now,
-            active_sides=("left", "right"),
+            active_sides=self.gateway_active_sides,
             names=COMMAND_JOINT_NAMES,
             positions=tuple(float(value) for value in measured),
+            command_sequence=self.gateway_status_sequence,
+            command_stream_id=self.command_stream_id or "",
+            faults=self.gateway_faults,
         )
         self.socket.sendto(encode_packet(packet), self.feedback_address)
         self.state_sequence += 1
@@ -125,6 +135,9 @@ class PicoTeleopBridge(Node):
                 if packet.stream_id != self.command_stream_id:
                     self.command_stream_id = packet.stream_id
                     self.command_sequence = -1
+                    self.gateway_status_sequence = -1
+                    self.gateway_active_sides = ()
+                    self.gateway_faults = ()
                 if packet.sequence <= self.command_sequence:
                     continue
                 self.command_sequence = packet.sequence
@@ -132,6 +145,17 @@ class PicoTeleopBridge(Node):
             except ValueError as exc:
                 self._reject(str(exc))
         return latest
+
+    def _gateway_status(self, message):
+        if (
+            message.source != "pico"
+            or message.session_id != self.command_stream_id
+            or int(message.sequence) <= self.gateway_status_sequence
+        ):
+            return
+        self.gateway_status_sequence = int(message.sequence)
+        self.gateway_active_sides = tuple(message.accepted_sides)
+        self.gateway_faults = tuple(message.faults)
 
     def _tick(self):
         now = time.monotonic()

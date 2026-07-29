@@ -1,5 +1,6 @@
 import json
 import socket
+import time
 
 import pytest
 
@@ -66,23 +67,77 @@ def test_socket_round_trip_speaks_line_json():
     server.start()
     try:
         with socket.create_connection(server.server_address, timeout=2.0) as client:
-            stream = client.makefile("rw", encoding="utf-8")
-            for request_id, command, arguments in (
-                (1, "engage", {"side": "right"}),
-                (2, "status", {}),
-                (3, "nonsense", {}),
-            ):
-                stream.write(
-                    json.dumps(
-                        {"id": request_id, "command": command, "arguments": arguments}
+            with client.makefile("rw", encoding="utf-8") as stream:
+                for request_id, command, arguments in (
+                    (1, "engage", {"side": "right"}),
+                    (2, "status", {}),
+                    (3, "nonsense", {}),
+                ):
+                    stream.write(
+                        json.dumps(
+                            {
+                                "id": request_id,
+                                "command": command,
+                                "arguments": arguments,
+                            }
+                        )
+                        + "\n"
                     )
-                    + "\n"
-                )
-                stream.flush()
-            replies = [json.loads(stream.readline()) for _ in range(3)]
+                    stream.flush()
+                replies = [json.loads(stream.readline()) for _ in range(3)]
+        for _ in range(100):
+            if not console.poll()["right"]:
+                break
+            time.sleep(0.01)
     finally:
         server.close()
     assert replies[0] == {"id": 1, "ok": True, "result": {}}
     assert replies[1]["ok"] and replies[1]["result"]["active"]["right"] is True
     assert not replies[2]["ok"] and "Unknown command" in replies[2]["error"]
-    assert console.active["right"] is True
+    assert console.active["right"] is False
+    assert any(
+        "operator frontend disconnected" in line
+        for line in console.snapshot()["feedback"]
+    )
+
+
+def test_only_the_last_frontend_disconnect_disengages():
+    server, console = make_server()
+    server.start()
+    first = socket.create_connection(server.server_address, timeout=2.0)
+    second = socket.create_connection(server.server_address, timeout=2.0)
+    try:
+        first_stream = first.makefile("rw", encoding="utf-8")
+        second_stream = second.makefile("rw", encoding="utf-8")
+        second_stream.write(
+            json.dumps({"id": 2, "command": "status", "arguments": {}})
+            + "\n"
+        )
+        second_stream.flush()
+        assert json.loads(second_stream.readline())["ok"]
+        first_stream.write(
+            json.dumps(
+                {
+                    "id": 1,
+                    "command": "engage",
+                    "arguments": {"side": "left"},
+                }
+            )
+            + "\n"
+        )
+        first_stream.flush()
+        assert json.loads(first_stream.readline())["ok"]
+        first_stream.close()
+        first.close()
+        assert console.poll()["left"] is True
+        second_stream.close()
+        second.close()
+        for _ in range(100):
+            if not console.poll()["left"]:
+                break
+            time.sleep(0.01)
+        assert console.poll()["left"] is False
+    finally:
+        first.close()
+        second.close()
+        server.close()
