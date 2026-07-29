@@ -18,11 +18,12 @@ from .arbitration import SourceArbiter
 from .contract import (
     ARM_COMMAND_TOPIC,
     ARM_STATE_TOPIC,
+    EXTERNAL_TORQUES_TOPIC,
     RESET_ACTIVE_TOPIC,
     SOURCE_COMMAND_TOPIC,
     VALIDATED_COMMAND_TOPIC,
 )
-from .joint_state import ordered_arm_positions
+from .joint_state import ordered_arm_positions, ordered_external_torques
 from .safety import CommandSafetyGate
 
 
@@ -41,19 +42,20 @@ class SafetyGateway(Node):
             max_joint_speed=float(self._required_parameter("max_joint_speed")),
             max_initial_delta=float(self._required_parameter("max_initial_delta")),
             nominal_dt=float(self._required_parameter("nominal_dt")),
-            max_command_deviation=self.declare_parameter(
-                "max_command_deviation", [0.0]
-            ).value,
+            contact_torque_thresholds=self._required_parameter(
+                "contact_torque_thresholds"
+            ),
         )
-        if self.gate.max_command_deviation is not None:
-            self.get_logger().info(
-                "Command deviation cap active (rad per joint): "
-                + ", ".join(
-                    f"{value:.3f}" for value in self.gate.max_command_deviation
-                )
+        self.get_logger().info(
+            "Contact torque gating active (Nm per joint): "
+            + ", ".join(
+                f"{value:.1f}" for value in self.gate.contact_torque_thresholds
             )
+        )
         self.state = {"left": None, "right": None}
         self.state_at = {"left": None, "right": None}
+        self.tau_ext = {"left": None, "right": None}
+        self.tau_ext_at = {"left": None, "right": None}
         self.rejected = 0
         self.reset_active = False
 
@@ -62,6 +64,14 @@ class SafetyGateway(Node):
                 JointState,
                 ARM_STATE_TOPIC.format(side=side),
                 lambda message, selected=side: self._state(selected, message),
+                qos_profile_sensor_data,
+            )
+            self.create_subscription(
+                JointState,
+                EXTERNAL_TORQUES_TOPIC.format(side=side),
+                lambda message, selected=side: self._external_torques(
+                    selected, message
+                ),
                 qos_profile_sensor_data,
             )
         self.create_subscription(ArmCommand, SOURCE_COMMAND_TOPIC, self._command, 10)
@@ -101,6 +111,40 @@ class SafetyGateway(Node):
         except ValueError as exc:
             self._reject(str(exc))
 
+    def _external_torques(self, side, message):
+        try:
+            self.tau_ext[side] = ordered_external_torques(
+                message.name, message.effort
+            )
+            self.tau_ext_at[side] = time.monotonic()
+        except ValueError as exc:
+            self.get_logger().warning(
+                f"Ignoring {side} external torques: {exc}",
+                throttle_duration_sec=5.0,
+            )
+
+    def _fresh_torques(self, now):
+        """Per-side external torques, or None where missing or stale.
+
+        Gating fails open on a missing estimate: the reflex thresholds still
+        protect, while failing closed would freeze teleoperation whenever the
+        broadcaster topic drops.
+        """
+        torques = {}
+        for side in ("left", "right"):
+            fresh = (
+                self.tau_ext[side] is not None
+                and now - self.tau_ext_at[side] <= self.state_timeout
+            )
+            if not fresh:
+                self.get_logger().warning(
+                    f"No fresh {side} external torques; contact gating is off "
+                    "for that side.",
+                    throttle_duration_sec=5.0,
+                )
+            torques[side] = self.tau_ext[side] if fresh else None
+        return torques
+
     def _measured(self, now):
         if any(self.state[side] is None for side in ("left", "right")):
             return None
@@ -138,6 +182,7 @@ class SafetyGateway(Node):
                 message.positions,
                 measured,
                 now,
+                external_torques=self._fresh_torques(now),
             )
         except ValueError as exc:
             self._reject(str(exc))

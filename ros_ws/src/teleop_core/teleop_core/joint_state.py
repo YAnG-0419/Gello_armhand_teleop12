@@ -16,6 +16,39 @@ def ordered_joint_positions(names, positions, required_names):
     return ordered
 
 
+def ordered_external_torques(names, efforts):
+    """Order one arm's external joint torques from a broadcaster message.
+
+    The external_joint_torques topic is per-arm (namespaced), so unlike
+    ordered_arm_positions no side substring is required in the names. Joint
+    names ending in joint1..joint7 are matched by index; a nameless message
+    with exactly seven efforts is accepted positionally.
+    """
+    efforts = [float(value) for value in efforts]
+    if names and len(names) == len(efforts):
+        found = {}
+        for name, effort in zip(names, efforts):
+            match = re.search(r"joint([1-7])$", name.lower())
+            if match:
+                found[int(match.group(1))] = effort
+        if len(found) == 7:
+            ordered = [found[index] for index in range(1, 8)]
+        else:
+            raise ValueError(
+                f"Expected seven arm joints; matched {sorted(found)}."
+            )
+    elif len(efforts) == 7:
+        ordered = efforts
+    else:
+        raise ValueError(
+            f"Expected seven external torques; got {len(efforts)}."
+        )
+    result = np.asarray(ordered, dtype=np.float64)
+    if not np.all(np.isfinite(result)):
+        raise ValueError("External torques contain non-finite values.")
+    return result
+
+
 def ordered_arm_positions(names, positions, side):
     found = {}
     for name, position in zip(names, positions):

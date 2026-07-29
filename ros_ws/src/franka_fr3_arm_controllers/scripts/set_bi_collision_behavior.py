@@ -31,7 +31,9 @@ class CollisionBehaviorSetter(Node):
         self.set_behaviors()
 
     def call_service(self, client, arm_name):
-        if not client.wait_for_service(timeout_sec=5.0):
+        # Launched concurrently with the hardware bringup, so the service can
+        # take a while to appear while the arms connect.
+        if not client.wait_for_service(timeout_sec=30.0):
             raise RuntimeError(f'{arm_name} collision-behavior service is unavailable.')
 
         request = SetFullCollisionBehavior.Request()

@@ -28,15 +28,31 @@ steps below are operator-run; nothing here moves the arms by itself.
    `franka_robot_state_broadcaster` runs but none of its topics are in
    `recording.yaml`, and no franka-control container logs survive.
 
-Prepared changes: fixed setter script (all eight fields, response
-verified, values logged); optional per-joint `max_command_deviation` cap
-in the safety gateway, default `[0.0]` = off, config comment carries the
-candidate values. Cap sizing evidence from the 2026-07-26 tracker session
-(engaged right arm, 67 s): per-joint |cmd - meas| p99
-0.034/0.018/0.021/0.021/0.021/0.078/0.056 rad, max
-0.045/0.040/0.035/0.037/0.040/0.090/0.111 rad. Candidate
-`[0.06, 0.06, 0.06, 0.06, 0.12, 0.2, 0.3]` sits above every measured
-maximum and bounds static contact torque at <= 36 Nm on every joint.
+Prepared changes (2026-07-29, second pass):
+
+- Setter script fixed (all eight fields, response verified, values logged)
+  and run automatically at bringup as a one-shot node in
+  `robot_control.launch.py` - the same pattern Franka's own
+  `franka_ros2_teleop` example uses, which calls the service from launch.
+- Contact torque gating in the safety gateway, always on: the gateway
+  subscribes to each arm's
+  `franka_robot_state_broadcaster/external_joint_torques`
+  (`tau_ext_hat_filtered`, the same signal Franka's teleop example feeds
+  back to its leader arm) and holds any joint whose external torque
+  exceeds its threshold from stepping in the loading direction - the sign
+  test needs no kinematics because tau_ext is already Jacobian-mapped.
+  The unloading direction always passes, so retreat releases instantly. A
+  sustained press settles near the threshold (a few Nm) instead of
+  winding up to the reflex. Missing or stale torque data fails open with
+  a throttled warning; the reflex thresholds below still protect.
+- An earlier optional `max_command_deviation` cap was removed in favor of
+  the gating: one contact mechanism, no off-by-default safety flags. Its
+  protection band (~36 Nm) overlapped what the reflex thresholds already
+  provide. (Recoverable from git history if the gating trial fails.)
+
+Threshold layering, all in torque units: gating thresholds (3-6 Nm,
+normal contact) < Franka reflex (35-60 Nm, faults) < controller clamp at
+the FR3 maxima (87/12 Nm) < firmware current and thermal protection.
 
 ### Item 2: unreachable pose or IK failure
 
@@ -70,30 +86,47 @@ carries the same facts per tick in an `ik` record.
 
 ## Operator validation plan
 
-Phase A - thresholds (config only, no behavior change in free space):
+Contact protection is hand-aware by policy: until the LinkerHand vendor
+force ratings are known, contact trials touch through the palm, wrist, or
+a pad - never fingertips first. The Franka wrench estimate cannot tell a
+fingertip from the palm.
 
-1. Bring up the stack; then `docker compose run --rm tools ros2 run
-   franka_fr3_arm_controllers set_bi_collision_behavior.py`. Expect both
-   "accepted" lines. If an arm answers "command exception error", the
-   running control loop refused it: retry immediately after
-   `franka-control` starts, before the first engagement, and note which
-   ordering worked in this file.
-2. Find the state topic (`ros2 topic list | grep robot_state`) and record
-   it during the trial with `ros2 bag record` into the session RUN_DIR.
-3. Controlled contact, one side engaged, compliant pad on the table:
-   descend slowly until touch, hold 2 s, retreat. If a reflex still
-   fires, read `K_F_ext_hat_K`/`O_F_ext_hat_K` at the reflex from the bag
-   and save `docker compose logs franka-control` before `down`.
-4. Success: a light touch no longer red-lights; the measured force at any
-   remaining reflex tells whether to move thresholds or go to Phase B.
+Phase A - verify bringup and calibrate the gating thresholds:
 
-Phase B - deviation cap (one flag, revert with `[0.0]`):
+1. Bring up the stack. Verify both `accepted the collision thresholds`
+   lines in the franka-control log, and the gateway's
+   `Contact torque gating active` line in teleop-control. If an arm
+   answers `command exception error`, the running control loop refused
+   the thresholds: note the timing and re-run the setter through the
+   tools container before the first engagement.
+2. Record calibration data: `ros2 bag record` both
+   `/{left,right}/franka_robot_state_broadcaster/external_joint_torques`
+   into the session RUN_DIR while doing 2-3 min of normal free-space
+   teleop, including fast sweeps.
+3. Offline, compute each joint's |tau_ext| p99 from the bag and set each
+   `contact_torque_thresholds` entry in `config/teleop_control.yaml`
+   comfortably above it. The shipped placeholders
+   `[6, 6, 6, 6, 3, 3, 3]` Nm are a guess: a false trigger only briefly
+   holds one joint's advance in one direction (mild), but calibrate
+   before trusting the feel.
+4. Free-space regression with the calibrated thresholds: normal teleop
+   must feel unchanged and the gateway log must show no torque warnings.
 
-5. Set the candidate cap in `config/teleop_control.yaml`; free-space-only
-   teleop for 2-3 min with `--debug-log`; replay `analyze_follow_log.py`
-   and require per-joint engaged p99 below each cap and no felt change.
-6. Repeat the contact trial: expect bounded push force, no reflex, and
-   immediate release when the operator retreats.
+Phase B - contact trial (one side engaged, pad on the table):
+
+5. Descend slowly onto the pad, keep pushing the tracker downward 2-3 s,
+   retreat. Expect: the arm stops at the surface with a bounded push
+   (roughly the threshold torque), no reflex, and immediate release on
+   retreat. Keep the bag recording running to read the settled
+   `tau_ext` plateau.
+6. If a reflex still fires, save `docker compose logs franka-control`
+   before `down` and read the wrench at the reflex from the bag; that
+   number decides between raising reflex thresholds further and lowering
+   the gating thresholds.
+7. Threshold philosophy for any adjustment, from Franka's own teleop
+   example: proximal reflex ceilings high (they run 85 Nm), wrist
+   thresholds tight (they run 11 Nm on joints 5-7) - the wrist is what
+   the dexterous hand hangs from.
 
 IK transparency check (any session): stage a full-arm stretch (expect
 `UNREACHABLE`), a wrist roll to the j7 stop (expect `LIMIT j7` - the

@@ -13,6 +13,9 @@ SOURCE_COMMAND_TOPIC = "/teleop/arm_commands"
 VALIDATED_COMMAND_TOPIC = "/teleop/validated_arm_commands"
 ARM_COMMAND_TOPIC = "/target_robot/joint_commands"
 ARM_STATE_TOPIC = "/{side}/franka/joint_states"
+EXTERNAL_TORQUES_TOPIC = (
+    "/{side}/franka_robot_state_broadcaster/external_joint_torques"
+)
 CONTROLLER_COMMAND_TOPIC = "/{side}/gello/joint_states"
 RESET_ACTIVE_TOPIC = "/reset_to_initial_pose/active"
 

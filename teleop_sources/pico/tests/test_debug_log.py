@@ -37,10 +37,12 @@ def test_follow_debug_log_records_raw_and_both_fk_streams(tmp_path):
     header, row = [
         json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
     ]
-    assert header["schema"] == "follow-debug.v3"
+    assert header["schema"] == "follow-debug.v4"
     assert row["left"]["raw_tracker"]["p"] == [1.0, 2.0, 3.0]
     assert row["left"]["tracker"]["p"] == [1.0, 2.0, 3.0]
-    assert row["left"]["ee_cmd"] == row["left"]["ee"]
+    assert row["left"]["ee_cmd"]["p"] == [1.0, 2.0, 3.0]
+    # The v1 compatibility duplicate is gone; readers use ee_cmd.
+    assert "ee" not in row["left"]
     assert row["left"]["ee_meas"]["p"] == [1.0, 2.0, 3.0]
     assert row["right"]["raw_tracker"] is None
     assert row["left"]["ik"] == {

@@ -62,7 +62,7 @@ class FollowDebugLogger:
         self._file.write(
             json.dumps(
                 {
-                    "schema": "follow-debug.v3",
+                    "schema": "follow-debug.v4",
                     "written_at": time.time(),
                     "fields": "t monotonic; q_measured, q_commanded 14 joints; "
                     "per side: engaged, raw_tracker/tracker/target/ee_cmd/"
@@ -105,8 +105,6 @@ class FollowDebugLogger:
                     "raw_tracker": _pose_record(raw_tracker_poses.get(side)),
                     "tracker": _pose_record(tracker_poses.get(side)),
                     "target": _pose_record(targets.get(side)),
-                    # Keep `ee` for compatibility with v1 analysis tools.
-                    "ee": _pose_record(ee_poses.get(side)),
                     "ee_cmd": _pose_record(ee_poses.get(side)),
                     "ee_meas": _pose_record(measured_ee_poses.get(side)),
                 }

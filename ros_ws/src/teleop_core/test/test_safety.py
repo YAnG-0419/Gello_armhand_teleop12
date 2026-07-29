@@ -9,25 +9,32 @@ import numpy as np
 import pytest
 
 from teleop_core.contract import command_names
+from teleop_core.joint_state import ordered_external_torques
 from teleop_core.safety import CommandSafetyGate
 
 
 # A valid FR3 ready pose (joint 4 only accepts [-3.077, -0.117] rad).
 HOME = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785] * 2)
+THRESHOLDS = [6.0, 6.0, 6.0, 6.0, 3.0, 3.0, 3.0]
 
 
 def make_gate(**overrides):
     settings = dict(
-        max_joint_speed=0.5, max_initial_delta=0.05, nominal_dt=0.01
+        max_joint_speed=0.5,
+        max_initial_delta=0.05,
+        nominal_dt=0.01,
+        contact_torque_thresholds=THRESHOLDS,
     )
     settings.update(overrides)
     return CommandSafetyGate(**settings)
 
 
-def send(gate, target, measured, now, sides=("left",)):
+def send(gate, target, measured, now, sides=("left",), torques=None):
     names = command_names(sides)
     positions = [target[i] for i in range(len(names))]
-    return gate.validate(sides, names, positions, measured, now)
+    return gate.validate(
+        sides, names, positions, measured, now, external_torques=torques
+    )
 
 
 def test_slew_limits_each_step():
@@ -39,77 +46,81 @@ def test_slew_limits_each_step():
     assert np.allclose(second.positions, HOME[:7] + 0.5 * 0.01)
 
 
-def test_deviation_cap_disabled_by_default():
+def test_no_torque_data_leaves_commands_ungated():
+    # Fail open: a missing estimate must not freeze teleoperation.
     gate = make_gate()
     target = HOME[:7] + 0.3
     send(gate, HOME[:7], HOME, now=0.0)
-    # The measured state never moves; without a cap the command walks all the
-    # way to the target at max_joint_speed.
     now, out = 0.0, None
     for _ in range(100):
         now += 0.01
-        out = send(gate, target, HOME, now=now)
+        out = send(gate, target, HOME, now=now, torques={"left": None})
     assert np.allclose(out.positions, target)
 
 
-def test_deviation_cap_bounds_command_minus_measured():
-    gate = make_gate(max_command_deviation=0.04)
+def test_pressing_against_external_torque_is_held():
+    gate = make_gate()
     target = HOME[:7] + 0.3
     send(gate, HOME[:7], HOME, now=0.0)
+    # The environment pushes joint 1 negative while the command advances
+    # positive: pressing. Joint 2 is loaded below threshold and advances.
+    torques = {"left": np.array([-10.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
     now, out = 0.0, None
     for _ in range(100):
         now += 0.01
-        out = send(gate, target, HOME, now=now)
-    assert np.max(np.abs(np.asarray(out.positions) - HOME[:7])) <= 0.04 + 1e-12
-
-
-def test_deviation_cap_releases_when_measured_catches_up():
-    gate = make_gate(max_command_deviation=0.04)
-    target = HOME[:7] + 0.1
-    send(gate, HOME[:7], HOME, now=0.0)
-    now = 0.0
-    for _ in range(100):
-        now += 0.01
-        send(gate, target, HOME, now=now)
-    # Once the obstruction is gone the measured state reaches the target and
-    # the command follows it without a residual offset.
-    measured = HOME.copy()
-    measured[:7] = target
-    out = None
-    for _ in range(100):
-        now += 0.01
-        out = send(gate, target, measured, now=now)
-    assert np.allclose(out.positions, target)
-
-
-def test_deviation_cap_applies_per_joint():
-    caps = [0.06, 0.06, 0.06, 0.06, 0.12, 0.2, 0.3]
-    gate = make_gate(max_command_deviation=caps)
-    target = HOME[:7] + 0.5
-    send(gate, HOME[:7], HOME, now=0.0)
-    now, out = 0.0, None
-    for _ in range(200):
-        now += 0.01
-        out = send(gate, target, HOME, now=now)
+        out = send(gate, target, HOME, now=now, torques=torques)
     deviation = np.asarray(out.positions) - HOME[:7]
-    assert np.allclose(deviation, caps)
-
-
-def test_zero_entries_leave_joints_uncapped():
-    gate = make_gate(max_command_deviation=[0.06, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    target = HOME[:7] + 0.3
-    send(gate, HOME[:7], HOME, now=0.0)
-    now, out = 0.0, None
-    for _ in range(100):
-        now += 0.01
-        out = send(gate, target, HOME, now=now)
-    deviation = np.asarray(out.positions) - HOME[:7]
-    assert deviation[0] == pytest.approx(0.06)
+    assert deviation[0] == 0.0
     assert np.allclose(deviation[1:], 0.3)
 
 
-def test_rejects_invalid_deviation_caps():
+def test_unloading_direction_always_passes():
+    gate = make_gate()
+    target = HOME[:7].copy()
+    target[0] -= 0.2
+    send(gate, HOME[:7], HOME, now=0.0)
+    # Same negative torque on joint 1, but the command retreats negative -
+    # the direction the external torque pushes toward. Never held.
+    torques = {"left": np.array([-10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
+    now, out = 0.0, None
+    for _ in range(100):
+        now += 0.01
+        out = send(gate, target, HOME, now=now, torques=torques)
+    assert np.asarray(out.positions)[0] == pytest.approx(target[0])
+
+
+def test_gating_releases_when_the_load_disappears():
+    gate = make_gate()
+    target = HOME[:7] + 0.1
+    send(gate, HOME[:7], HOME, now=0.0)
+    torques = {"left": np.array([-10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}
+    now = 0.0
+    for _ in range(50):
+        now += 0.01
+        held = send(gate, target, HOME, now=now, torques=torques)
+    assert np.asarray(held.positions)[0] == 0.0
+    out = None
+    for _ in range(100):
+        now += 0.01
+        out = send(gate, target, HOME, now=now, torques={"left": None})
+    assert np.allclose(out.positions, target)
+
+
+def test_rejects_invalid_thresholds():
+    for bad in ([6.0, 6.0], [6.0] * 6 + [-1.0], [0.0] * 7):
+        with pytest.raises(ValueError):
+            make_gate(contact_torque_thresholds=bad)
+
+
+def test_ordered_external_torques_by_name_and_position():
+    named = ordered_external_torques(
+        [f"fr3_joint{i}" for i in (3, 1, 2, 4, 5, 6, 7)],
+        [3.0, 1.0, 2.0, 4.0, 5.0, 6.0, 7.0],
+    )
+    assert named.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    positional = ordered_external_torques([], [1, 2, 3, 4, 5, 6, 7])
+    assert positional.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
     with pytest.raises(ValueError):
-        make_gate(max_command_deviation=-0.01)
+        ordered_external_torques(["fr3_joint1"], [1.0])
     with pytest.raises(ValueError):
-        make_gate(max_command_deviation=[0.05, 0.05])
+        ordered_external_torques([], [1.0, 2.0])

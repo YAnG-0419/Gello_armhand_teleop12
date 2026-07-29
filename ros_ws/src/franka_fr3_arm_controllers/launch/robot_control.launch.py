@@ -37,4 +37,15 @@ def generate_launch_description():
         name="reset_to_initial_pose",
         output="screen",
     ))
+    # One-shot: apply the raised collision thresholds to both arms as soon as
+    # the parameter services appear. Nothing else sets them - without this
+    # call the arms keep the robot's low defaults. The node exits after both
+    # arms accept; a rejection or timeout leaves a loud error in the
+    # franka-control log without stopping the launch.
+    ld.add_action(Node(
+        package="franka_fr3_arm_controllers",
+        executable="set_bi_collision_behavior.py",
+        name="collision_behavior_setter",
+        output="screen",
+    ))
     return ld

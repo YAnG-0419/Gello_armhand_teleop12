@@ -23,42 +23,33 @@ class ValidatedCommand:
 
 class CommandSafetyGate:
     def __init__(self, max_joint_speed, max_initial_delta, nominal_dt,
-                 max_command_deviation=None):
+                 contact_torque_thresholds):
         if max_joint_speed <= 0 or max_initial_delta <= 0 or nominal_dt <= 0:
             raise ValueError("Safety limits must be positive.")
         self.max_joint_speed = float(max_joint_speed)
         self.max_initial_delta = float(max_initial_delta)
         self.nominal_dt = float(nominal_dt)
-        # Optional cap on |command - measured| per joint; None or all-zero
-        # disables it. The slew limit alone lets the command walk away from a
-        # physically blocked arm at max_joint_speed; with a stiff joint-
-        # impedance controller the torque grows as k_gains * deviation until
-        # the Franka reflex fires. Capping the deviation bounds the static
-        # contact torque at k_gains * cap and releases the windup the moment
-        # the operator retreats. The cap is per joint because free-space lag
-        # is: measured maxima on the 2026-07-26 tracker session were 0.045
-        # rad on j1 but 0.111 rad on j7, while the torque budget divides by
-        # each joint's k gain. A scalar applies to all joints; a zero entry
-        # leaves that joint uncapped.
-        self.max_command_deviation = self._deviation_limits(max_command_deviation)
+        # Contact gating: a joint whose measured external torque exceeds its
+        # threshold may only move the command in the unloading direction.
+        # tau_ext is already Jacobian-mapped by libfranka, so the sign test
+        # needs no kinematics: stepping a joint against its external torque
+        # does positive work on the contact and presses harder. Without the
+        # gate the slew limit walks the command into an obstacle at
+        # max_joint_speed while the stiff impedance turns the deviation into
+        # k_gains * error torque until the Franka reflex fires.
+        thresholds = np.asarray(contact_torque_thresholds, dtype=float).reshape(-1)
+        if (
+            thresholds.size != 7
+            or not np.all(np.isfinite(thresholds))
+            or np.any(thresholds <= 0)
+        ):
+            raise ValueError(
+                "contact_torque_thresholds needs 7 finite positive values (Nm)."
+            )
+        self.contact_torque_thresholds = thresholds
         self.active = {side: False for side in SIDES}
         self.last_output = {side: None for side in SIDES}
         self.last_time = {side: None for side in SIDES}
-
-    @staticmethod
-    def _deviation_limits(max_command_deviation):
-        if max_command_deviation is None:
-            return None
-        limits = np.asarray(max_command_deviation, dtype=float).reshape(-1)
-        if limits.size == 1:
-            limits = np.full(7, limits[0])
-        if limits.size != 7 or not np.all(np.isfinite(limits)) or np.any(limits < 0):
-            raise ValueError(
-                "max_command_deviation needs 1 or 7 finite non-negative values."
-            )
-        if not np.any(limits > 0):
-            return None
-        return np.where(limits > 0, limits, np.inf)
 
     def reset(self):
         for side in SIDES:
@@ -66,7 +57,16 @@ class CommandSafetyGate:
             self.last_output[side] = None
             self.last_time[side] = None
 
-    def validate(self, active_sides, names, positions, measured_q, now):
+    def validate(self, active_sides, names, positions, measured_q, now,
+                 external_torques=None):
+        """Validate one command tick.
+
+        external_torques maps side -> 7 external joint torques (Nm) from the
+        robot state broadcaster, or None when that side's estimate is missing
+        or stale. A missing estimate disables gating for that side (fail
+        open): the reflex thresholds below still protect, while failing
+        closed would freeze teleoperation on a dropped diagnostic topic.
+        """
         active_sides = tuple(active_sides)
         names = tuple(names)
         positions = tuple(float(value) for value in positions)
@@ -105,13 +105,17 @@ class CommandSafetyGate:
             command = self.last_output[side] + np.clip(
                 target - self.last_output[side], -max_step, max_step
             )
-            if self.max_command_deviation is not None:
-                current = measured[offset:offset + 7]
-                command = np.clip(
-                    command,
-                    current - self.max_command_deviation,
-                    current + self.max_command_deviation,
-                )
+            torques = (external_torques or {}).get(side)
+            if torques is not None:
+                torques = np.asarray(torques, dtype=float)
+                step = command - self.last_output[side]
+                # Loaded joint stepping against its external torque = pressing
+                # harder; hold that joint. The unloading direction always
+                # passes, so retreat releases immediately.
+                pressing = (
+                    np.abs(torques) > self.contact_torque_thresholds
+                ) & (np.sign(step) == -np.sign(torques))
+                command = np.where(pressing, self.last_output[side], command)
             self.last_output[side] = command
             self.last_time[side] = now
             output_names.extend(side_names)

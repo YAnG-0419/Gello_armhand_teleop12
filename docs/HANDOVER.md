@@ -38,11 +38,11 @@ Status:
 
 Audited offline 2026-07-29; evidence and the operator plan:
 [CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md). The collision-behavior
-script never ran (nothing invokes it) and would have sent zero acceleration
-thresholds; fixed, response-checked, now a manual bringup step. Structural
-cause: the gateway slew walks the command into an obstacle while the stiff
-impedance turns deviation into torque - a per-joint deviation cap is
-prepared in the gateway (`max_command_deviation`, default off); trials pend.
+script never ran and was doubly broken; fixed, and applied automatically at
+bringup (verify both "accepted" lines). The gateway now gates commands on
+measured external joint torques, always on: a loaded joint may only move
+toward unloading; stale torque data fails open. Pending: calibrate the
+per-joint thresholds from a free-space tau_ext bag, then the pad trial.
 
 ### 2. IK transparency: unreachable pose, or IK failure?
 

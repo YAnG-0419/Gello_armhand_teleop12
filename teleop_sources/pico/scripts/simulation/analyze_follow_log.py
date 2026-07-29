@@ -284,9 +284,8 @@ def analyze(path, clamp):
         f"command minus measured joints: median "
         f"{np.median(cmd_vs_meas):.3f} rad, p95 {np.percentile(cmd_vs_meas, 95):.3f} rad"
     )
-    # Per-joint p99 over engaged ticks sizes the gateway's
-    # max_command_deviation cap: it must sit above the free-space lag of
-    # every joint (see teleop_control.yaml). Disengaged ticks are excluded -
+    # Per-joint p99 over engaged ticks: the real arm's following lag behind
+    # the command, one joint at a time. Disengaged ticks are excluded -
     # resets legitimately move the arm away from the held command.
     deviation = np.abs(q_cmd - q_meas)
     for side, offset in (("left", 0), ("right", 7)):
