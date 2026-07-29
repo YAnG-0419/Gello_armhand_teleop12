@@ -106,11 +106,13 @@ export O30_TICKS_AT_UPPER='20-comma-separated-ticks'
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --arm-source motion-trackers \
-  --hand-source right-only-manus
+scripts/run_teleop.sh
 ```
+
+The wrapper creates a fresh RUN_DIR, prints it, and records both debug logs.
+Prefer it over pasting the multi-line command: a clipboard missing its final
+newline once left the command pending at the prompt, and the next paste
+glued onto its log argument, burying the recording.
 
 Tracker presence is per-side at runtime: startup needs at least one tracker,
 and each arm engages only while its own tracker is live — a missing tracker's
@@ -138,9 +140,7 @@ docker compose up
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --arm-source motion-trackers --hand-source pico
+scripts/run_teleop.sh --hand-source pico
 ```
 
 `--arm-source motion-trackers` is the recommended choice: measured quiet EE tremor is

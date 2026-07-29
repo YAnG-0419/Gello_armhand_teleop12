@@ -134,6 +134,10 @@ class ControllerInput:
             xrt.close()
 
 
+_PASTE_START = "\x1b[200~"
+_PASTE_END = "\x1b[201~"
+
+
 class KeyboardActivation:
     def __init__(self, device: str, sides: tuple[str, ...] = SIDES) -> None:
         if not sides or set(sides).difference(SIDES):
@@ -142,12 +146,17 @@ class KeyboardActivation:
         self.sides = tuple(sides)
         self.active = {side: False for side in SIDES}
         self.requests = {"open_hands": False, "reset": False}
+        self._escape_tail = ""
+        self._in_paste = False
         self.fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         if not os.isatty(self.fd):
             os.close(self.fd)
             raise ValueError(f"Keyboard activation device is not a TTY: {device}")
         self.saved_attributes = termios.tcgetattr(self.fd)
         tty.setcbreak(self.fd)
+        # Bracketed paste: the terminal marks pasted text so _command_keys can
+        # discard it wholesale instead of executing it as commands.
+        os.write(self.fd, b"\x1b[?2004h")
         self._show(
             "Keyboard: [space] toggle configured sides, [l]/[r] toggle one side, "
             "[x] disable all, [o] open hands, [h] reset to initial pose, "
@@ -171,29 +180,57 @@ class KeyboardActivation:
     def show(self, message: str) -> None:
         self._show(message)
 
-    @staticmethod
-    def _command_keys(keys: bytes):
-        """Yield command letters, swallowing CSI/SS3 escape sequences.
+    def _command_keys(self, keys: bytes):
+        """Yield command letters; swallow escape sequences and whole pastes.
 
         Home sends ESC [ H; handling bytes one at a time would read that H as
         the reset command and move the robots. Arrow and function keys alias
-        the same way, so whole escape sequences are dropped.
+        the same way, so whole escape sequences are dropped. Worse, a shell
+        command pasted into the running operator terminal is full of h/r/o
+        and spaces - a measured incident fed a whole runbook block to the
+        keyboard. Bracketed paste mode (enabled at init) wraps pastes in
+        ESC[200~ .. ESC[201~, and everything between the markers is
+        discarded. State survives sequences split across 64-byte reads.
         """
-        data = keys.decode(errors="ignore")
+        text = self._escape_tail + keys.decode(errors="ignore")
+        self._escape_tail = ""
         index = 0
-        while index < len(data):
-            char = data[index]
-            index += 1
+        while index < len(text):
+            if self._in_paste:
+                end = text.find(_PASTE_END, index)
+                if end == -1:
+                    # Keep only a possible partial terminator for next read.
+                    self._escape_tail = text[
+                        max(index, len(text) - (len(_PASTE_END) - 1)) :
+                    ]
+                    return
+                index = end + len(_PASTE_END)
+                self._in_paste = False
+                continue
+            char = text[index]
             if char != "\x1b":
                 yield char.lower()
+                index += 1
                 continue
-            if index < len(data) and data[index] in "[O":
-                index += 1
-                while index < len(data) and not (
-                    data[index].isalpha() or data[index] == "~"
-                ):
-                    index += 1
-                index += 1
+            follower = index + 1
+            if follower >= len(text):
+                # Chunk ended mid-sequence; wait for the rest.
+                self._escape_tail = text[index:]
+                return
+            if text[follower] not in "[O":
+                index += 1  # bare ESC: drop it, reconsider the follower
+                continue
+            end = follower + 1
+            while end < len(text) and not (
+                text[end].isalpha() or text[end] == "~"
+            ):
+                end += 1
+            if end >= len(text):
+                self._escape_tail = text[index:]
+                return
+            if text[index : end + 1] == _PASTE_START:
+                self._in_paste = True
+            index = end + 1
 
     def poll(self) -> dict[str, bool]:
         changed = False
@@ -260,6 +297,10 @@ class KeyboardActivation:
         fd = self.fd
         self.fd = None
         try:
+            try:
+                os.write(fd, b"\x1b[?2004l")
+            except OSError:
+                pass
             termios.tcsetattr(fd, termios.TCSADRAIN, self.saved_attributes)
         finally:
             os.close(fd)

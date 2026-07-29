@@ -32,12 +32,29 @@ def _pose_record(pose: Pose | None):
     }
 
 
+def _existing_log_path(path: str | Path) -> Path:
+    """Require the log's directory to exist already, loudly.
+
+    Creating parents silently has buried recordings twice: a mangled
+    multi-line paste glued the next command onto the log argument, and
+    mkdir(parents=True) happily materialized the garbage path. The runbook
+    (and scripts/run_teleop.sh) create RUN_DIR first, so a missing parent
+    means the argument itself is wrong - refuse at startup.
+    """
+    resolved = Path(path)
+    if not resolved.parent.is_dir():
+        raise ValueError(
+            f"debug log directory does not exist: {resolved.parent} - "
+            "create RUN_DIR first (was the command pasted intact?)"
+        )
+    return resolved
+
+
 class FollowDebugLogger:
     """Append one row per control tick; safe to leave enabled for whole runs."""
 
     def __init__(self, path: str | Path, flush_every: int = 100) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = _existing_log_path(path)
         self._file = self.path.open("w", encoding="utf-8")
         self._flush_every = int(flush_every)
         self._rows = 0
@@ -113,8 +130,7 @@ class HandRetargetDebugLogger:
     """Buffered JSONL logger for live skeleton-to-joint fidelity analysis."""
 
     def __init__(self, path: str | Path, flush_every: int = 60) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = _existing_log_path(path)
         self._file = self.path.open("w", encoding="utf-8")
         self._flush_every = int(flush_every)
         self._rows = 0

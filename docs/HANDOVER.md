@@ -56,19 +56,19 @@ USB         right O30i, libcanbus device a8fa:8598, request ID 0x01
 PICO trackers: left PC2310MLL5060501G, right PC2310MLL5290914G
 ```
 
-Teleop command (create a FRESH RUN_DIR every session - the logger truncates
-existing files and a reused shell variable has already destroyed two
-recordings):
+Teleop command - use the wrapper, which creates a fresh RUN_DIR itself and
+prints it. Three recordings have now been lost to hand-pasted multi-line
+variants (truncation twice, and once a clipboard missing its final newline
+left the command pending so the next paste glued onto its log argument);
+the loggers also now refuse to start when the log directory does not exist:
 
 ```bash
-RUN_DIR=/home/descfly/franka_teleop_data/diagnostics/$(date +%Y%m%d_%H%M%S)
-mkdir -p "$RUN_DIR"
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --arm-source motion-trackers --hand-source pico \
-  --debug-log "$RUN_DIR/ee_jitter.jsonl" \
-  --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl"
+scripts/run_teleop.sh
 ```
+
+Defaults to motion trackers plus right-only MANUS with both debug logs.
+Extra flags pass through and later flags win (`--hand-source pico`,
+`--ui plain`); `TELEOP_RUN_DIR` overrides the run directory.
 
 The operator terminal runs a three-pane TUI by default (status, operator
 feedback, captured process output); `--ui plain` restores line output.

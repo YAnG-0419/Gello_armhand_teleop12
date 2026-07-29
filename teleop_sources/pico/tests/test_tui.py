@@ -47,16 +47,41 @@ def test_compose_screen_colors_alerts_and_dims_process_noise():
     assert tui.PROCESS_SGR in payload
 
 
+def _parser() -> KeyboardActivation:
+    keyboard = object.__new__(KeyboardActivation)
+    keyboard._escape_tail = ""
+    keyboard._in_paste = False
+    return keyboard
+
+
 def test_command_keys_pass_plain_letters_through():
-    keys = list(KeyboardActivation._command_keys(b"xRq "))
-    assert keys == ["x", "r", "q", " "]
+    assert list(_parser()._command_keys(b"xRq ")) == ["x", "r", "q", " "]
 
 
 def test_command_keys_swallow_escape_sequences():
     # Home sends ESC [ H and must not alias onto the reset command.
-    assert list(KeyboardActivation._command_keys(b"\x1b[H")) == []
+    assert list(_parser()._command_keys(b"\x1b[H")) == []
     # Arrows, F-keys (CSI ~), SS3 Home, and a bare ESC are all dropped.
-    assert list(
-        KeyboardActivation._command_keys(b"\x1b[A\x1b[15~\x1bOHx")
-    ) == ["x"]
-    assert list(KeyboardActivation._command_keys(b"\x1b")) == []
+    assert list(_parser()._command_keys(b"\x1b[A\x1b[15~\x1bOHx")) == ["x"]
+    assert list(_parser()._command_keys(b"\x1b")) == []
+
+
+def test_command_keys_survive_sequences_split_across_reads():
+    parser = _parser()
+    assert list(parser._command_keys(b"\x1b[")) == []
+    # The rest of a split Home sequence must still be swallowed whole.
+    assert list(parser._command_keys(b"Hx")) == ["x"]
+
+
+def test_command_keys_discard_bracketed_pastes_entirely():
+    # The measured incident: a runbook block pasted into the running
+    # operator terminal is full of h/r/o and spaces - every one a command.
+    parser = _parser()
+    pasted = b"\x1b[200~mkdir -p /home/x h o r q\x1b[201~y"
+    assert list(parser._command_keys(pasted)) == ["y"]
+
+    # Pastes span many 64-byte reads; the guard must hold across chunks.
+    parser = _parser()
+    assert list(parser._command_keys(b"\x1b[200~conda run h")) == []
+    assert list(parser._command_keys(b"more o r\x1b[201")) == []
+    assert list(parser._command_keys(b"~z")) == ["z"]

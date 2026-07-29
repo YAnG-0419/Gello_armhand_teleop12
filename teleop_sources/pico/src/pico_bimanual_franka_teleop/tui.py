@@ -25,7 +25,6 @@ from .types import SIDES
 from .xr_input import KeyboardActivation
 
 STATUS_ROWS = 2
-OPERATOR_ROWS = 6
 HELP = "space/l/r=engage  x=stop  o=open hands  h=HOME (moves arms)  q=quit"
 
 # One accent each: status stands out, frames and process noise recede, and a
@@ -71,8 +70,10 @@ def compose_screen(
     """Build one full-screen repaint as a single escape-coded payload. Pure."""
     width = max(20, int(width))
     height = max(10, int(height))
-    operator_rows = min(OPERATOR_ROWS, max(2, height // 4))
-    process_rows = height - STATUS_ROWS - operator_rows - 2
+    # Split the body half and half between the operator and process panes.
+    body = height - STATUS_ROWS - 2
+    operator_rows = body // 2
+    process_rows = body - operator_rows
 
     rows: list[tuple[str, str]] = []
     chunks = [
