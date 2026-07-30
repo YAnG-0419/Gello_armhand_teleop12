@@ -62,17 +62,19 @@ class FollowDebugLogger:
         self._file.write(
             json.dumps(
                 {
-                    "schema": "follow-debug.v5",
+                    "schema": "follow-debug.v6",
                     "written_at": time.time(),
                     "fields": "t monotonic; q_measured, q_commanded 14 joints; "
                     "per side: engaged, raw_tracker/tracker/target/ee_cmd/"
                     "ee_meas poses with rotations as world-frame rotation "
                     "vectors; ik = {ep m, eo rad, sat 1-based saturated "
                     "joints, lim [joint, margin rad] near position limits} "
-                    "for sides the IK stepped; feed = {ts SDK motion "
-                    "timestamp ns, age s since the last new frame, ok "
-                    "snapshot readable, n trackers the SDK listed} when the "
-                    "input source reports it",
+                    "for sides the IK stepped; feed = {frame_ts SDK device "
+                    "frame timestamp ns, ts SDK motion timestamp ns, seq "
+                    "local Motion callback sequence, age s since the last "
+                    "new callback, callback_errors rejected callback fields/"
+                    "frames, ok snapshot readable, n trackers the SDK listed} "
+                    "when the input source reports it",
                 }
             )
             + "\n"

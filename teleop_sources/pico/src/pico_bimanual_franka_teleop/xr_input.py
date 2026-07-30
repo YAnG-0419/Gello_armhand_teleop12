@@ -365,6 +365,11 @@ class MotionTrackerInput:
     ) -> None:
         import xrobotoolkit_sdk as xrt
 
+        if not hasattr(xrt, "get_motion_snapshot"):
+            raise RuntimeError(
+                "xrobotoolkit_sdk lacks atomic motion snapshots; rebuild "
+                "the vendored binding before using motion trackers"
+            )
         if set(serials) != set(SIDES) or any(not value for value in serials.values()):
             raise ValueError("Both motion tracker serial numbers are required")
         if serials["left"] == serials["right"]:
@@ -397,6 +402,8 @@ class MotionTrackerInput:
         self.max_angular_speed = float(max_angular_speed)
         self.last_motion_timestamp: int | None = None
         self.last_sdk_timestamp: int | None = None
+        self.last_motion_frame_sequence: int | None = None
+        self.last_sdk_frame_sequence: int | None = None
         self.last_motion_update_at: float | None = None
         self.last_poses: dict[str, Pose | None] = {side: None for side in SIDES}
         self.last_position_changed_at = {side: None for side in SIDES}
@@ -427,31 +434,21 @@ class MotionTrackerInput:
         reported in `readiness`, omitted from the returned poses, and the
         other side keeps working.
         """
-        for _ in range(3):
-            timestamp_before = int(self.xrt.get_motion_timestamp_ns())
-            count = int(self.xrt.num_motion_data_available())
-            serials = list(self.xrt.get_motion_tracker_serial_numbers())
-            poses = list(self.xrt.get_motion_tracker_pose())
-            timestamp_after = int(self.xrt.get_motion_timestamp_ns())
-            self.last_sdk_timestamp = timestamp_after
-            if timestamp_before > 0 and timestamp_before == timestamp_after:
-                break
-        else:
+        sequence, timestamp, serials, poses = self.xrt.get_motion_snapshot()
+        sequence = int(sequence)
+        timestamp = int(timestamp)
+        serials = list(serials)
+        poses = list(poses)
+        self.last_sdk_timestamp = timestamp
+        self.last_sdk_frame_sequence = sequence
+        count = len(serials)
+        if timestamp <= 0:
             self.detected_serials = serials
             for side in SIDES:
-                if self.serials[side] not in serials:
-                    self.readiness[side] = (
-                        f"missing ({self.serials[side]}); detected={serials}"
-                    )
-                else:
-                    self.readiness[side] = (
-                        "detected but SDK motion timestamp is unavailable "
-                        f"or unstable ({timestamp_before}->{timestamp_after})"
-                    )
+                self.readiness[side] = "SDK motion frame is not available yet"
             return None
         if (
-            count != len(serials)
-            or count != len(poses)
+            count != len(poses)
             or len(set(serials)) != len(serials)
         ):
             self.detected_serials = serials
@@ -478,7 +475,7 @@ class MotionTrackerInput:
             else:
                 self.readiness[side] = "ready"
                 selected[side] = raw_pose
-        return timestamp_after, selected, serials
+        return timestamp, selected, serials
 
     def _wait_until_ready(self, timeout: float) -> None:
         """Best-effort wait for a tracker; never blocks the session.
@@ -497,6 +494,7 @@ class MotionTrackerInput:
                 timestamp, raw_poses, _ = snapshot
                 now = time.monotonic()
                 self.last_motion_timestamp = timestamp
+                self.last_motion_frame_sequence = self.last_sdk_frame_sequence
                 self.last_motion_update_at = now
                 for side, raw_pose in raw_poses.items():
                     self.last_poses[side] = _apply_local_transform(
@@ -536,13 +534,27 @@ class MotionTrackerInput:
     def debug_feed_state(self) -> dict:
         """SDK-feed forensics for the follow-debug log.
 
-        Distinguishes, per tick, the three feed conditions the operator
-        cannot tell apart from a 'missing or stale' line: a consistency-read
-        race (ok=False while ts keeps advancing), a frozen SDK timestamp
-        (ok=True, age grows), and the headset not listing trackers (n drops).
+        `seq` is the authoritative local callback-arrival clock. `ts` is a
+        vendor payload field; the remaining fields separate callback parser
+        errors, feed loss, and tracker presence.
         """
+        frame_timestamp_reader = getattr(self.xrt, "get_time_stamp_ns", None)
+        callback_error_reader = getattr(
+            self.xrt, "get_callback_error_count", None
+        )
         return {
+            "frame_ts": (
+                int(frame_timestamp_reader())
+                if frame_timestamp_reader is not None
+                else None
+            ),
             "ts": self.last_sdk_timestamp,
+            "seq": self.last_sdk_frame_sequence,
+            "callback_errors": (
+                int(callback_error_reader())
+                if callback_error_reader is not None
+                else None
+            ),
             "age": (
                 None
                 if self.last_motion_update_at is None
@@ -558,6 +570,7 @@ class MotionTrackerInput:
         activations: dict[str, bool],
         timestamp: int,
         now: float,
+        frame_elapsed: float | None,
     ) -> str | None:
         previous_timestamp = self.last_motion_timestamp
         if previous_timestamp is None:
@@ -566,10 +579,11 @@ class MotionTrackerInput:
             for side in SIDES:
                 self.readiness[side] = "SDK motion timestamp moved backwards"
             return "motion tracker timestamp moved backwards"
-        if timestamp == previous_timestamp:
-            return None
-
-        elapsed = (timestamp - previous_timestamp) * 1e-9
+        elapsed = (
+            (timestamp - previous_timestamp) * 1e-9
+            if timestamp > previous_timestamp
+            else frame_elapsed
+        )
         faults = []
         for side in poses:
             previous_pose = self.last_poses[side]
@@ -590,8 +604,16 @@ class MotionTrackerInput:
                     pin.log3(poses[side].rotation @ previous_pose.rotation.T)
                 )
             )
-            linear_speed = position_delta / elapsed
-            angular_speed = rotation_delta / elapsed
+            linear_speed = (
+                position_delta / elapsed
+                if elapsed is not None and elapsed > 0.0
+                else None
+            )
+            angular_speed = (
+                rotation_delta / elapsed
+                if elapsed is not None and elapsed > 0.0
+                else None
+            )
             side_fault = None
             if position_delta > self.max_position_jump:
                 side_fault = (
@@ -601,11 +623,17 @@ class MotionTrackerInput:
                 side_fault = (
                     f"{side} tracker rotation jumped {rotation_delta:.3f} rad"
                 )
-            elif linear_speed > self.max_linear_speed:
+            elif (
+                linear_speed is not None
+                and linear_speed > self.max_linear_speed
+            ):
                 side_fault = (
                     f"{side} tracker linear speed {linear_speed:.3f} m/s"
                 )
-            elif angular_speed > self.max_angular_speed:
+            elif (
+                angular_speed is not None
+                and angular_speed > self.max_angular_speed
+            ):
                 side_fault = (
                     f"{side} tracker angular speed {angular_speed:.3f} rad/s"
                 )
@@ -645,51 +673,35 @@ class MotionTrackerInput:
         snapshot = self._snapshot()
         self.last_snapshot_ok = snapshot is not None
         now = time.monotonic()
+        frame_elapsed = None
         if snapshot is not None:
             timestamp, raw_poses, _ = snapshot
-            if timestamp != self.last_motion_timestamp:
+            sequence = self.last_sdk_frame_sequence
+            new_frame = sequence != self.last_motion_frame_sequence
+            if new_frame:
+                if self.last_motion_update_at is not None:
+                    frame_elapsed = now - self.last_motion_update_at
                 self.last_motion_update_at = now
+            self.last_motion_frame_sequence = sequence
         stale = (
             self.last_motion_update_at is None
             or now - self.last_motion_update_at > self.stale_timeout
         )
-        if snapshot is None or stale:
-            if stale:
-                if snapshot is not None and self.last_motion_update_at is not None:
-                    age = now - self.last_motion_update_at
-                    for side in SIDES:
-                        self.readiness[side] = (
-                            f"stale: no new SDK motion frame for {age:.2f}s"
-                        )
-                self.disable_all("motion tracker data missing or stale")
-                return None
-            # An unreadable snapshot inside the stale grace holds the last
-            # accepted poses. Preserve only sides that were already engaged:
-            # operator disengagement remains immediate, while a new engagement
-            # cannot start from cached tracker data. Returning a sample (rather
-            # than None) is essential because the control loop interprets None
-            # as inactive, resets its relative-pose anchors, and drops the
-            # active-side flags sent to the safety gateway.
-            held_activations = {
-                side: bool(activations[side] and self.last_activations[side])
-                for side in SIDES
-            }
-            if any(
-                held_activations[side] and self.last_poses[side] is None
-                for side in SIDES
-            ):
-                self.disable_all("motion tracker hold has no accepted pose")
-                return None
-            self.last_activations = held_activations
-            held_poses = {
-                side: (
-                    self.last_poses[side]
-                    if self.last_poses[side] is not None
-                    else Pose(np.zeros(3), np.eye(3))
-                )
-                for side in SIDES
-            }
-            return TeleopSample(held_poses, held_activations, now)
+        if snapshot is None:
+            # The native binding now returns one atomic frame, so an invalid
+            # snapshot is data corruption/unavailability, not a benign race
+            # among several Python getters. Never hold engagement through it.
+            self.disable_all("motion tracker snapshot is invalid")
+            return None
+        if stale:
+            if self.last_motion_update_at is not None:
+                age = now - self.last_motion_update_at
+                for side in SIDES:
+                    self.readiness[side] = (
+                        f"stale: no new SDK motion frame for {age:.2f}s"
+                    )
+            self.disable_all("motion tracker data missing or stale")
+            return None
         poses = {
             side: _apply_local_transform(
                 xr_pose_to_world(raw_pose),
@@ -714,7 +726,9 @@ class MotionTrackerInput:
             self.last_poses[side] = None
             self.last_position_changed_at[side] = None
             self.last_rotation_changed_at[side] = None
-        motion_fault = self._motion_fault(poses, activations, timestamp, now)
+        motion_fault = self._motion_fault(
+            poses, activations, timestamp, now, frame_elapsed
+        )
         self.last_motion_timestamp = timestamp
         if motion_fault is not None:
             self.disable_all(motion_fault)

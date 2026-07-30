@@ -10,6 +10,7 @@ class _FakeXrt:
     def __init__(self) -> None:
         self.closed = False
         self.timestamp = 123
+        self.motion_sequence = 1
         self.serials = ["RIGHT-SN", "LEFT-SN"]
         self.poses = [
             [0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 1.0],
@@ -24,6 +25,23 @@ class _FakeXrt:
 
     def get_motion_timestamp_ns(self) -> int:
         return self.timestamp
+
+    def get_time_stamp_ns(self) -> int:
+        return self.timestamp
+
+    def get_motion_frame_sequence(self) -> int:
+        return self.motion_sequence
+
+    def get_motion_snapshot(self):
+        return (
+            self.motion_sequence,
+            self.timestamp,
+            list(self.serials),
+            [list(pose) for pose in self.poses],
+        )
+
+    def get_callback_error_count(self) -> int:
+        return 0
 
     def num_motion_data_available(self) -> int:
         return len(self.serials)
@@ -375,11 +393,12 @@ def test_live_position_with_frozen_rotation_disengages(monkeypatch) -> None:
     assert tracker_input.keyboard.active == {"left": False, "right": False}
 
 
-def test_transient_snapshot_glitch_holds_engagement(monkeypatch) -> None:
-    # 20260729_183150: 1-2 tick sample dropouts mid-engagement while the loop
-    # cadence stayed a perfect 11 ms. An unreadable snapshot inside the stale
-    # grace is a consistency-read race with a healthy feed, not a tracker
-    # loss: engagement must survive it.
+def test_callback_sequence_is_fresh_when_payload_timestamp_freezes(
+    monkeypatch,
+) -> None:
+    # Observed on 20260730_144406: MotionTimeStampNs froze even though the
+    # operator confirmed that both trackers remained live. The local callback
+    # sequence, not that unreliable payload field, is the feed-liveness clock.
     fake_xrt = _FakeXrt()
     monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
     tracker_input = _create_tracker_input()
@@ -387,70 +406,18 @@ def test_transient_snapshot_glitch_holds_engagement(monkeypatch) -> None:
     fake_xrt.timestamp += 20_000_000
     assert tracker_input.sample() is not None
 
-    # The timestamp now changes between every read: the snapshot triple-read
-    # can never observe a stable pair, exactly like a scheduling-delay race.
-    ticker = iter(range(1, 10_000))
-    monkeypatch.setattr(
-        fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
-    )
-    held = tracker_input.sample()
-    assert held is not None
-    assert held.activations == {"left": True, "right": True}
-    assert tracker_input.keyboard.active == {"left": True, "right": True}
-    assert tracker_input.last_activations == {"left": True, "right": True}
-
-    monkeypatch.setattr(
-        fake_xrt, "get_motion_timestamp_ns", lambda: 999_000_000
-    )
+    tracker_input.last_motion_update_at -= 1.0
+    fake_xrt.motion_sequence += 1
     sample = tracker_input.sample()
+
     assert sample is not None
-    assert sample.activations == {"left": True, "right": True}
+    state = tracker_input.debug_feed_state()
+    assert state["seq"] == fake_xrt.motion_sequence
+    assert state["age"] < 0.1
     tracker_input.close()
 
 
-def test_snapshot_glitch_does_not_admit_new_engagement(monkeypatch) -> None:
-    fake_xrt = _FakeXrt()
-    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    tracker_input = _create_tracker_input()
-    tracker_input.keyboard.active = {"left": False, "right": True}
-    fake_xrt.timestamp += 20_000_000
-    assert tracker_input.sample() is not None
-
-    tracker_input.keyboard.active["left"] = True
-    ticker = iter(range(1, 10_000))
-    monkeypatch.setattr(
-        fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
-    )
-    held = tracker_input.sample()
-
-    assert held is not None
-    assert held.activations == {"left": False, "right": True}
-    assert tracker_input.last_activations == {"left": False, "right": True}
-    tracker_input.close()
-
-
-def test_snapshot_glitch_honors_operator_disengagement(monkeypatch) -> None:
-    fake_xrt = _FakeXrt()
-    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
-    tracker_input = _create_tracker_input()
-    tracker_input.keyboard.active = {"left": True, "right": True}
-    fake_xrt.timestamp += 20_000_000
-    assert tracker_input.sample() is not None
-
-    tracker_input.keyboard.active["left"] = False
-    ticker = iter(range(1, 10_000))
-    monkeypatch.setattr(
-        fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
-    )
-    held = tracker_input.sample()
-
-    assert held is not None
-    assert held.activations == {"left": False, "right": True}
-    assert tracker_input.last_activations == {"left": False, "right": True}
-    tracker_input.close()
-
-
-def test_persistent_snapshot_glitch_disables_after_stale_timeout(
+def test_frozen_pose_fault_runs_when_sdk_motion_timestamp_is_frozen(
     monkeypatch,
 ) -> None:
     fake_xrt = _FakeXrt()
@@ -460,11 +427,29 @@ def test_persistent_snapshot_glitch_disables_after_stale_timeout(
     fake_xrt.timestamp += 20_000_000
     assert tracker_input.sample() is not None
 
-    ticker = iter(range(1, 10_000))
+    # Only rotation changes. The unchanged SDK timestamp must not bypass the
+    # independent position-freeze check.
+    tracker_input.last_position_changed_at["left"] -= 2.0
+    fake_xrt.poses[1][3] += 0.01
+    fake_xrt.motion_sequence += 1
+
+    assert tracker_input.sample() is None
+    assert tracker_input.readiness["left"] == "left tracker position is frozen"
+    assert tracker_input.keyboard.active == {"left": False, "right": False}
+    tracker_input.close()
+
+
+def test_invalid_atomic_snapshot_disengages(monkeypatch) -> None:
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": True, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
     monkeypatch.setattr(
-        fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
+        fake_xrt, "get_motion_snapshot", lambda: (999, 0, [], [])
     )
-    tracker_input.last_motion_update_at -= 1.0  # exhaust the grace
     assert tracker_input.sample() is None
     assert tracker_input.keyboard.active == {"left": False, "right": False}
     tracker_input.close()
@@ -479,19 +464,18 @@ def test_debug_feed_state_reports_snapshot_health(monkeypatch) -> None:
     state = tracker_input.debug_feed_state()
     assert state["ok"] is True
     assert state["n"] == 2
+    assert state["frame_ts"] == fake_xrt.timestamp
     assert state["ts"] == fake_xrt.timestamp
     assert state["age"] is not None and state["age"] < 1.0
 
-    ticker = iter(range(1, 10_000))
     monkeypatch.setattr(
-        fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
+        fake_xrt, "get_motion_snapshot", lambda: (6, 0, [], [])
     )
     tracker_input.sample()
     failed_state = tracker_input.debug_feed_state()
     assert failed_state["ok"] is False
-    # Even though no consistent snapshot was accepted, the raw SDK timestamp
-    # records the last value observed by the failed triple-read.
-    assert failed_state["ts"] == 6
+    assert failed_state["ts"] == 0
+    assert failed_state["seq"] == 6
     tracker_input.close()
 
 
