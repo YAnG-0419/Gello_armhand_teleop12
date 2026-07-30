@@ -16,7 +16,8 @@ import json
 import sys
 import time
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -50,6 +52,8 @@ class OperatorWindow(QMainWindow):
         self.connected_at: float | None = None
         self.last_status_at: float | None = None
         self._handling_disconnect = False
+        self._disconnect_notice_shown = False
+        self.disconnect_message: QMessageBox | None = None
 
         self.socket = QTcpSocket(self)
         self.socket.readyRead.connect(self._read_responses)
@@ -73,20 +77,42 @@ class OperatorWindow(QMainWindow):
 
     # ------------------------------------------------------------------ ui
     def _build_ui(self) -> None:
-        root = QWidget(self)
-        layout = QVBoxLayout(root)
+        connection_menu = self.menuBar().addMenu("&Connection")
+        self.reconnect_action = QAction("Reconnect now", self)
+        self.reconnect_action.setShortcut("Ctrl+R")
+        self.reconnect_action.triggered.connect(self._reconnect_now)
+        connection_menu.addAction(self.reconnect_action)
+        connection_menu.addSeparator()
+        quit_action = QAction("Quit", self)
+        quit_action.setShortcut("Ctrl+Q")
+        quit_action.triggered.connect(self.close)
+        connection_menu.addAction(quit_action)
 
-        connection_row = QHBoxLayout()
-        self.connection_label = QLabel()
-        connection_row.addWidget(self.connection_label, stretch=1)
-        self.reconnect_button = QPushButton("Reconnect now")
-        self.reconnect_button.clicked.connect(self._reconnect_now)
-        connection_row.addWidget(self.reconnect_button)
-        layout.addLayout(connection_row)
+        root = QWidget(self)
+        root.setStyleSheet(
+            "QGroupBox { font-weight: 600; }"
+            "QPushButton { min-height: 28px; padding: 5px 10px; }"
+            "QPushButton:checked { background-color: #248a3d; color: white; "
+            "font-weight: bold; }"
+        )
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(12)
+
+        status_box = QGroupBox("System status")
+        status_layout = QVBoxLayout(status_box)
         self.status_label = QLabel("-")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("font-family: monospace;")
-        layout.addWidget(self.status_label)
+        self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.status_label.setMinimumHeight(128)
+        self.status_label.setMargin(10)
+        self.status_label.setStyleSheet(
+            "font-family: monospace; font-size: 13px; "
+            "background: palette(base); border: 1px solid palette(mid); "
+            "border-radius: 4px;"
+        )
+        status_layout.addWidget(self.status_label)
+        layout.addWidget(status_box)
 
         sides_row = QHBoxLayout()
         self.engage_buttons: dict[str, QPushButton] = {}
@@ -127,13 +153,20 @@ class OperatorWindow(QMainWindow):
         )
         layout.addLayout(actions)
 
+        feedback_box = QGroupBox("Event log")
+        feedback_layout = QVBoxLayout(feedback_box)
         self.feedback = QPlainTextEdit()
         self.feedback.setReadOnly(True)
         self.feedback.setMaximumBlockCount(200)
-        layout.addWidget(self.feedback, stretch=1)
+        self.feedback.setPlaceholderText("Backend messages will appear here.")
+        feedback_layout.addWidget(self.feedback)
+        layout.addWidget(feedback_box, stretch=1)
 
         self.setCentralWidget(root)
-        self.resize(640, 480)
+        self.connection_indicator = QLabel()
+        self.connection_indicator.setContentsMargins(4, 0, 4, 0)
+        self.statusBar().addPermanentWidget(self.connection_indicator)
+        self.resize(720, 620)
 
     def _button(self, text: str, command: str, arguments=None) -> QPushButton:
         button = QPushButton(text)
@@ -182,6 +215,7 @@ class OperatorWindow(QMainWindow):
         self._set_connection_state("disconnected", detail)
         if changed:
             self.feedback.appendPlainText(f"[connection] {detail}")
+            self._show_disconnect_message(detail)
         if self.socket.state() != QAbstractSocket.UnconnectedState:
             self.socket.abort()
         self.reconnect_timer.start()
@@ -190,20 +224,20 @@ class OperatorWindow(QMainWindow):
     def _set_connection_state(self, state: str, detail: str = "") -> None:
         self.connection_state = state
         if state == "connected":
-            text = f"CONNECTED — {self.host}:{self.port}"
+            text = f"CONNECTED  {self.host}:{self.port}"
             style = "color: #248a3d; font-weight: bold;"
         elif state == "syncing":
-            text = f"SYNCING — {self.host}:{self.port}"
+            text = f"SYNCING  {self.host}:{self.port}"
             style = "color: #9a6b00; font-weight: bold;"
         elif state == "connecting":
-            text = f"CONNECTING — {self.host}:{self.port}"
+            text = f"CONNECTING  {self.host}:{self.port}"
             style = "color: #9a6b00; font-weight: bold;"
         else:
-            suffix = f" — {detail}" if detail else ""
-            text = f"DISCONNECTED — {self.host}:{self.port}{suffix}"
+            text = f"DISCONNECTED  {self.host}:{self.port}"
             style = "color: #b02020; font-weight: bold;"
-        self.connection_label.setText(text)
-        self.connection_label.setStyleSheet(style)
+        self.connection_indicator.setText(text)
+        self.connection_indicator.setStyleSheet(style)
+        self.statusBar().showMessage(detail if state == "disconnected" else "")
         ready = state == "connected"
         for button in getattr(self, "action_buttons", []):
             button.setEnabled(ready)
@@ -214,9 +248,39 @@ class OperatorWindow(QMainWindow):
                 button.setChecked(False)
                 button.setText("Engage")
                 button.blockSignals(False)
-        self.reconnect_button.setEnabled(state == "disconnected")
+        self.reconnect_action.setEnabled(state == "disconnected")
         if state == "disconnected":
             self.status_label.setText("DISCONNECTED — backend status unavailable")
+        elif state == "connected":
+            self._disconnect_notice_shown = False
+            if self.disconnect_message is not None:
+                message = self.disconnect_message
+                self.disconnect_message = None
+                message.close()
+
+    def _show_disconnect_message(self, detail: str) -> None:
+        if self._disconnect_notice_shown:
+            return
+        self._disconnect_notice_shown = True
+        message = QMessageBox(self)
+        self.disconnect_message = message
+        message.setIcon(QMessageBox.Warning)
+        message.setWindowTitle("Teleop backend disconnected")
+        message.setText("The teleoperation backend connection was lost.")
+        message.setInformativeText(
+            f"{detail}\n\nAll controls are disabled and stale engagement "
+            "has been cleared. The GUI will retry automatically; use "
+            "Connection → Reconnect now to retry immediately."
+        )
+        message.setStandardButtons(QMessageBox.Ok)
+        message.finished.connect(
+            lambda _result, current=message: self._forget_message(current)
+        )
+        message.open()
+
+    def _forget_message(self, message: QMessageBox) -> None:
+        if self.disconnect_message is message:
+            self.disconnect_message = None
 
     def _reconnect_now(self) -> None:
         self.reconnect_timer.stop()

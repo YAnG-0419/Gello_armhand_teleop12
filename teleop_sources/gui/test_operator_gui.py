@@ -67,18 +67,21 @@ def test_backend_crash_displays_disconnect_and_reconnects_safely():
         backend.terminate()
         backend.join(timeout=2.0)
         _wait(application, lambda: window.connection_state == "disconnected")
-        assert window.connection_label.text().startswith("DISCONNECTED")
+        assert window.connection_indicator.text().startswith("DISCONNECTED")
         assert "backend status unavailable" in window.status_label.text()
-        assert window.reconnect_button.isEnabled()
+        assert window.disconnect_message is not None
+        assert window.disconnect_message.isVisible()
+        assert window.reconnect_action.isEnabled()
         assert not window.engage_buttons["left"].isChecked()
         assert not window.engage_buttons["left"].isEnabled()
 
         backend = context.Process(target=_serve, args=(port,), daemon=True)
         backend.start()
-        window.reconnect_button.click()
+        window.reconnect_action.trigger()
         _wait(application, lambda: window.connection_state == "connected")
         assert window.engage_buttons["left"].isEnabled()
         assert not window.engage_buttons["left"].isChecked()
+        assert window.disconnect_message is None
     finally:
         window.poll_timer.stop()
         window.health_timer.stop()
