@@ -396,6 +396,7 @@ class MotionTrackerInput:
         self.max_linear_speed = float(max_linear_speed)
         self.max_angular_speed = float(max_angular_speed)
         self.last_motion_timestamp: int | None = None
+        self.last_sdk_timestamp: int | None = None
         self.last_motion_update_at: float | None = None
         self.last_poses: dict[str, Pose | None] = {side: None for side in SIDES}
         self.last_position_changed_at = {side: None for side in SIDES}
@@ -432,6 +433,7 @@ class MotionTrackerInput:
             serials = list(self.xrt.get_motion_tracker_serial_numbers())
             poses = list(self.xrt.get_motion_tracker_pose())
             timestamp_after = int(self.xrt.get_motion_timestamp_ns())
+            self.last_sdk_timestamp = timestamp_after
             if timestamp_before > 0 and timestamp_before == timestamp_after:
                 break
         else:
@@ -540,7 +542,7 @@ class MotionTrackerInput:
         (ok=True, age grows), and the headset not listing trackers (n drops).
         """
         return {
-            "ts": self.last_motion_timestamp,
+            "ts": self.last_sdk_timestamp,
             "age": (
                 None
                 if self.last_motion_update_at is None
@@ -660,13 +662,34 @@ class MotionTrackerInput:
                             f"stale: no new SDK motion frame for {age:.2f}s"
                         )
                 self.disable_all("motion tracker data missing or stale")
-            # An unreadable snapshot inside the stale grace holds this tick
-            # WITHOUT dropping engagement: the consistency triple-read races
-            # with a healthy feed under scheduling delay (measured 1-2 tick
-            # dropouts mid-engagement on 20260729_183150 at a perfect 11 ms
-            # loop cadence). A real loss freezes the SDK timestamp and still
-            # disables within stale_timeout.
-            return None
+                return None
+            # An unreadable snapshot inside the stale grace holds the last
+            # accepted poses. Preserve only sides that were already engaged:
+            # operator disengagement remains immediate, while a new engagement
+            # cannot start from cached tracker data. Returning a sample (rather
+            # than None) is essential because the control loop interprets None
+            # as inactive, resets its relative-pose anchors, and drops the
+            # active-side flags sent to the safety gateway.
+            held_activations = {
+                side: bool(activations[side] and self.last_activations[side])
+                for side in SIDES
+            }
+            if any(
+                held_activations[side] and self.last_poses[side] is None
+                for side in SIDES
+            ):
+                self.disable_all("motion tracker hold has no accepted pose")
+                return None
+            self.last_activations = held_activations
+            held_poses = {
+                side: (
+                    self.last_poses[side]
+                    if self.last_poses[side] is not None
+                    else Pose(np.zeros(3), np.eye(3))
+                )
+                for side in SIDES
+            }
+            return TeleopSample(held_poses, held_activations, now)
         poses = {
             side: _apply_local_transform(
                 xr_pose_to_world(raw_pose),

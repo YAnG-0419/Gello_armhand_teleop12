@@ -393,8 +393,11 @@ def test_transient_snapshot_glitch_holds_engagement(monkeypatch) -> None:
     monkeypatch.setattr(
         fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
     )
-    assert tracker_input.sample() is None
+    held = tracker_input.sample()
+    assert held is not None
+    assert held.activations == {"left": True, "right": True}
     assert tracker_input.keyboard.active == {"left": True, "right": True}
+    assert tracker_input.last_activations == {"left": True, "right": True}
 
     monkeypatch.setattr(
         fake_xrt, "get_motion_timestamp_ns", lambda: 999_000_000
@@ -402,6 +405,48 @@ def test_transient_snapshot_glitch_holds_engagement(monkeypatch) -> None:
     sample = tracker_input.sample()
     assert sample is not None
     assert sample.activations == {"left": True, "right": True}
+    tracker_input.close()
+
+
+def test_snapshot_glitch_does_not_admit_new_engagement(monkeypatch) -> None:
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": False, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    tracker_input.keyboard.active["left"] = True
+    ticker = iter(range(1, 10_000))
+    monkeypatch.setattr(
+        fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
+    )
+    held = tracker_input.sample()
+
+    assert held is not None
+    assert held.activations == {"left": False, "right": True}
+    assert tracker_input.last_activations == {"left": False, "right": True}
+    tracker_input.close()
+
+
+def test_snapshot_glitch_honors_operator_disengagement(monkeypatch) -> None:
+    fake_xrt = _FakeXrt()
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", fake_xrt)
+    tracker_input = _create_tracker_input()
+    tracker_input.keyboard.active = {"left": True, "right": True}
+    fake_xrt.timestamp += 20_000_000
+    assert tracker_input.sample() is not None
+
+    tracker_input.keyboard.active["left"] = False
+    ticker = iter(range(1, 10_000))
+    monkeypatch.setattr(
+        fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
+    )
+    held = tracker_input.sample()
+
+    assert held is not None
+    assert held.activations == {"left": False, "right": True}
+    assert tracker_input.last_activations == {"left": False, "right": True}
     tracker_input.close()
 
 
@@ -442,7 +487,11 @@ def test_debug_feed_state_reports_snapshot_health(monkeypatch) -> None:
         fake_xrt, "get_motion_timestamp_ns", lambda: next(ticker)
     )
     tracker_input.sample()
-    assert tracker_input.debug_feed_state()["ok"] is False
+    failed_state = tracker_input.debug_feed_state()
+    assert failed_state["ok"] is False
+    # Even though no consistent snapshot was accepted, the raw SDK timestamp
+    # records the last value observed by the failed triple-read.
+    assert failed_state["ts"] == 6
     tracker_input.close()
 
 
