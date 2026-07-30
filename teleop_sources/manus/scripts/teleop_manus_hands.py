@@ -40,13 +40,6 @@ def main() -> int:
         default=0.85,
         help="EMA response in (0, 1]; 1 disables retarget-output smoothing",
     )
-    parser.add_argument(
-        "--left-thumb",
-        default="fixed",
-        choices=("fixed", "full"),
-        help="left G20 thumb: fixed opposition (deployed default) or the "
-        "full CMC solve under feel-check (default: fixed)",
-    )
     parser.add_argument("--keyboard-device", default="/dev/tty")
     parser.add_argument("--debug-log")
     parser.add_argument(
@@ -72,7 +65,6 @@ def main() -> int:
             filter_alpha=args.filter_alpha,
             debug_log=args.debug_log,
             models={"left": "g20", "right": "o30i"},
-            left_thumb_mode=args.left_thumb,
         )
         keyboard = KeyboardActivation(args.keyboard_device, sides=sides)
         keyboard.show(

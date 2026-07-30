@@ -56,23 +56,35 @@ def test_follow_debug_log_records_raw_and_both_fk_streams(tmp_path):
 
 def test_hand_debug_log_records_landmarks_commands_and_metrics(tmp_path):
     path = tmp_path / "hands.jsonl"
-    logger = HandRetargetDebugLogger(path, flush_every=1)
+    logger = HandRetargetDebugLogger(
+        path, flush_every=1, metadata={"source": "manus"}
+    )
     logger.record(
         4.2,
         "right",
         np.zeros((21, 3)),
         np.arange(21) / 10,
         {"success": True, "iterations": 3, "thumb_tip_error": 0.012345678},
+        joint_names=[f"joint_{index}" for index in range(21)],
+        raw_qpos=np.arange(21) / 9,
+        source={"sequence": 7, "timestamp_ns": 123},
+        transport={"stream_id": "manus-right-o30i", "sequence": 4, "sent": True},
     )
     logger.close()
 
     header, row = [
         json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
     ]
-    assert header["schema"] == "hand-retarget-debug.v1"
+    assert header["schema"] == "hand-retarget-debug.v2"
+    assert header["metadata"]["source"] == "manus"
     assert row["side"] == "right"
+    assert isinstance(row["wall_time_ns"], int)
+    assert row["source"]["sequence"] == 7
+    assert row["transport"]["sequence"] == 4
     assert np.asarray(row["landmarks"]).shape == (21, 3)
     assert len(row["qpos"]) == 21
+    assert len(row["raw_qpos"]) == 21
+    assert len(row["joint_names"]) == 21
     assert row["stats"]["success"] is True
     assert row["stats"]["iterations"] == 3
     assert row["stats"]["thumb_tip_error"] == 0.0123457

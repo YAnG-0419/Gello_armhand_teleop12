@@ -323,6 +323,12 @@ class LinkerHandBridge(Node):
             command = side_state.limiter.step(side_state.target, now)
             message = JointState()
             message.header.stamp = self.get_clock().now().to_msg()
+            # Preserve the host packet identity in recorded command topics.
+            # Repeated bridge ticks may share an identity while the limiter
+            # approaches the latest target; this makes that behaviour explicit.
+            message.header.frame_id = (
+                f"{side_state.stream_id}:{side_state.sequence}"
+            )
             message.name = list(self.profiles[side].command_joint_names)
             message.position = list(command)
             self.debug_publishers[side].publish(message)

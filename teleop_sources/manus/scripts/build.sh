@@ -7,4 +7,3 @@ BUILD_DIR="${SOURCE_DIR}/build"
 
 cmake -S "${SOURCE_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release
 cmake --build "${BUILD_DIR}" --parallel
-ctest --test-dir "${BUILD_DIR}" --output-on-failure

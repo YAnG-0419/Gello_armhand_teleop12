@@ -79,7 +79,7 @@ cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/scripts/teleop_manus_hands.py --sides both
 ```
 
-The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. Add `--left-thumb full` only for the experimental G20 solver. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `teleop_sources/manus/config`.
+The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. The calibrated left-G20 pose-anchor policy is always active. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `teleop_sources/manus/config`.
 
 ## Arm home and hand open
 

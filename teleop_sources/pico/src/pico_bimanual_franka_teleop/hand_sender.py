@@ -66,6 +66,10 @@ class HandCommandSender:
     def due(self, side: str, moment: float) -> bool:
         return moment >= self._next_due[side]
 
+    def next_sequence(self, side: str) -> int:
+        """Sequence that the next successful packet attempt will carry."""
+        return self._sequence[side]
+
     def _advance_deadline(self, side: str, moment: float) -> None:
         """Advance a periodic deadline without drifting down to the loop grid."""
         deadline = self._next_due[side]

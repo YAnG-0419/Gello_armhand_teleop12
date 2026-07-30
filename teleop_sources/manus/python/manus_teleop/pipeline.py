@@ -1,8 +1,8 @@
 """MANUS glove source with the same lifecycle as the PICO hand pipeline.
 
 Bimanual: each side in ``dynamic_sides`` follows its glove through the
-native skeleton bridge (left is retargeted through the same L20 profile as
-the validated PICO left-G20 path, right through the O30i solver); every
+native skeleton bridge (left uses the physically calibrated G20 pose-anchor
+profile, right uses the O30i solver); every
 other side streams its default pose. A glove only delivers frames once its
 calibration file exists next to the bridge's calibration directory
 (``Calibration_left.mcal`` / ``Calibration_right.mcal``) - an uncalibrated
@@ -12,6 +12,8 @@ side simply reports waiting and the rest keeps working.
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import subprocess
 import time
 from pathlib import Path
 from xml.etree import ElementTree
@@ -31,6 +33,34 @@ CANONICAL_FROM_MANUS = (
     21, 22, 23, 24,
 )
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+# Explicit left-glove endpoint calibration from the labelled
+# manus_accuracy/left_full_01 recording (2026-07-30): held-open p95 was
+# 0.280 rad total thumb bend and held-closed p05 was 2.041 rad. Rounding
+# outward avoids clipping ordinary endpoint noise. MANUS retained a 10.1 mm
+# median skeleton gap during physical thumb-index contact, so 15 mm is treated
+# as sensor/contact deadzone. These values are recorded in every debug header.
+MANUS_LEFT_THUMB_BEND_RANGE = (0.28, 2.05)
+MANUS_LEFT_CONTACT_DEADZONE = 0.015
+MANUS_LEFT_CONTACT_START = 0.040
+MANUS_LEFT_CONTACT_ACTIVATION_STEP = 0.08
+# Physical left-G20 calibration on 2026-07-30 found index contact at 48%
+# synchronized base/tip curl. This supersedes the URDF-only 42% estimate.
+MANUS_LEFT_CONTACT_CURL_FLOOR = 0.48
+# Stable useful-pose anchors replace unconstrained online CMC optimization.
+# Ordinary poses retain the established opposition configuration; approaching
+# thumb-index contact interpolates continuously to the physical G20 anchor
+# tuned against the recorded index-finger pinch pose on 2026-07-30.
+MANUS_LEFT_CMC_REFERENCE = (1.10, 0.52)
+MANUS_LEFT_PINCH_OPPOSITION = (0.41, 0.76)
+# Start blending into the mechanical endpoint only near the labelled full-curl
+# distribution. Values are radians of MANUS segment-chain bend.
+MANUS_LEFT_FINGER_CURL_RANGES = {
+    "index": (np.deg2rad(140.0), np.deg2rad(165.0)),
+    "middle": (np.deg2rad(145.0), np.deg2rad(175.0)),
+    "ring": (np.deg2rad(120.0), np.deg2rad(148.0)),
+    "pinky": (np.deg2rad(75.0), np.deg2rad(100.0)),
+}
 
 
 class ManusPose(ctypes.Structure):
@@ -123,6 +153,30 @@ class ManusBridge:
             self.connected = False
 
 
+def frame_record(frame: ManusFrame) -> dict:
+    """Return the complete native frame as JSON-safe diagnostic data."""
+    return {
+        "sequence": int(frame.sequence),
+        "timestamp_ns": int(frame.timestamp_ns),
+        "keypoints": [
+            {
+                "position": [
+                    float(point.position_x),
+                    float(point.position_y),
+                    float(point.position_z),
+                ],
+                "orientation_xyzw": [
+                    float(point.orientation_x),
+                    float(point.orientation_y),
+                    float(point.orientation_z),
+                    float(point.orientation_w),
+                ],
+            }
+            for point in frame.keypoints
+        ],
+    }
+
+
 def canonical_landmarks(frame: ManusFrame) -> np.ndarray:
     points = np.asarray(
         [
@@ -137,9 +191,7 @@ def canonical_landmarks(frame: ManusFrame) -> np.ndarray:
     return selected
 
 
-def _create_retargeter(
-    side: str, model: str, filter_alpha: float, thumb_mode: str = "fixed"
-):
+def _create_retargeter(side: str, model: str, filter_alpha: float):
     if model == "o30i":
         from .o30i_retarget import O30IRetargeter
 
@@ -152,15 +204,15 @@ def _create_retargeter(
             side,
             filter_alpha=filter_alpha,
         )
-    # The G20 profile mirrors the hardware-validated PICO path: the L20
-    # model with the fixed-opposition thumb (hand_profiles.py). "full"
-    # instead solves the thumb CMC from the somehand-style objectives; it
-    # is selected per run for feel-check trials of agenda 1.
+    # MANUS left-G20 uses calibrated endpoint and useful-pose anchors because
+    # the available L20 URDF does not reproduce the physical G20 thumb. A
+    # fallback right-G20 profile retains the established fixed opposition.
     from pico_bimanual_franka_teleop.hand_retarget import (
         L20Retargeter,
         THUMB_OPPOSITION_YAW_ROLL,
     )
 
+    calibrated_left = side == "left"
     return L20Retargeter(
         REPO_ROOT
         / "assets"
@@ -170,9 +222,31 @@ def _create_retargeter(
         side,
         filter_alpha=filter_alpha,
         thumb_opposition_fixed=(
-            None
-            if thumb_mode == "full"
-            else THUMB_OPPOSITION_YAW_ROLL[side]
+            None if calibrated_left else THUMB_OPPOSITION_YAW_ROLL[side]
+        ),
+        thumb_bend_range=(
+            MANUS_LEFT_THUMB_BEND_RANGE if calibrated_left else None
+        ),
+        thumb_contact_deadzone=(
+            MANUS_LEFT_CONTACT_DEADZONE if calibrated_left else 0.0
+        ),
+        thumb_contact_start=(
+            MANUS_LEFT_CONTACT_START if calibrated_left else 0.0
+        ),
+        thumb_contact_activation_step=(
+            MANUS_LEFT_CONTACT_ACTIVATION_STEP if calibrated_left else 1.0
+        ),
+        thumb_contact_curl_floor=(
+            MANUS_LEFT_CONTACT_CURL_FLOOR if calibrated_left else 0.0
+        ),
+        thumb_cmc_reference=(
+            MANUS_LEFT_CMC_REFERENCE if calibrated_left else None
+        ),
+        thumb_pinch_opposition=(
+            MANUS_LEFT_PINCH_OPPOSITION if calibrated_left else None
+        ),
+        finger_curl_ranges=(
+            MANUS_LEFT_FINGER_CURL_RANGES if side == "left" else None
         ),
     )
 
@@ -213,14 +287,9 @@ class ManusHandPipeline:
         models: dict[str, str] | None = None,
         dynamic_sides: tuple[str, ...] = ("left", "right"),
         bridge_factory=ManusBridge,
-        left_thumb_mode: str = "fixed",
     ) -> None:
         if stale_timeout <= 0.0:
             raise ValueError("MANUS stale timeout must be positive")
-        if left_thumb_mode not in {"fixed", "full"}:
-            raise ValueError(
-                f"left_thumb_mode must be 'fixed' or 'full', got {left_thumb_mode!r}"
-            )
         if not dynamic_sides or set(dynamic_sides).difference(self.sides):
             raise ValueError(f"Invalid dynamic sides: {dynamic_sides}")
         self.dynamic_sides = tuple(
@@ -240,6 +309,8 @@ class ManusHandPipeline:
                 "MANUS supports left=g20 and right in {g20, o30i}"
             )
 
+        self.models = dict(models)
+        self.filter_alpha = float(filter_alpha)
         self.stale_timeout = float(stale_timeout)
         self.status = HandStatus()
         self.sender = HandCommandSender(
@@ -254,12 +325,7 @@ class ManusHandPipeline:
         try:
             for side in self.dynamic_sides:
                 self.retargeters[side] = _create_retargeter(
-                    side,
-                    models[side],
-                    filter_alpha,
-                    thumb_mode=(
-                        left_thumb_mode if side == "left" else "fixed"
-                    ),
+                    side, models[side], filter_alpha
                 )
         except BaseException:
             for retargeter in self.retargeters.values():
@@ -305,10 +371,90 @@ class ManusHandPipeline:
         # both come due on the same tick (same rule as the PICO pipeline).
         self._preferred = 0
         self.debug_logger = None
+        self.debug_phase: str | None = None
         if debug_log is not None:
             from pico_bimanual_franka_teleop.debug_log import HandRetargetDebugLogger
 
-            self.debug_logger = HandRetargetDebugLogger(debug_log)
+            calibration_hashes = {}
+            for side in self.dynamic_sides:
+                path = calibration_path / f"Calibration_{side}.mcal"
+                calibration_hashes[side] = (
+                    hashlib.sha256(path.read_bytes()).hexdigest()
+                    if path.is_file()
+                    else None
+                )
+            try:
+                revision = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=REPO_ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                dirty = bool(
+                    subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        cwd=REPO_ROOT,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout
+                )
+            except (OSError, subprocess.SubprocessError):
+                revision = None
+                dirty = None
+            self.debug_logger = HandRetargetDebugLogger(
+                debug_log,
+                metadata={
+                    "source": "manus",
+                    "models": self.models,
+                    "dynamic_sides": list(self.dynamic_sides),
+                    "filter_alpha": self.filter_alpha,
+                    "left_thumb_policy": "calibrated_pose_anchors",
+                    "left_hand_calibration": (
+                        {
+                            "thumb_bend_range_rad": list(MANUS_LEFT_THUMB_BEND_RANGE),
+                            "thumb_contact_deadzone_m": MANUS_LEFT_CONTACT_DEADZONE,
+                            "thumb_contact_start_m": MANUS_LEFT_CONTACT_START,
+                            "thumb_contact_activation_step": (
+                                MANUS_LEFT_CONTACT_ACTIVATION_STEP
+                            ),
+                            "thumb_contact_curl_floor": MANUS_LEFT_CONTACT_CURL_FLOOR,
+                            "thumb_cmc_reference": list(MANUS_LEFT_CMC_REFERENCE),
+                            "thumb_pinch_opposition": list(
+                                MANUS_LEFT_PINCH_OPPOSITION
+                            ),
+                            "finger_curl_ranges_rad": {
+                                finger: list(values)
+                                for finger, values in MANUS_LEFT_FINGER_CURL_RANGES.items()
+                            },
+                            "source_recording": "left_full_01.jsonl",
+                            "physical_pinch_calibration": "2026-07-30",
+                        }
+                        if "left" in self.dynamic_sides
+                        else None
+                    ),
+                    "joint_contracts": {
+                        side: {
+                            "joint_names": list(self.retargeters[side].joint_names),
+                            "lower": np.asarray(
+                                self.retargeters[side].lower, dtype=float
+                            ).tolist(),
+                            "upper": np.asarray(
+                                self.retargeters[side].upper, dtype=float
+                            ).tolist(),
+                        }
+                        for side in self.dynamic_sides
+                    },
+                    "calibration_sha256": calibration_hashes,
+                    "git_revision": revision,
+                    "git_dirty": dirty,
+                },
+            )
+
+    def set_debug_phase(self, phase: str | None) -> None:
+        """Label subsequent diagnostic rows with a guided protocol phase."""
+        self.debug_phase = None if phase is None else str(phase)
 
     def request_open(
         self,
@@ -420,24 +566,74 @@ class ManusHandPipeline:
             try:
                 started = time.monotonic()
                 landmarks = canonical_landmarks(self.last_frame[side])
-                qpos, stats = self.retargeters[side].retarget(landmarks)
+                retargeter = self.retargeters[side]
+                qpos, stats = retargeter.retarget(landmarks)
                 elapsed = time.monotonic() - started
-                if self.debug_logger is not None:
-                    self.debug_logger.record(moment, side, landmarks, qpos, stats)
+                raw_qpos = qpos
+                if hasattr(retargeter, "last_qpos"):
+                    raw_qpos = retargeter.last_qpos
+                    if hasattr(retargeter, "_expand_qpos"):
+                        raw_qpos = retargeter._expand_qpos(raw_qpos)
+                derived = None
+                if hasattr(retargeter, "target_positions") and hasattr(
+                    retargeter, "robot_landmarks"
+                ):
+                    targets = retargeter.target_positions(landmarks)
+                    if np.asarray(targets).shape != (21, 3):
+                        canonical_targets = np.zeros((21, 3), dtype=np.float64)
+                        for target, point in zip(
+                            retargeter.targets, targets, strict=True
+                        ):
+                            canonical_targets[target.landmark_index] = point
+                        targets = canonical_targets
+                    if self.models[side] == "o30i":
+                        robot_points = retargeter.robot_landmarks(qpos)
+                    else:
+                        # L20 leaves its FK state at the filtered/emitted pose.
+                        robot_points = retargeter.robot_landmarks()
+                    derived = {
+                        "target_landmarks_robot": np.asarray(targets)
+                        .round(7)
+                        .tolist(),
+                        "robot_landmarks_emitted": np.asarray(robot_points)
+                        .round(7)
+                        .tolist(),
+                    }
             except Exception as error:  # noqa: BLE001 - never break arm control
                 self.status.errors += 1
                 self.status.last_error = f"{side} MANUS retargeting failed: {error}"
                 status.sending = False
                 status.fault = str(error)
                 return
-            if self.sender.emit(
-                f"manus-{side}-{self.sender.models[side]}",
+            stream_id = f"manus-{side}-{self.sender.models[side]}"
+            packet_sequence = self.sender.next_sequence(side)
+            sent = self.sender.emit(
+                stream_id,
                 side,
                 self.retargeters[side].joint_names,
                 qpos,
                 moment,
                 f"{side} MANUS send failed",
-            ):
+            )
+            if self.debug_logger is not None:
+                self.debug_logger.record(
+                    moment,
+                    side,
+                    landmarks,
+                    qpos,
+                    stats,
+                    joint_names=self.retargeters[side].joint_names,
+                    raw_qpos=raw_qpos,
+                    source=frame_record(self.last_frame[side]),
+                    transport={
+                        "stream_id": stream_id,
+                        "sequence": packet_sequence,
+                        "sent": sent,
+                        "phase": self.debug_phase,
+                    },
+                    derived=derived,
+                )
+            if sent:
                 self._preferred = (
                     self.dynamic_sides.index(side) + 1
                 ) % len(self.dynamic_sides)

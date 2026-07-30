@@ -148,9 +148,15 @@ class FollowDebugLogger:
 
 
 class HandRetargetDebugLogger:
-    """Buffered JSONL logger for live skeleton-to-joint fidelity analysis."""
+    """Buffered JSONL logger for replayable skeleton-to-hardware analysis."""
 
-    def __init__(self, path: str | Path, flush_every: int = 60) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        flush_every: int = 60,
+        *,
+        metadata: dict | None = None,
+    ) -> None:
         self.path = _existing_log_path(path)
         self._file = self.path.open("w", encoding="utf-8")
         self._flush_every = int(flush_every)
@@ -159,26 +165,54 @@ class HandRetargetDebugLogger:
         self._file.write(
             json.dumps(
                 {
-                    "schema": "hand-retarget-debug.v1",
+                    "schema": "hand-retarget-debug.v2",
                     "written_at": time.time(),
-                    "fields": "t monotonic; side; canonical landmarks in metres; "
-                    "emitted 21-joint qpos in radians; solver fidelity stats",
+                    "metadata": {} if metadata is None else metadata,
+                    "fields": "wall_time_ns and t monotonic; source frame identity; "
+                    "raw source skeleton; canonical landmarks in metres; raw "
+                    "solver and emitted named qpos in radians; UDP packet identity; "
+                    "solver fidelity stats",
                 }
             )
             + "\n"
         )
 
-    def record(self, now: float, side: str, landmarks, qpos, stats: dict) -> None:
+    def record(
+        self,
+        now: float,
+        side: str,
+        landmarks,
+        qpos,
+        stats: dict,
+        *,
+        joint_names=None,
+        raw_qpos=None,
+        source: dict | None = None,
+        transport: dict | None = None,
+        derived: dict | None = None,
+    ) -> None:
         if self._failed:
             return
         try:
             row = {
-                "t": round(float(now), 4),
+                "wall_time_ns": time.time_ns(),
+                "t": round(float(now), 6),
                 "side": str(side),
+                "source": source,
                 "landmarks": np.asarray(landmarks, dtype=float)
-                .round(6)
+                .round(7)
                 .tolist(),
-                "qpos": np.asarray(qpos, dtype=float).round(5).tolist(),
+                "joint_names": (
+                    None if joint_names is None else [str(name) for name in joint_names]
+                ),
+                "raw_qpos": (
+                    None
+                    if raw_qpos is None
+                    else np.asarray(raw_qpos, dtype=float).round(6).tolist()
+                ),
+                "qpos": np.asarray(qpos, dtype=float).round(6).tolist(),
+                "transport": transport,
+                "derived": derived,
                 "stats": {
                     key: (
                         bool(value)

@@ -408,6 +408,107 @@ def test_abduction_polarity_matches_urdf_geometry(side):
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
+def test_calibrated_thumb_bend_drives_full_base_and_tip_range(side):
+    with L20Retargeter(urdf_for(side), side, filter_alpha=1.0) as oracle:
+        oracle.reset()
+        opened = oracle.robot_landmarks()
+        open_bend = chain_bend_angle(
+            opened[list(CANONICAL_FINGERS["thumb"])]
+        )
+        closed_qpos = np.zeros(oracle.dof)
+        closed_qpos[oracle.joint_names.index("thumb_mcp")] = oracle.upper[
+            oracle.joint_names.index("thumb_mcp")
+        ]
+        oracle._reset_joints(closed_qpos)
+        closed = oracle.robot_landmarks()
+        closed_bend = chain_bend_angle(
+            closed[list(CANONICAL_FINGERS["thumb"])]
+        )
+
+    with L20Retargeter(
+        urdf_for(side),
+        side,
+        filter_alpha=1.0,
+        thumb_bend_range=(open_bend, closed_bend),
+    ) as retargeter:
+        open_qpos, _ = retargeter.retarget(opened)
+        closed_qpos, _ = retargeter.retarget(closed)
+        for name in (
+            "thumb_cmc_pitch",
+            "thumb_mcp",
+            "thumb_ip" if side == "left" else "thumb_dip",
+        ):
+            index = retargeter.joint_names.index(name)
+            assert open_qpos[index] == pytest.approx(retargeter.lower[index])
+            assert closed_qpos[index] == pytest.approx(
+                retargeter.upper[index], abs=1e-5
+            )
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_calibrated_finger_endpoint_reaches_full_mechanical_curl(side):
+    with L20Retargeter(urdf_for(side), side, filter_alpha=1.0) as oracle:
+        desired = np.zeros(oracle.dof)
+        for name in ("pinky_mcp_pitch", "pinky_pip", "pinky_dip"):
+            index = oracle.joint_names.index(name)
+            desired[index] = oracle.upper[index]
+        oracle._reset_joints(desired)
+        curled = oracle.robot_landmarks()
+        bend_value = chain_bend_angle(
+            curled[list(CANONICAL_FINGERS["pinky"])]
+        )
+
+    with L20Retargeter(
+        urdf_for(side),
+        side,
+        filter_alpha=1.0,
+        finger_curl_ranges={"pinky": (bend_value - 0.2, bend_value - 0.1)},
+    ) as retargeter:
+        qpos, _ = retargeter.retarget(curled)
+        for name in ("pinky_mcp_pitch", "pinky_pip", "pinky_dip"):
+            index = retargeter.joint_names.index(name)
+            assert qpos[index] == pytest.approx(retargeter.upper[index], abs=5e-5)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_pinch_anchor_interpolates_with_bounded_activation(side):
+    reference = (1.0, 0.4)
+    pinch_opposition = (0.6, 0.8)
+    with L20Retargeter(
+        urdf_for(side),
+        side,
+        filter_alpha=1.0,
+        thumb_bend_range=(0.0, 3.0),
+        thumb_contact_deadzone=0.01,
+        thumb_contact_start=0.04,
+        thumb_contact_activation_step=0.2,
+        thumb_cmc_reference=reference,
+        thumb_pinch_opposition=pinch_opposition,
+    ) as retargeter:
+        opened = retargeter.robot_landmarks()
+        pinch = opened.copy()
+        pinch[4] = pinch[8]
+        indices = [
+            retargeter.joint_names.index(name)
+            for name in ("thumb_cmc_yaw", "thumb_cmc_roll")
+        ]
+        previous = np.asarray(reference)
+        for expected_activation in (0.2, 0.4, 0.6, 0.8, 1.0):
+            qpos, _ = retargeter.retarget(pinch)
+            current = qpos[indices]
+            expected = np.asarray(reference) + expected_activation * (
+                np.asarray(pinch_opposition) - np.asarray(reference)
+            )
+            assert current == pytest.approx(expected)
+            assert np.max(np.abs(current - previous)) <= 0.08 + 1e-9
+            previous = current
+
+        retargeter.reset()
+        qpos, _ = retargeter.retarget(opened)
+        assert qpos[indices] == pytest.approx(reference)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
 def test_thumb_orientation_activation_releases_gradually(side):
     # A raw activation that flickers around zero re-tilts the near-degenerate
     # open-thumb CMC valley and used to flip the solve between far-apart

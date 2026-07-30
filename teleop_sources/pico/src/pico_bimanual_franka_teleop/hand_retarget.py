@@ -186,11 +186,64 @@ class L20Retargeter:
         max_iterations: int = 20,
         normalize_finger_length: bool = True,
         thumb_opposition_fixed: tuple[float, float] | None = None,
+        thumb_bend_range: tuple[float, float] | None = None,
+        thumb_contact_deadzone: float = 0.0,
+        thumb_contact_start: float = 0.0,
+        thumb_contact_activation_step: float = 1.0,
+        thumb_contact_curl_floor: float = 0.0,
+        thumb_distance_weight_scale: float = 1.0,
+        thumb_cmc_reference: tuple[float, float] | None = None,
+        thumb_pinch_opposition: tuple[float, float] | None = None,
+        finger_curl_ranges: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         if side not in {"left", "right"}:
             raise ValueError(f"side must be 'left' or 'right', got {side!r}")
         if not 0.0 < filter_alpha <= 1.0:
             raise ValueError("filter_alpha must be in (0, 1]")
+        if thumb_contact_deadzone < 0.0:
+            raise ValueError("thumb_contact_deadzone must not be negative")
+        if thumb_contact_start < thumb_contact_deadzone:
+            raise ValueError(
+                "thumb_contact_start must not be below thumb_contact_deadzone"
+            )
+        if not 0.0 < thumb_contact_activation_step <= 1.0:
+            raise ValueError("thumb_contact_activation_step must be in (0, 1]")
+        if not 0.0 <= thumb_contact_curl_floor <= 1.0:
+            raise ValueError("thumb_contact_curl_floor must be in [0, 1]")
+        if thumb_distance_weight_scale <= 0.0:
+            raise ValueError("thumb_distance_weight_scale must be positive")
+        self.thumb_bend_range = None
+        if thumb_bend_range is not None:
+            bend_range = np.asarray(thumb_bend_range, dtype=np.float64)
+            if (
+                bend_range.shape != (2,)
+                or not np.all(np.isfinite(bend_range))
+                or bend_range[0] >= bend_range[1]
+            ):
+                raise ValueError("thumb_bend_range must be finite increasing values")
+            self.thumb_bend_range = (float(bend_range[0]), float(bend_range[1]))
+        self.thumb_contact_deadzone = float(thumb_contact_deadzone)
+        self.thumb_contact_start = float(thumb_contact_start)
+        self.thumb_contact_activation_step = float(thumb_contact_activation_step)
+        self.thumb_contact_curl_floor = float(thumb_contact_curl_floor)
+        self.thumb_distance_weight_scale = float(thumb_distance_weight_scale)
+        self.finger_curl_ranges: dict[str, tuple[float, float]] = {}
+        for finger, limits in (finger_curl_ranges or {}).items():
+            if finger not in {"index", "middle", "ring", "pinky"}:
+                raise ValueError(f"invalid finger_curl_ranges finger {finger!r}")
+            values = np.asarray(limits, dtype=np.float64)
+            if (
+                values.shape != (2,)
+                or not np.all(np.isfinite(values))
+                or values[0] >= values[1]
+            ):
+                raise ValueError(
+                    f"finger_curl_ranges[{finger!r}] must be finite increasing values"
+                )
+            self.finger_curl_ranges[finger] = (
+                float(values[0]),
+                float(values[1]),
+            )
         self.side = side
         self.normalize_finger_length = bool(normalize_finger_length)
         self.urdf_path = Path(urdf_path).resolve()
@@ -261,6 +314,35 @@ class L20Retargeter:
                 "Expected the distal thumb joint to mimic thumb_mcp with zero offset"
             )
         self._thumb_mcp_index = self._active_joint_names.index("thumb_mcp")
+        self._thumb_yaw_index = self._active_joint_names.index("thumb_cmc_yaw")
+        self._thumb_roll_index = self._active_joint_names.index("thumb_cmc_roll")
+        self._thumb_pitch_index = self._active_joint_names.index("thumb_cmc_pitch")
+
+        self.thumb_cmc_reference: np.ndarray | None = None
+        if thumb_cmc_reference is not None:
+            reference = np.asarray(thumb_cmc_reference, dtype=np.float64)
+            if reference.shape != (2,) or not np.all(np.isfinite(reference)):
+                raise ValueError("thumb_cmc_reference must be finite (yaw, roll)")
+            self.thumb_cmc_reference = np.clip(
+                reference,
+                self._active_lower[[self._thumb_yaw_index, self._thumb_roll_index]],
+                self._active_upper[[self._thumb_yaw_index, self._thumb_roll_index]],
+            )
+
+        self.thumb_pinch_opposition: np.ndarray | None = None
+        if thumb_pinch_opposition is not None:
+            if self.thumb_cmc_reference is None:
+                raise ValueError(
+                    "thumb_pinch_opposition requires thumb_cmc_reference"
+                )
+            pinch = np.asarray(thumb_pinch_opposition, dtype=np.float64)
+            if pinch.shape != (2,) or not np.all(np.isfinite(pinch)):
+                raise ValueError("thumb_pinch_opposition must be finite (yaw, roll)")
+            self.thumb_pinch_opposition = np.clip(
+                pinch,
+                self._active_lower[[self._thumb_yaw_index, self._thumb_roll_index]],
+                self._active_upper[[self._thumb_yaw_index, self._thumb_roll_index]],
+            )
 
         self.thumb_opposition_fixed: np.ndarray | None = None
         if thumb_opposition_fixed is not None:
@@ -269,15 +351,6 @@ class L20Retargeter:
                 raise ValueError(
                     "thumb_opposition_fixed must be two finite values (yaw, roll)"
                 )
-            self._thumb_yaw_index = self._active_joint_names.index(
-                "thumb_cmc_yaw"
-            )
-            self._thumb_roll_index = self._active_joint_names.index(
-                "thumb_cmc_roll"
-            )
-            self._thumb_pitch_index = self._active_joint_names.index(
-                "thumb_cmc_pitch"
-            )
             self.thumb_opposition_fixed = np.clip(
                 values,
                 self._active_lower[[self._thumb_yaw_index, self._thumb_roll_index]],
@@ -332,9 +405,14 @@ class L20Retargeter:
         self.last_qpos = np.clip(
             np.zeros(self.model.nq), self._active_lower, self._active_upper
         )
+        if self.thumb_cmc_reference is not None:
+            self.last_qpos[
+                [self._thumb_yaw_index, self._thumb_roll_index]
+            ] = self.thumb_cmc_reference
         self.filtered_qpos: np.ndarray | None = None
         self._q_current = self.last_qpos.copy()
         self._thumb_activation_state = 0.0
+        self._thumb_contact_activation_state = 0.0
 
         self.robot_finger_lengths = self._robot_finger_lengths()
         (
@@ -559,11 +637,75 @@ class L20Retargeter:
             list(CANONICAL_FINGERS["thumb"])
         ]
         thumb_bend = chain_bend_angle(thumb_chain)
-        thumb_flex = np.clip(
-            self._thumb_q_for_bend(thumb_bend),
-            self._active_lower[self._thumb_mcp_index],
-            self._active_upper[self._thumb_mcp_index],
-        )
+        contact_activation = 0.0
+        if self.thumb_bend_range is None:
+            thumb_flex = np.clip(
+                self._thumb_q_for_bend(thumb_bend),
+                self._active_lower[self._thumb_mcp_index],
+                self._active_upper[self._thumb_mcp_index],
+            )
+        else:
+            bend_low, bend_high = self.thumb_bend_range
+            endpoint_curl = float(
+                np.clip(
+                    (thumb_bend - bend_low) / (bend_high - bend_low),
+                    0.0,
+                    1.0,
+                )
+            )
+            # This first useful-pose policy is specifically thumb-index pinch.
+            # Other contacts need their own physically validated anchors rather
+            # than allowing a generic online IK to choose another CMC basin.
+            contact_distance = float(
+                np.linalg.norm(raw_landmarks[4] - raw_landmarks[8])
+            )
+            if self.thumb_contact_start > self.thumb_contact_deadzone:
+                requested_contact_activation = float(
+                    np.clip(
+                        (self.thumb_contact_start - contact_distance)
+                        / (self.thumb_contact_start - self.thumb_contact_deadzone),
+                        0.0,
+                        1.0,
+                    )
+                )
+                activation_delta = np.clip(
+                    requested_contact_activation
+                    - self._thumb_contact_activation_state,
+                    -self.thumb_contact_activation_step,
+                    self.thumb_contact_activation_step,
+                )
+                self._thumb_contact_activation_state += float(activation_delta)
+                contact_activation = self._thumb_contact_activation_state
+                endpoint_curl += contact_activation * (
+                    max(endpoint_curl, self.thumb_contact_curl_floor)
+                    - endpoint_curl
+                )
+            thumb_flex = (
+                self._active_lower[self._thumb_mcp_index]
+                + endpoint_curl
+                * (
+                    self._active_upper[self._thumb_mcp_index]
+                    - self._active_lower[self._thumb_mcp_index]
+                )
+            )
+            # G20 exposes CMC pitch as the thumb-base curl motor and MCP/IP as
+            # the tip curl motor. Endpoint calibration drives both through
+            # their complete ranges; yaw/roll follow the configured pose policy.
+            solution[self._thumb_pitch_index] = (
+                self._active_lower[self._thumb_pitch_index]
+                + endpoint_curl
+                * (
+                    self._active_upper[self._thumb_pitch_index]
+                    - self._active_lower[self._thumb_pitch_index]
+                )
+            )
+            if self.thumb_pinch_opposition is not None:
+                opposition = self.thumb_cmc_reference + contact_activation * (
+                    self.thumb_pinch_opposition - self.thumb_cmc_reference
+                )
+                solution[
+                    [self._thumb_yaw_index, self._thumb_roll_index]
+                ] = opposition
         thumb_flex_fraction = float(
             (thumb_flex - self._active_lower[self._thumb_mcp_index])
             / (
@@ -610,16 +752,21 @@ class L20Retargeter:
         solve_order = (
             ("index", "middle", "ring", "pinky")
             if self.thumb_opposition_fixed is not None
+            or self.thumb_pinch_opposition is not None
             else ("index", "middle", "ring", "pinky", "thumb")
         )
         thumb_orientation_activation = 0.0
         for finger in solve_order:
             all_joint_indices = self._finger_joints[finger]
-            joint_indices = (
-                all_joint_indices[all_joint_indices != self._thumb_mcp_index]
-                if finger == "thumb"
-                else all_joint_indices
-            )
+            if finger == "thumb":
+                fixed_flex = [self._thumb_mcp_index]
+                if self.thumb_bend_range is not None:
+                    fixed_flex.append(self._thumb_pitch_index)
+                joint_indices = all_joint_indices[
+                    ~np.isin(all_joint_indices, fixed_flex)
+                ]
+            else:
+                joint_indices = all_joint_indices
             target_indices = self._targets_by_finger[finger]
             frame_ids = [self.targets[t].frame_id for t in target_indices]
             weights = np.asarray(
@@ -682,7 +829,13 @@ class L20Retargeter:
                             raw_landmarks[4] - raw_landmarks[tip_landmark]
                         )
                     )
-                    desired_distance = raw_distance * thumb_distance_scale
+                    # MANUS reports a residual fingertip gap even during
+                    # physical contact. Subtract an explicitly calibrated
+                    # sensor deadzone so a demonstrated pinch commands robot
+                    # contact instead of faithfully preserving that bias.
+                    desired_distance = max(
+                        0.0, raw_distance - self.thumb_contact_deadzone
+                    ) * thumb_distance_scale
                     activation = max(
                         0.0,
                         1.0 - raw_distance / THUMB_DISTANCE_THRESHOLD,
@@ -693,7 +846,9 @@ class L20Retargeter:
                             self._frame_by_landmark[4],
                             self._frame_by_landmark[tip_landmark],
                             desired_distance,
-                            distance_weight * activation,
+                            distance_weight
+                            * activation
+                            * self.thumb_distance_weight_scale,
                         )
                     )
                 # The somehand direction/frame terms are useful during curl and
@@ -885,8 +1040,34 @@ class L20Retargeter:
             total_evaluations += int(result.nfev)
             success = success and bool(result.success)
 
-        # The regularizer anchors on the raw solution while the emitted command
-        # is filtered, so smoothing never fights the optimizer's own history.
+        # A labelled endpoint calibration can reserve the mechanism's final
+        # travel for a demonstrated fully curled finger. MANUS chain bend
+        # differs strongly by finger (especially the pinky), so one global gain
+        # cannot make all four physical endpoints agree. Blend only near each
+        # measured endpoint; ordinary and pinch poses remain solver-driven.
+        for finger, (bend_low, bend_high) in self.finger_curl_ranges.items():
+            human_bend = chain_bend_angle(
+                raw_landmarks[list(CANONICAL_FINGERS[finger])]
+            )
+            activation = float(
+                np.clip((human_bend - bend_low) / (bend_high - bend_low), 0.0, 1.0)
+            )
+            if activation <= 0.0:
+                continue
+            flex_indices = np.asarray(
+                [
+                    index
+                    for index in self._finger_joints[finger]
+                    if not self._active_joint_names[index].endswith("mcp_roll")
+                ],
+                dtype=int,
+            )
+            solution[flex_indices] += activation * (
+                self._active_upper[flex_indices] - solution[flex_indices]
+            )
+
+        # The next solve warm-starts from the calibrated solution while the
+        # emitted command is filtered, so output smoothing remains independent.
         self.last_qpos = solution
         if self.filtered_qpos is None:
             self.filtered_qpos = solution.copy()
@@ -971,9 +1152,14 @@ class L20Retargeter:
         self.last_qpos = np.clip(
             np.zeros(self.model.nq), self._active_lower, self._active_upper
         )
+        if self.thumb_cmc_reference is not None:
+            self.last_qpos[
+                [self._thumb_yaw_index, self._thumb_roll_index]
+            ] = self.thumb_cmc_reference
         self.filtered_qpos = None
         self._q_current = self.last_qpos.copy()
         self._thumb_activation_state = 0.0
+        self._thumb_contact_activation_state = 0.0
 
     def close(self) -> None:
         """Kept for API compatibility; pinocchio holds no external resources."""

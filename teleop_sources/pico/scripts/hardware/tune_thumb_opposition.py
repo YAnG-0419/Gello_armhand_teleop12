@@ -9,7 +9,8 @@ keys adjust the pose live:
   w / s   thumb cmc roll  + / -
   j / k   thumb curl      - / +   (drives cmc pitch + MCP/IP flex together,
                                    exactly like fixed-opposition teleop)
-  f       toggle the four fingers between open and half-curled around a tool
+  i       toggle the recorded index-pinch finger pose
+  f       toggle all four fingers between open and half-curled around a tool
   p       print the current values
   q       quit and print the values to paste into hand_retarget.py
 
@@ -46,6 +47,8 @@ from pico_bimanual_franka_teleop.hand_retarget import (  # noqa: E402
 from pico_bimanual_franka_teleop.hand_stream import build_hand_packet  # noqa: E402
 
 FINGER_HALF_CURL = 0.9
+ANGLE_STEP = 0.02
+CURL_STEP = 0.02
 
 
 def teleop_processes() -> list[str]:
@@ -57,20 +60,32 @@ def teleop_processes() -> list[str]:
             command = (process / "cmdline").read_bytes().replace(b"\0", b" ")
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
-        if b"teleop_dual_fr3.py" in command or b"teleop_hands.py" in command:
+        if any(
+            name in command
+            for name in (
+                b"teleop_dual_fr3.py",
+                b"teleop_hands.py",
+                b"teleop_manus_hands.py",
+            )
+        ):
             matches.append(command.decode(errors="replace").strip())
     return matches
 
 
 class ThumbTuner:
-    def __init__(self, retargeter: L20Retargeter) -> None:
+    def __init__(self, retargeter: L20Retargeter, *, pinch: bool = False) -> None:
         self.retargeter = retargeter
         self.names = list(retargeter.joint_names)
         self.index = {name: i for i, name in enumerate(self.names)}
         self.yaw, self.roll = (
-            float(v) for v in THUMB_OPPOSITION_YAW_ROLL[retargeter.side]
+            (0.67, 0.94)
+            if pinch and retargeter.side == "left"
+            else tuple(
+                float(v) for v in THUMB_OPPOSITION_YAW_ROLL[retargeter.side]
+            )
         )
-        self.curl = 0.5
+        self.curl = 0.42 if pinch and retargeter.side == "left" else 0.5
+        self.pinch_pose = bool(pinch)
         self.fingers_curled = False
 
     def _limit(self, name: str) -> tuple[float, float]:
@@ -90,7 +105,11 @@ class ThumbTuner:
         put("thumb_cmc_pitch", pitch_low + self.curl * (pitch_high - pitch_low))
         mcp_low, mcp_high = self._limit("thumb_mcp")
         put("thumb_mcp", mcp_low + self.curl * (mcp_high - mcp_low))
-        if self.fingers_curled:
+        if self.pinch_pose:
+            put("index_mcp_roll", -0.17)
+            put("index_mcp_pitch", 0.94)
+            put("index_pip", 0.57)
+        elif self.fingers_curled:
             for finger in ("index", "middle", "ring", "pinky"):
                 put(f"{finger}_mcp_pitch", FINGER_HALF_CURL)
                 put(f"{finger}_pip", FINGER_HALF_CURL)
@@ -111,7 +130,8 @@ class ThumbTuner:
             f"yaw {self.yaw:5.2f} [{yaw_low:.2f},{yaw_high:.2f}]   "
             f"roll {self.roll:5.2f} [{roll_low:.2f},{roll_high:.2f}]   "
             f"curl {self.curl:4.2f}   "
-            f"fingers {'half-curled' if self.fingers_curled else 'open'}"
+            f"fingers "
+            f"{'index-pinch' if self.pinch_pose else ('half-curled' if self.fingers_curled else 'open')}"
         )
 
     def handle(self, key: str) -> bool:
@@ -119,19 +139,23 @@ class ThumbTuner:
         yaw_low, yaw_high = self._limit("thumb_cmc_yaw")
         roll_low, roll_high = self._limit("thumb_cmc_roll")
         if key == "a":
-            self.yaw = float(np.clip(self.yaw - 0.05, yaw_low, yaw_high))
+            self.yaw = float(np.clip(self.yaw - ANGLE_STEP, yaw_low, yaw_high))
         elif key == "d":
-            self.yaw = float(np.clip(self.yaw + 0.05, yaw_low, yaw_high))
+            self.yaw = float(np.clip(self.yaw + ANGLE_STEP, yaw_low, yaw_high))
         elif key == "s":
-            self.roll = float(np.clip(self.roll - 0.05, roll_low, roll_high))
+            self.roll = float(np.clip(self.roll - ANGLE_STEP, roll_low, roll_high))
         elif key == "w":
-            self.roll = float(np.clip(self.roll + 0.05, roll_low, roll_high))
+            self.roll = float(np.clip(self.roll + ANGLE_STEP, roll_low, roll_high))
         elif key == "j":
-            self.curl = float(np.clip(self.curl - 0.1, 0.0, 1.0))
+            self.curl = float(np.clip(self.curl - CURL_STEP, 0.0, 1.0))
         elif key == "k":
-            self.curl = float(np.clip(self.curl + 0.1, 0.0, 1.0))
+            self.curl = float(np.clip(self.curl + CURL_STEP, 0.0, 1.0))
+        elif key == "i":
+            self.pinch_pose = not self.pinch_pose
+            self.fingers_curled = False
         elif key == "f":
             self.fingers_curled = not self.fingers_curled
+            self.pinch_pose = False
         elif key == "q":
             return False
         return True
@@ -148,6 +172,11 @@ def main() -> int:
         help="where linker_hand_bridge listens (default: 5570)",
     )
     parser.add_argument("--rate", type=float, default=30.0)
+    parser.add_argument(
+        "--pinch",
+        action="store_true",
+        help="start from the recorded left index-pinch finger/thumb anchor",
+    )
     args = parser.parse_args()
 
     running = teleop_processes()
@@ -164,7 +193,7 @@ def main() -> int:
     retargeter = L20Retargeter(
         assets / args.side / f"linkerhand_l20_{args.side}.urdf", args.side
     )
-    tuner = ThumbTuner(retargeter)
+    tuner = ThumbTuner(retargeter, pinch=args.pinch)
 
     print(__doc__)
     print("The hand WILL move. Keep it clear of the arm and the table.")
@@ -212,10 +241,13 @@ def main() -> int:
 
     print()
     print("Final values - paste into hand_retarget.py to keep them:")
-    print(
-        f'  THUMB_OPPOSITION_YAW_ROLL["{args.side}"] entry: '
-        f"({tuner.yaw:.2f}, {tuner.roll:.2f})"
+    label = (
+        "MANUS_LEFT_PINCH_OPPOSITION"
+        if args.side == "left" and args.pinch
+        else f'THUMB_OPPOSITION_YAW_ROLL["{args.side}"] entry'
     )
+    print(f"  {label}: ({tuner.yaw:.2f}, {tuner.roll:.2f})")
+    print(f"  pinch curl fraction: {tuner.curl:.2f}")
     print(
         "Stream stopped; the bridge watchdog now stops publishing and the "
         "hand holds its last slewed position."
