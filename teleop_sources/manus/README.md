@@ -60,9 +60,9 @@ The right O30i driver maps URDF lower and upper limits to normalized ticks 0 and
 
 ## Accuracy recording
 
-The endpoint protocol tests four explicit expectations: a fully open human hand
+The endpoint protocol tests five explicit expectations: a fully open human hand
 maps to an open robot, four fully curled fingers map to their closed range,
-thumb-index pinch reaches the configured contact pose, and a fully curled thumb
+thumb-index and thumb-middle pinches reach contact, and a fully curled thumb
 reaches its closed range. For the left G20, physical contact—not L20 URDF FK—is
 the pinch ground truth. Stop the normal operator first, then record without
 hardware:

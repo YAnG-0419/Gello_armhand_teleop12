@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize the four endpoint criteria in a MANUS accuracy recording."""
+"""Summarize open, curl, thumb, index-pinch, and middle-pinch criteria."""
 
 from __future__ import annotations
 
@@ -100,6 +100,24 @@ def replay_current(rows: list[dict], metadata: dict) -> None:
             retargeter.close()
 
 
+def pinch_gaps(rows: list[dict], fingertip: int) -> tuple[list[float], list[float]]:
+    robot_gaps = []
+    target_gaps = []
+    for row in rows:
+        derived = row.get("derived") or {}
+        robot = np.asarray(derived.get("robot_landmarks_emitted"), dtype=float)
+        target = np.asarray(derived.get("target_landmarks_robot"), dtype=float)
+        if robot.shape == (21, 3):
+            robot_gaps.append(
+                1000.0 * float(np.linalg.norm(robot[4] - robot[fingertip]))
+            )
+        if target.shape == (21, 3):
+            target_gaps.append(
+                1000.0 * float(np.linalg.norm(target[4] - target[fingertip]))
+            )
+    return robot_gaps, target_gaps
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording")
@@ -144,18 +162,12 @@ def main() -> int:
             closure(row, contract, ("thumb",))
             for row in grouped[(side, "thumb_fully_curled")]
         ]
-        gaps = []
-        target_gaps = []
-        for row in grouped[(side, "thumb_index_pinch")]:
-            derived = row.get("derived") or {}
-            robot = np.asarray(derived.get("robot_landmarks_emitted"), dtype=float)
-            target = np.asarray(derived.get("target_landmarks_robot"), dtype=float)
-            if robot.shape == (21, 3):
-                gaps.append(1000.0 * float(np.linalg.norm(robot[4] - robot[8])))
-            if target.shape == (21, 3):
-                target_gaps.append(
-                    1000.0 * float(np.linalg.norm(target[4] - target[8]))
-                )
+        gaps, target_gaps = pinch_gaps(
+            grouped[(side, "thumb_index_pinch")], 8
+        )
+        middle_gaps, middle_target_gaps = pinch_gaps(
+            grouped[(side, "thumb_middle_pinch")], 12
+        )
         thumb_bends = []
         for row in grouped[(side, "thumb_fully_curled")]:
             robot = np.asarray(
@@ -207,6 +219,13 @@ def main() -> int:
         print("  " + percentile(thumb))
         if thumb_bends:
             print("  robot FK total thumb bend deg: " + percentile(thumb_bends))
+        print("5 thumb-middle pinch: robot FK gap mm, ideal 0")
+        print("  " + (percentile(middle_gaps) if middle_gaps else "not recorded"))
+        if middle_target_gaps:
+            print(
+                "  normalized MANUS target gap mm: "
+                + percentile(middle_target_gaps)
+            )
     return 0
 
 

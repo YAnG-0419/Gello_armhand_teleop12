@@ -37,6 +37,10 @@ PHASES = (
         "thumb_fully_curled",
         "Fully curl the thumb into the palm; keep the other fingers open.",
     ),
+    (
+        "thumb_middle_pinch",
+        "Touch the thumb tip to the middle fingertip in a firm pinch.",
+    ),
 )
 
 
