@@ -115,13 +115,8 @@ class DualFr3HardwareTeleop:
         self.teleop_input.disable_all("resetting to initial pose")
         for mapper in self.mappers.values():
             mapper.reset()
-        if self.hands is not None:
-            self.hands.request_open(sides=(side,) if side else None)
         scope = f"{side} arm" if side else "arms"
-        self._notify(
-            f"reset: moving {scope} to the initial pose"
-            + ("; opening hands" if self.hands is not None else "")
-        )
+        self._notify(f"reset: moving {scope} to the initial pose")
 
         def worker() -> None:
             try:
@@ -132,6 +127,17 @@ class DualFr3HardwareTeleop:
 
         self.reset_thread = threading.Thread(target=worker, daemon=True)
         self.reset_thread.start()
+
+    def _open_hands(self, sides: tuple[str, ...]) -> None:
+        """Stop selected sides following, then stream their open pose."""
+        selected = tuple(side for side in SIDES if side in sides)
+        if self.hands is None:
+            self._notify("hands: not running, start with --hand-source")
+            return
+        for side in selected:
+            self.teleop_input.deny(side, "opening hand")
+        self.hands.request_open(sides=selected)
+        self._notify("hands: opening " + "/".join(selected))
 
     def _service_reset(self) -> None:
         """Fold a finished reset back into the loop, on the control thread."""
@@ -226,16 +232,14 @@ class DualFr3HardwareTeleop:
                 sample = self.teleop_input.sample()
                 take_requests = getattr(self.teleop_input, "take_requests", None)
                 requests = take_requests() if take_requests is not None else {}
-                if requests.get("open_hands"):
-                    if self.hands is not None:
-                        self.hands.request_open()
-                        self._notify(
-                            "hands: opening (sides not currently following)"
-                        )
-                    else:
-                        self._notify(
-                            "hands: not running, start with --hand-source"
-                        )
+                open_sides = {
+                    side
+                    for side in SIDES
+                    if requests.get("open_hands")
+                    or requests.get(f"open_{side}_hand")
+                }
+                if open_sides:
+                    self._open_hands(tuple(open_sides))
                 if requests.get("reset"):
                     self._start_reset()
                 elif requests.get("reset_left"):

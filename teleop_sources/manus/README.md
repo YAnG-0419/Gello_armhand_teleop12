@@ -29,7 +29,7 @@ Use the repository wrapper:
 scripts/run_teleop.sh
 ```
 
-It starts the unified PICO motion-tracker and bimanual MANUS backend. Use the PySide6 operator GUI to engage, disengage, open, or home each side.
+It starts the unified PICO motion-tracker and bimanual MANUS backend. Use the PySide6 operator GUI to engage or disengage each side, home arms, and open hands as independent per-side actions.
 
 ## Hands-only
 

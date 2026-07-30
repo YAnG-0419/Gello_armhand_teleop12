@@ -99,13 +99,6 @@ def main() -> None:
         help="hand commands per second per side; the vendor driver drops "
         "commands above about 100 Hz (default: 30)",
     )
-    parser.add_argument(
-        "--hand-sides",
-        default=None,
-        choices=("left", "right", "both"),
-        help="dynamic hand sides for --hand-source pico or manus "
-        "(default: both)",
-    )
     parser.add_argument("--left-hand-model", default="g20")
     parser.add_argument(
         "--right-hand-model",
@@ -128,8 +121,7 @@ def main() -> None:
             )
         from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
 
-        hand_sides = args.hand_sides or "both"
-        sides = ("left", "right") if hand_sides == "both" else (hand_sides,)
+        sides = ("left", "right")
         models = {
             side: (getattr(args, f"{side}_hand_model") or "g20")
             for side in sides
@@ -149,10 +141,6 @@ def main() -> None:
             parser.error(
                 "manus requires --arm-source motion-trackers"
             )
-        hand_sides = args.hand_sides or "both"
-        dynamic_sides = (
-            ("left", "right") if hand_sides == "both" else (hand_sides,)
-        )
         from manus_teleop import ManusHandPipeline
 
         def create_manus_pipeline(_xrt):
@@ -161,7 +149,7 @@ def main() -> None:
                 port=args.hand_port,
                 rate=args.hand_rate,
                 debug_log=args.hand_debug_log,
-                dynamic_sides=dynamic_sides,
+                dynamic_sides=("left", "right"),
                 models={
                     "left": args.left_hand_model,
                     "right": args.right_hand_model or "o30i",

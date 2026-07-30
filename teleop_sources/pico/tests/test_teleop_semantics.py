@@ -13,7 +13,10 @@ import numpy as np
 import pinocchio as pin
 import pytest
 
-from pico_bimanual_franka_teleop.hardware import reseed_inactive_joints
+from pico_bimanual_franka_teleop.hardware import (
+    DualFr3HardwareTeleop,
+    reseed_inactive_joints,
+)
 from pico_bimanual_franka_teleop.ik import BimanualPinkIK, classify_step
 from pico_bimanual_franka_teleop.pose_mapping import RelativePoseMapper
 from pico_bimanual_franka_teleop.types import Pose
@@ -63,6 +66,56 @@ def test_inactive_and_newly_engaging_sides_reseed_independently():
     )
     np.testing.assert_array_equal(result[:7], measured[:7])
     np.testing.assert_array_equal(result[7:], held[7:])
+
+
+def test_open_hand_disengages_only_selected_side_before_opening():
+    denied = []
+    opened = []
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.teleop_input = type(
+        "Input",
+        (),
+        {"deny": lambda _self, side, reason: denied.append((side, reason))},
+    )()
+    teleop.hands = type(
+        "Hands",
+        (),
+        {"request_open": lambda _self, *, sides: opened.append(sides)},
+    )()
+    teleop._notify = lambda _message: None
+
+    teleop._open_hands(("right",))
+
+    assert denied == [("right", "opening hand")]
+    assert opened == [("right",)]
+
+
+def test_home_arm_does_not_also_open_the_hand():
+    opened = []
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.teleop_input = type(
+        "Input",
+        (),
+        {"disable_all": lambda _self, _reason: None},
+    )()
+    teleop.mappers = {
+        side: type("Mapper", (), {"reset": lambda _self: None})()
+        for side in ("left", "right")
+    }
+    teleop.hands = type(
+        "Hands",
+        (),
+        {"request_open": lambda _self, **_kwargs: opened.append(True)},
+    )()
+    teleop.reset_invoker = lambda side: (True, side or "both")
+    teleop.reset_thread = None
+    teleop.reset_outcome = []
+    teleop._notify = lambda _message: None
+
+    teleop._start_reset("left")
+    teleop.reset_thread.join(timeout=1.0)
+
+    assert opened == []
 
 
 def test_translation_maps_one_to_one():

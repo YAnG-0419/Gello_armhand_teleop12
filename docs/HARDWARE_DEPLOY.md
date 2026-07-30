@@ -34,7 +34,7 @@ conda activate base
 python teleop_sources/gui/operator_gui.py
 ```
 
-The backend starts disengaged and writes a fresh diagnostics directory. GUI loss disengages all sides. Engage gates each arm and its hand together; Home disengages before moving; Open affects disengaged hands.
+The backend starts disengaged and writes a fresh diagnostics directory. GUI loss disengages all sides. Engage gates each arm and its hand together. `Home arm` moves only the selected arm; `Open hand` first stops that side following and then opens only the selected hand. Each action supports left, right, or both.
 
 ## Stop
 
@@ -81,9 +81,9 @@ conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/
 
 The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. Add `--left-thumb full` only for the experimental G20 solver. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `teleop_sources/manus/config`.
 
-## Reset
+## Arm home and hand open
 
-The GUI Home buttons are preferred. The service equivalent is:
+Use the GUI for independent per-side `Home arm` and `Open hand` actions. There is deliberately no combined arm-and-hand home action; request both actions explicitly when both are wanted. The arm service equivalent is:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop/docker

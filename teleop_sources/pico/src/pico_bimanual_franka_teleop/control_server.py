@@ -33,13 +33,13 @@ class OperatorConsole:
     serves to frontends.
     """
 
-    def __init__(self, sides: tuple[str, ...] = SIDES) -> None:
-        if not sides or set(sides).difference(SIDES):
-            raise ValueError(f"Invalid console sides: {sides}")
-        self.sides = tuple(sides)
+    def __init__(self) -> None:
+        self.sides = SIDES
         self.active = {side: False for side in SIDES}
         self.requests = {
             "open_hands": False,
+            "open_left_hand": False,
+            "open_right_hand": False,
             "reset": False,
             "reset_left": False,
             "reset_right": False,
@@ -153,7 +153,7 @@ def _require_side(arguments) -> str:
 
 
 class OperatorControlServer(socketserver.ThreadingTCPServer):
-    """Serves engage/disengage/open/home commands into the console."""
+    """Serves engage/disengage, arm-home, and hand-open commands."""
 
     allow_reuse_address = True
     daemon_threads = True
@@ -190,12 +190,21 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
 
     # -- commands ---------------------------------------------------------
 
-    def _reset(self, arguments) -> None:
+    def _scoped_request(
+        self,
+        arguments,
+        *,
+        both: str,
+        left: str,
+        right: str,
+    ) -> None:
         scope = str(arguments.get("side", "both"))
         if scope == "both":
-            self.keyboard.request("reset")
-        elif scope in ("left", "right"):
-            self.keyboard.request(f"reset_{scope}")
+            self.keyboard.request(both)
+        elif scope == "left":
+            self.keyboard.request(left)
+        elif scope == "right":
+            self.keyboard.request(right)
         else:
             raise ValueError("side must be left, right, or both")
 
@@ -211,8 +220,18 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
             "disengage_all": lambda: self.keyboard.disable_all(
                 "operator frontend"
             ),
-            "open_hands": lambda: self.keyboard.request("open_hands"),
-            "reset": lambda: self._reset(arguments),
+            "open_hand": lambda: self._scoped_request(
+                arguments,
+                both="open_hands",
+                left="open_left_hand",
+                right="open_right_hand",
+            ),
+            "home_arm": lambda: self._scoped_request(
+                arguments,
+                both="reset",
+                left="reset_left",
+                right="reset_right",
+            ),
         }
         handler = commands.get(command)
         if handler is None:

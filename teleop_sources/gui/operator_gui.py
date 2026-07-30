@@ -90,7 +90,10 @@ class OperatorWindow(QMainWindow):
             self.engage_buttons[side] = engage
             grid.addWidget(engage, 0, 0)
             grid.addWidget(
-                self._button("Home", "reset", {"side": side}), 1, 0
+                self._button("Home arm", "home_arm", {"side": side}), 1, 0
+            )
+            grid.addWidget(
+                self._button("Open hand", "open_hand", {"side": side}), 2, 0
             )
             sides_row.addWidget(box)
         layout.addLayout(sides_row)
@@ -102,8 +105,12 @@ class OperatorWindow(QMainWindow):
             "background-color: #a83232; color: white; font-weight: bold;"
         )
         actions.addWidget(disengage_all, stretch=2)
-        actions.addWidget(self._button("Open hands", "open_hands"))
-        actions.addWidget(self._button("Home both", "reset"))
+        actions.addWidget(
+            self._button("Open both hands", "open_hand", {"side": "both"})
+        )
+        actions.addWidget(
+            self._button("Home both arms", "home_arm", {"side": "both"})
+        )
         layout.addLayout(actions)
 
         self.feedback = QPlainTextEdit()

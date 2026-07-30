@@ -49,11 +49,15 @@ def test_dispatch_maps_commands_onto_the_console():
         server.dispatch("engage", {"side": "right"})
         server.dispatch("disengage_all", {})
         assert console.active == {"left": False, "right": False}
-        server.dispatch("open_hands", {})
-        server.dispatch("reset", {"side": "left"})
-        server.dispatch("reset", {})
+        server.dispatch("open_hand", {"side": "right"})
+        server.dispatch("open_hand", {})
+        server.dispatch("home_arm", {"side": "left"})
+        server.dispatch("home_arm", {})
         requests = console.take_requests()
-        assert requests["open_hands"] and requests["reset_left"] and requests["reset"]
+        assert requests["open_right_hand"] and requests["open_hands"]
+        assert requests["reset_left"] and requests["reset"]
+        with pytest.raises(ValueError):
+            server.dispatch("open_hand", {"side": "middle"})
         with pytest.raises(ValueError):
             server.dispatch("engage", {"side": "middle"})
         with pytest.raises(ValueError):
