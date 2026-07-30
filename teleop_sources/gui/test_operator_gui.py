@@ -12,6 +12,7 @@ sys.path.insert(
     0, str(REPO_ROOT / "teleop_sources" / "pico" / "src")
 )
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from pico_bimanual_franka_teleop.control_server import (
@@ -44,7 +45,10 @@ def _wait(application, predicate, timeout: float = 5.0) -> None:
     raise AssertionError("GUI state did not converge before timeout")
 
 
-def test_backend_crash_displays_disconnect_and_reconnects_safely():
+def test_backend_crash_displays_disconnect_and_reconnects_safely(tmp_path):
+    QSettings.setPath(
+        QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
+    )
     application = QApplication.instance() or QApplication([])
     port = _unused_port()
     context = multiprocessing.get_context("spawn")
@@ -68,17 +72,30 @@ def test_backend_crash_displays_disconnect_and_reconnects_safely():
         backend.join(timeout=2.0)
         _wait(application, lambda: window.connection_state == "disconnected")
         assert window.connection_indicator.text().startswith("DISCONNECTED")
-        assert "backend status unavailable" in window.status_label.text()
+        assert "backend status unavailable" in window.status_label.toPlainText()
         assert window.disconnect_message is not None
         assert window.disconnect_message.isVisible()
-        assert window.reconnect_action.isEnabled()
+        assert window.disconnect_message.text() == (
+            "The teleoperation backend connection was lost."
+        )
+        assert window.connect_action.isEnabled()
         assert not window.engage_buttons["left"].isChecked()
         assert not window.engage_buttons["left"].isEnabled()
 
-        backend = context.Process(target=_serve, args=(port,), daemon=True)
+        reconnect_port = _unused_port()
+        backend = context.Process(
+            target=_serve, args=(reconnect_port,), daemon=True
+        )
         backend.start()
-        window.reconnect_action.trigger()
+        window.disconnect_message.accept()
+        window.connect_action.trigger()
+        _wait(application, lambda: window.connection_dialog is not None)
+        assert window.connection_dialog.host_field.text() == "127.0.0.1"
+        assert window.connection_dialog.port_field.value() == port
+        window.connection_dialog.port_field.setValue(reconnect_port)
+        window.connection_dialog._accept_if_valid()
         _wait(application, lambda: window.connection_state == "connected")
+        assert window.port == reconnect_port
         assert window.engage_buttons["left"].isEnabled()
         assert not window.engage_buttons["left"].isChecked()
         assert window.disconnect_message is None
