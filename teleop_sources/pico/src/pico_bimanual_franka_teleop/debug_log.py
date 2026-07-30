@@ -62,14 +62,17 @@ class FollowDebugLogger:
         self._file.write(
             json.dumps(
                 {
-                    "schema": "follow-debug.v4",
+                    "schema": "follow-debug.v5",
                     "written_at": time.time(),
                     "fields": "t monotonic; q_measured, q_commanded 14 joints; "
                     "per side: engaged, raw_tracker/tracker/target/ee_cmd/"
                     "ee_meas poses with rotations as world-frame rotation "
                     "vectors; ik = {ep m, eo rad, sat 1-based saturated "
                     "joints, lim [joint, margin rad] near position limits} "
-                    "for sides the IK stepped",
+                    "for sides the IK stepped; feed = {ts SDK motion "
+                    "timestamp ns, age s since the last new frame, ok "
+                    "snapshot readable, n trackers the SDK listed} when the "
+                    "input source reports it",
                 }
             )
             + "\n"
@@ -87,6 +90,7 @@ class FollowDebugLogger:
         raw_tracker_poses: dict | None = None,
         measured_ee_poses: dict | None = None,
         ik_diagnostics: dict | None = None,
+        feed_state: dict | None = None,
     ) -> None:
         if self._failed:
             return
@@ -96,6 +100,8 @@ class FollowDebugLogger:
                 "q_meas": [round(float(v), 5) for v in np.asarray(q_measured)],
                 "q_cmd": [round(float(v), 5) for v in np.asarray(q_commanded)],
             }
+            if feed_state is not None:
+                row["feed"] = feed_state
             raw_tracker_poses = raw_tracker_poses or {}
             measured_ee_poses = measured_ee_poses or {}
             ik_diagnostics = ik_diagnostics or {}

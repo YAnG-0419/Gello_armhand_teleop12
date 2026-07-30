@@ -298,6 +298,9 @@ class DualFr3HardwareTeleop:
                     raw_poses = (
                         raw_pose_reader() if raw_pose_reader is not None else {}
                     )
+                    feed_reader = getattr(
+                        self.teleop_input, "debug_feed_state", None
+                    )
                     self.debug_logger.record(
                         time.monotonic(),
                         q,
@@ -309,6 +312,9 @@ class DualFr3HardwareTeleop:
                         raw_tracker_poses=raw_poses,
                         measured_ee_poses=self.ik.frame_poses(q),
                         ik_diagnostics=self.ik.last_diagnostics,
+                        feed_state=(
+                            feed_reader() if feed_reader is not None else None
+                        ),
                     )
                 # Hands go after the arm command so the deadline-critical work
                 # is never queued behind a hand solve. Each hand follows only

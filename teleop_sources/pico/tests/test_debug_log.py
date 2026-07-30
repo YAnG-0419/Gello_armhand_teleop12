@@ -37,7 +37,7 @@ def test_follow_debug_log_records_raw_and_both_fk_streams(tmp_path):
     header, row = [
         json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
     ]
-    assert header["schema"] == "follow-debug.v4"
+    assert header["schema"] == "follow-debug.v5"
     assert row["left"]["raw_tracker"]["p"] == [1.0, 2.0, 3.0]
     assert row["left"]["tracker"]["p"] == [1.0, 2.0, 3.0]
     assert row["left"]["ee_cmd"]["p"] == [1.0, 2.0, 3.0]

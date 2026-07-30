@@ -23,7 +23,8 @@ Status:
 - Arms are settled (quiet EE tremor 3.4 mrad / 0.83 mm); do not retune
   without reading the git history. Contact is RESOLVED (auto thresholds +
   torque gating, [CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md)); IK
-  failures are classified live and per tick (follow-debug.v4). Initial pose
+  failures are classified live and per tick (follow-debug.v5, with per-tick
+  SDK feed forensics: ts/age/ok/n). Initial pose
   recaptured 2026-07-29; per-side home services exist. Gateway verdicts
   stream back (protocol v2): a rejected engage shows its reason in the GUI.
 - Bimanual MANUS ran on hardware 2026-07-29 evening; both gloves stream

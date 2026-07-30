@@ -402,6 +402,7 @@ class MotionTrackerInput:
         self.last_rotation_changed_at = {side: None for side in SIDES}
         self.last_activations = {side: False for side in SIDES}
         self.detected_serials: list[str] = []
+        self.last_snapshot_ok = True
         self.readiness = {side: "waiting" for side in SIDES}
         # The injected keyboard/console is adopted, lifecycle included; a
         # headless OperatorConsole is the default operator surface.
@@ -530,6 +531,25 @@ class MotionTrackerInput:
             )
         return " | ".join(parts)
 
+    def debug_feed_state(self) -> dict:
+        """SDK-feed forensics for the follow-debug log.
+
+        Distinguishes, per tick, the three feed conditions the operator
+        cannot tell apart from a 'missing or stale' line: a consistency-read
+        race (ok=False while ts keeps advancing), a frozen SDK timestamp
+        (ok=True, age grows), and the headset not listing trackers (n drops).
+        """
+        return {
+            "ts": self.last_motion_timestamp,
+            "age": (
+                None
+                if self.last_motion_update_at is None
+                else round(time.monotonic() - self.last_motion_update_at, 4)
+            ),
+            "ok": self.last_snapshot_ok,
+            "n": len(self.detected_serials),
+        }
+
     def _motion_fault(
         self,
         poses: dict[str, Pose],
@@ -621,23 +641,31 @@ class MotionTrackerInput:
     def sample(self) -> TeleopSample | None:
         activations = self.keyboard.poll()
         snapshot = self._snapshot()
+        self.last_snapshot_ok = snapshot is not None
         now = time.monotonic()
         if snapshot is not None:
             timestamp, raw_poses, _ = snapshot
             if timestamp != self.last_motion_timestamp:
                 self.last_motion_update_at = now
-        if (
-            snapshot is None
-            or self.last_motion_update_at is None
+        stale = (
+            self.last_motion_update_at is None
             or now - self.last_motion_update_at > self.stale_timeout
-        ):
-            if snapshot is not None and self.last_motion_update_at is not None:
-                age = now - self.last_motion_update_at
-                for side in SIDES:
-                    self.readiness[side] = (
-                        f"stale: no new SDK motion frame for {age:.2f}s"
-                    )
-            self.disable_all("motion tracker data missing or stale")
+        )
+        if snapshot is None or stale:
+            if stale:
+                if snapshot is not None and self.last_motion_update_at is not None:
+                    age = now - self.last_motion_update_at
+                    for side in SIDES:
+                        self.readiness[side] = (
+                            f"stale: no new SDK motion frame for {age:.2f}s"
+                        )
+                self.disable_all("motion tracker data missing or stale")
+            # An unreadable snapshot inside the stale grace holds this tick
+            # WITHOUT dropping engagement: the consistency triple-read races
+            # with a healthy feed under scheduling delay (measured 1-2 tick
+            # dropouts mid-engagement on 20260729_183150 at a perfect 11 ms
+            # loop cadence). A real loss freezes the SDK timestamp and still
+            # disables within stale_timeout.
             return None
         poses = {
             side: _apply_local_transform(
