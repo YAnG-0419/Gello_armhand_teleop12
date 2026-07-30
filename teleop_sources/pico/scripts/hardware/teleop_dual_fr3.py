@@ -76,10 +76,8 @@ def main() -> None:
     parser.add_argument(
         "--hand-source",
         default="none",
-        choices=("none", "pico", "manus", "right-only-manus"),
-        help="hand source integrated into this operator process; "
-        "right-only-manus is a deprecated alias for manus with "
-        "--hand-sides right (default: none)",
+        choices=("none", "pico", "manus"),
+        help="hand source integrated into this operator process (default: none)",
     )
     parser.add_argument(
         "--hand-debug-log",
@@ -146,20 +144,12 @@ def main() -> None:
             models=models,
             debug_log=args.hand_debug_log,
         )
-    elif args.hand_source in ("manus", "right-only-manus"):
+    elif args.hand_source == "manus":
         if args.arm_source != "motion-trackers":
             parser.error(
-                f"{args.hand_source} requires --arm-source motion-trackers"
+                "manus requires --arm-source motion-trackers"
             )
-        if args.hand_source == "right-only-manus":
-            if args.hand_sides is not None:
-                parser.error(
-                    "right-only-manus fixes the dynamic side to right; "
-                    "use --hand-source manus with --hand-sides instead"
-                )
-            hand_sides = "right"
-        else:
-            hand_sides = args.hand_sides or "both"
+        hand_sides = args.hand_sides or "both"
         dynamic_sides = (
             ("left", "right") if hand_sides == "both" else (hand_sides,)
         )
