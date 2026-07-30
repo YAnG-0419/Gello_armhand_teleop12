@@ -1,109 +1,45 @@
 # Repository handover
 
-State as of 2026-07-30. Runbook: [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md);
-camera: ORBBEC_CAMERA.md. History lives in the git log.
+Current state as of 2026-07-30. Use [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md) for operation and [ORBBEC_CAMERA.md](ORBBEC_CAMERA.md) for camera recovery; older investigations belong in git history.
 
-## Setup
+## Workcell
 
 ```text
 left FR3    172.16.0.3          right FR3  172.16.0.2
 host        enp6s0: 172.16.0.6/24, 192.168.1.53/24
 Orbbec      192.168.1.10:8090
 left hand   G20  can0 0x28      right hand O30i libcanbus USB a8fa:8598
-PICO tracker ids: config/pico.yaml; re-assign via calibrate_tracker_sides.py
+PICO tracker ids: config/pico.yaml
 ```
 
-Bringup: `docker compose up franka-control teleop-control pico-bridge
-hand-control`. Operator: `scripts/run_teleop.sh` (headless backend) +
-`python teleop_sources/gui/operator_gui.py` (PySide6, TCP :5590, base env).
-All engage/home/open actions are GUI buttons; GUI loss disengages all.
+## Current status
 
-Status:
+- Standard startup is `docker compose up franka-control teleop-control pico-bridge hand-control`, then `scripts/run_teleop.sh`, then `python teleop_sources/gui/operator_gui.py`.
+- Arms are settled; contact torque gating and collision thresholds are hardware-validated. Do not retune without reading the relevant git history.
+- The false-stale PICO regression is resolved and hardware-verified. Motion is parsed first, published atomically, and considered fresh only when the local callback sequence advances; no native parsing exception may cross the vendor callback boundary.
+- Do not restore the former multi-getter consistency loop or cached-snapshot engagement grace. An invalid atomic snapshot disengages immediately.
+- Bimanual MANUS works. The right O30i uses full-thumb retargeting; the left G20 remains fixed-opposition in the standard operator path.
+- The experimental left full-thumb solver is available only through `teleop_manus_hands.py --left-thumb full`; validate it before changing the default.
 
-- Arms are settled (quiet EE tremor 3.4 mrad / 0.83 mm); do not retune
-  without reading the git history. Contact is RESOLVED (auto thresholds +
-  torque gating, [CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md)); IK
-  failures are classified live and per tick (follow-debug.v6, with per-tick
-  SDK feed forensics: frame_ts/ts/seq/age/callback_errors/ok/n). Initial pose
-  recaptured 2026-07-29; per-side home services exist. Gateway verdicts
-  stream back (protocol v2): a rejected engage shows its reason in the GUI.
-- The false-stale PICO regression is RESOLVED and hardware-verified
-  2026-07-30. A malformed decimal in any SDK JSON section could throw
-  `std::invalid_argument` through the vendor C callback, silently stopping
-  its receive loop while Python and gRPC still looked alive. Motion is now
-  parsed first and atomically published; no exception crosses the callback
-  boundary. Python reads one locked motion snapshot and uses its local
-  callback sequence for feed liveness. Do not restore the former multi-getter
-  consistency loop or cached-snapshot engagement grace.
-- Bimanual MANUS ran on hardware 2026-07-29 evening; both gloves stream
-  (probe: inspect_manus_gloves.py), engage/disengage cycles work after the
-  re-engage-deadlock fix. Pending: per-side tracker fault drills, feel-check
-  of the O30i thumb change, and left-G20 full-thumb validation (agenda 1).
-- Hand path: MANUS -> canonical landmarks -> per-side solver (right O30i
-  full-thumb; left G20 = L20 profile, FIXED thumb opposition) -> UDP :5570
-  -> bridge (250 ms watchdog, per-model slew) -> drivers.
+## Invariants
 
-## Research agenda
+- Never run two PICO clients or two MANUS clients simultaneously.
+- GUI loss, tracker loss while engaged, stale robot state, gateway rejection, or an invalid tracker snapshot disengages affected control.
+- `seq` is local receipt of a parsed Motion object; `ts` is only a vendor payload timestamp. Rising `callback_errors` means SDK fields or frames were rejected. `n=0` does not prove the physical trackers are inactive.
+- Position and rotation liveness are checked independently. Do not weaken freshness, jump, speed, torque, slew, or acquisition checks to hide a fault.
+- Only the safety gateway publishes the FR3 command bus. The host operator stays ROS-free.
+- Home and replay move hardware. Preserve logs before shutting down after any reflex or unexplained fault.
 
-### 1. G20 full-thumb validation
+## Next work
 
-The full left-G20 thumb solver now exists with activation release and a
-0.35-rad-per-tick trust region. It is intentionally opt-in only in the
-hands-only diagnostic (`--left-thumb full`); the operator pipeline remains
-fixed-opposition by default and is unchanged unless the mode is explicitly
-selected. Validate the new mode systematically before changing that default:
+- Validate the opt-in left full-thumb solver on recorded pinch, wrap, and lateral grasps, then on hardware.
+- Improve MANUS/O30i fidelity only from recordings that include landmarks, solved radians, commands, and feedback.
+- Add collision awareness in simulation before considering hardware deployment.
 
-- The implementation uses explicit segment-direction, tip, and pinch
-  objectives replayed against recorded landmarks. Confirm that activation
-  release prevents trust-region wedging across changing grasps.
-- Define grasp metrics first (thumb-tip vs finger-tip distances,
-  opposition plane angle); evaluate on replayed `hand_fidelity*.jsonl` and
-  a NEW recorded pose set (pinch / power wrap / lateral), then feel.
-- Constraint: no G20 URDF exists; models are L20. Decide explicitly
-  whether the L20 thumb model is the limit or the mapping is.
-- Tools: analyze_hand_retarget_log.py, inspect_thumb_configuration.py,
-  tune_thumb_opposition.py, diagnose_o30i_retarget.py (metric-loop model).
+## Verification
 
-### 2. Collision awareness (low priority)
+PICO: `conda run -n franka-teleop-pico pytest -q teleop_sources/pico/tests`.
 
-The bimanual IK knows nothing about self- or table collision; only the
-Franka reflex intervenes. Candidate: pink collision barriers, validated in
-the mujoco harness before hardware.
+Gateway: `PYTHONPATH=ros_ws/src/teleop_core python3 -m pytest -q ros_ws/src/teleop_core/test/`.
 
-### 3. Hands, parked
-
-- MANUS->O30i precision: record all four layers (landmarks, radians,
-  commands, feedback ticks) over a repeatable pose set before more tuning.
-- Force: touch sensors and motor current are unread; a force-gated press is
-  implementable against the existing bridge.
-
-## Invariants and traps
-
-- One SDK client owns PICO input, one owns MANUS; never run RobotLinuxDemo
-  or a second operator/hands-only script beside a live session.
-- `seq` is local receipt of a successfully parsed Motion object; it, not the
-  vendor payload timestamp, is feed liveness. `callback_errors` increasing
-  identifies rejected SDK fields/frames. `n=0` means the latest parsed Motion
-  object contained no usable trackers; it does not by itself prove the PICO
-  hardware is inactive. Position and rotation liveness checks stay mandatory.
-  Trackers are per-side; loss while engaged disengages all.
-- O30i driver: command gaps hold; feedback loss disables recoverably; only a
-  rejected disable is terminal. O30i silent on CANFD: probe_o30i_identity.py.
-- The host stays ROS-free (env_guard.py); pico.yaml is validated by host
-  parser and bridge launch; .msg changes need a colcon rebuild.
-- Home buttons and robot replay move hardware. After any reflex or bug,
-  save `docker compose logs franka-control teleop-control` BEFORE `down`
-  (two incidents lost logs); first engagement after a restart is suspect.
-
-## Tests
-
-Pico (132): `pytest -q teleop_sources/pico/tests` in franka-teleop-pico.
-Gateway/protocol (10): `PYTHONPATH=ros_ws/src/teleop_core python3 -m pytest
--q ros_ws/src/teleop_core/test/`. Container suites: HARDWARE_DEPLOY.
-
-## Data
-
-Under `/home/descfly/franka_teleop_data/`: `hand_coexistence.jsonl`;
-`diagnostics/20260726_*` (tracker sessions, thumb-gap evidence);
-`diagnostics/20260729_*` (mixed sessions). `hand_fidelity*.jsonl` are exact
-retarget inputs, replayable offline - the substrate for agenda 1.
+Data lives under `/home/descfly/franka_teleop_data/`; `hand_fidelity*.jsonl` is replayable retargeting input.

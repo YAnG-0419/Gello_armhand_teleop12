@@ -54,13 +54,8 @@ services:
 
   hand-control:
     <<: *runtime
-    # Privileged for SocketCAN and the O30i USB-CANFD adapter: with the host
-    # network namespace and privileged devices the container reaches can0 and
-    # the vendor USB adapter directly, verified on this machine. This service's
-    # defaults match the physical hands: left G20 on can0, right O30i through
-    # libcanbus USB, driven by the right-only-manus source with the left held
-    # at its default pose. The bridge listens on UDP 5570, reachable from the
-    # host because the network is shared.
+    # Privileged host networking exposes can0 and the O30i USB-CANFD adapter.
+    # Defaults match the physical pair: left G20 and right O30i; the bridge listens on host UDP 5570.
     privileged: true
     command:
       - ros2
@@ -70,8 +65,7 @@ services:
       - sides:=both
       - left_model:=g20
       - right_model:=o30i
-      # The 0/255 default tick mapping over each URDF joint range is the
-      # validated O30i runtime mapping; calibration_verified acknowledges it.
+      # The validated default maps each O30i URDF joint range to ticks 0..255.
       - o30_calibration_verified:=true
       # abduction_invert stays at its default (false). The unified MANUS mode
       # feeds the same L20 retargeter as the validated PICO path (offline check

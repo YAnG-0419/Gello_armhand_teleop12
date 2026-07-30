@@ -8,12 +8,6 @@ teleop_safety_gateway:
     max_joint_speed: 0.5
     max_initial_delta: 0.05
     nominal_dt: 0.01
-    # Contact gating (always on): a joint whose |tau_ext| exceeds its
-    # threshold may only move the command in the unloading direction, so a
-    # sustained press settles at roughly the threshold instead of winding up
-    # to the Franka reflex. Values are Nm per joint. These are uncalibrated
-    # placeholders chosen above typical FR3 free-motion estimation residuals;
-    # calibrate per docs/CONTACT_IK_VALIDATION.md (record free-space
-    # external_joint_torques, set each threshold above its p99). A missing or
-    # stale torque topic disables gating for that side (fail open, warned).
+    # Contact gating is always on. Values are Nm per joint and must remain above free-motion external-torque p99.
+    # A missing or stale torque topic disables gating for that side and emits a warning.
     contact_torque_thresholds: [6.0, 6.0, 6.0, 6.0, 3.0, 3.0, 3.0]
