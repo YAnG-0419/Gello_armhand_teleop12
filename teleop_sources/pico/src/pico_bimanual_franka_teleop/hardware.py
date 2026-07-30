@@ -3,12 +3,11 @@ import time
 
 import numpy as np
 
-from .config import InputConfig
 from .ik import BimanualPinkIK, IKError, classify_step
+from .interfaces import ArmPoseSource, HandController, OperatorState
 from .pose_mapping import RelativePoseMapper
 from .robot_udp import UdpRobotBackend
-from .types import SIDES
-from .xr_input import create_pico_input
+from .types import SIDES, TeleopSample
 
 
 def reseed_inactive_joints(held, measured, activations, mapper_active):
@@ -19,6 +18,17 @@ def reseed_inactive_joints(held, measured, activations, mapper_active):
         if not activations.get(side, False) or not mapper_active.get(side, False):
             result[joints] = measured[joints]
     return result
+
+
+def disengage_sample_sides(
+    sample: TeleopSample | None, sides
+) -> TeleopSample | None:
+    if sample is None:
+        return None
+    activations = dict(sample.activations)
+    for side in sides:
+        activations[side] = False
+    return TeleopSample(sample.poses, activations, sample.timestamp)
 
 
 class DualFr3HardwareTeleop:
@@ -34,33 +44,29 @@ class DualFr3HardwareTeleop:
         control_rate: float,
         max_joint_speed: float,
         robot_state_wait_timeout: float,
-        input_config: InputConfig,
-        input_type: str,
-        hand_sender_factory=None,
+        arm_source: ArmPoseSource,
+        operator: OperatorState,
+        hands: HandController | None = None,
         debug_logger=None,
         reset_invoker=None,
-        ui=None,
     ) -> None:
-        # `ui` doubles as the keyboard the input adopts and as the operator
-        # display: set_status carries the once-per-second state line and
-        # show() carries operator-action feedback. None keeps plain printing.
-        self.ui = ui
-        self._notify = ui.show if ui is not None else print
+        self.arm_source = arm_source
+        self.operator = operator
+        self._notify = operator.show
         self.dt = 1.0 / control_rate
         self.robot_state_wait_timeout = robot_state_wait_timeout
-        self.robot = UdpRobotBackend(
-            command_host=command_host,
-            command_port=command_port,
-            state_host=state_host,
-            state_port=state_port,
-            state_timeout=state_timeout,
-        )
         try:
-            self.teleop_input = create_pico_input(
-                input_config, input_type, keyboard=ui
+            self.robot = UdpRobotBackend(
+                command_host=command_host,
+                command_port=command_port,
+                state_host=state_host,
+                state_port=state_port,
+                state_timeout=state_timeout,
             )
         except BaseException:
-            self.robot.close()
+            if hands is not None:
+                hands.close()
+            arm_source.close()
             raise
         self.ik = BimanualPinkIK(dt=self.dt, max_joint_speed=max_joint_speed)
         self.mappers = {
@@ -72,25 +78,7 @@ class DualFr3HardwareTeleop:
         }
         self.hold_q: np.ndarray | None = None
 
-        # The hand pipeline is ticked synchronously from the loop below: a
-        # solve costs about 1.5 ms and the pipeline runs at most one per tick,
-        # so it fits the arm's 10 ms budget. Constructing it must never
-        # prevent the arms from running.
-        #
-        # The factory receives the arm input's shared PICO SDK client, or None
-        # for arm sources that do not own one (a future GELLO/VIVE input):
-        # PICO optical hands need the client and refuse None with a clear
-        # error, while the MANUS pipeline ignores it.
-        self.hands = None
-        if hand_sender_factory is not None:
-            try:
-                self.hands = hand_sender_factory(
-                    getattr(self.teleop_input, "xrt", None)
-                )
-            except BaseException:
-                self.robot.close()
-                self.teleop_input.close()
-                raise
+        self.hands = hands
         self.debug_logger = debug_logger
         # Reset to the captured initial pose, requested from the keyboard. The
         # operator process is deliberately ROS-free, so the reset is delegated
@@ -112,7 +100,7 @@ class DualFr3HardwareTeleop:
         if self.reset_thread is not None:
             self._notify("reset already in progress")
             return
-        self.teleop_input.disable_all("resetting to initial pose")
+        self.operator.disable_all("resetting to initial pose")
         for mapper in self.mappers.values():
             mapper.reset()
         scope = f"{side} arm" if side else "arms"
@@ -135,7 +123,7 @@ class DualFr3HardwareTeleop:
             self._notify("hands: not running, start with --hand-source")
             return
         for side in selected:
-            self.teleop_input.deny(side, "opening hand")
+            self.operator.deny(side, "opening hand")
         self.hands.request_open(sides=selected)
         self._notify("hands: opening " + "/".join(selected))
 
@@ -190,17 +178,19 @@ class DualFr3HardwareTeleop:
         previous_hand_sent = (
             {} if self.hands is None else {side: 0 for side in self.hands.sides}
         )
-        status_summary = getattr(self.teleop_input, "status_summary", None)
+        status_summary = getattr(self.arm_source, "status_summary", None)
         try:
             self.robot.wait_for_state(timeout=self.robot_state_wait_timeout)
+            if self.hands is not None:
+                start_hands = getattr(self.hands, "start", None)
+                if start_hands is not None:
+                    start_hands()
             while True:
                 started_at = time.monotonic()
                 self._service_reset()
                 q = self.robot.receive_state()
                 if q is None:
-                    self.teleop_input.disable_all(
-                        "robot state missing or stale"
-                    )
+                    self.operator.disable_all("robot state missing or stale")
                     for mapper in self.mappers.values():
                         mapper.reset()
                     self.robot.send_command(
@@ -210,7 +200,9 @@ class DualFr3HardwareTeleop:
                     # The arms are disengaged, so the hands stop following too;
                     # a pending open request still streams.
                     if self.hands is not None:
-                        self.hands.tick(active={side: False for side in SIDES})
+                        self.hands.set_active(
+                            {side: False for side in SIDES}
+                        )
                     time.sleep(self.dt)
                     continue
                 if self.hold_q is None:
@@ -222,16 +214,16 @@ class DualFr3HardwareTeleop:
                     rejected = tuple(
                         side for side in SIDES if fault.startswith(f"{side} ")
                     )
-                    deny = getattr(self.teleop_input, "deny", None)
-                    if len(rejected) == 1 and deny is not None:
-                        deny(rejected[0], f"safety gateway: {fault}")
+                    if len(rejected) == 1:
+                        self.operator.deny(
+                            rejected[0], f"safety gateway: {fault}"
+                        )
                     else:
-                        self.teleop_input.disable_all(
+                        self.operator.disable_all(
                             f"safety gateway: {fault}"
                         )
-                sample = self.teleop_input.sample()
-                take_requests = getattr(self.teleop_input, "take_requests", None)
-                requests = take_requests() if take_requests is not None else {}
+                sample = self.arm_source.sample()
+                requests = self.operator.take_requests()
                 open_sides = {
                     side
                     for side in SIDES
@@ -240,6 +232,7 @@ class DualFr3HardwareTeleop:
                 }
                 if open_sides:
                     self._open_hands(tuple(open_sides))
+                    sample = disengage_sample_sides(sample, open_sides)
                 if requests.get("reset"):
                     self._start_reset()
                 elif requests.get("reset_left"):
@@ -249,7 +242,7 @@ class DualFr3HardwareTeleop:
                 if self.reset_thread is not None:
                     # The reset trajectory owns the arms; nothing may engage,
                     # and this tick's sample must not act on stale activations.
-                    self.teleop_input.disable_all("reset in progress")
+                    self.operator.disable_all("reset in progress")
                     sample = None
                 if self.reset_thread is None:
                     activations = (
@@ -297,13 +290,13 @@ class DualFr3HardwareTeleop:
                 self.robot.send_command(self.hold_q, active_sides)
                 if self.debug_logger is not None:
                     raw_pose_reader = getattr(
-                        self.teleop_input, "debug_raw_poses", None
+                        self.arm_source, "debug_raw_poses", None
                     )
                     raw_poses = (
                         raw_pose_reader() if raw_pose_reader is not None else {}
                     )
                     feed_reader = getattr(
-                        self.teleop_input, "debug_feed_state", None
+                        self.arm_source, "debug_feed_state", None
                     )
                     self.debug_logger.record(
                         time.monotonic(),
@@ -320,12 +313,11 @@ class DualFr3HardwareTeleop:
                             feed_reader() if feed_reader is not None else None
                         ),
                     )
-                # Hands go after the arm command so the deadline-critical work
-                # is never queued behind a hand solve. Each hand follows only
-                # while its arm is engaged: one keyboard, one on/off per side.
+                # Only copy engagement into the independent hand worker here;
+                # arm timing never waits for hand I/O or retargeting.
                 if self.hands is not None:
-                    self.hands.tick(
-                        active=(
+                    self.hands.set_active(
+                        (
                             {side: False for side in SIDES}
                             if sample is None
                             else sample.activations
@@ -356,10 +348,7 @@ class DualFr3HardwareTeleop:
                         parts.append("hands: " + " | ".join(hand_parts))
                     if parts:
                         line = "STATE | " + " | ".join(parts)
-                        if self.ui is not None:
-                            self.ui.set_status(line)
-                        else:
-                            print(line, flush=True)
+                        self.operator.set_status(line)
                     next_status_report = now + 1.0
                 remaining = self.dt - (time.monotonic() - started_at)
                 if remaining > 0.0:
@@ -375,4 +364,4 @@ class DualFr3HardwareTeleop:
                 try:
                     self.robot.close()
                 finally:
-                    self.teleop_input.close()
+                    self.arm_source.close()

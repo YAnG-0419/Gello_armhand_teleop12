@@ -1,12 +1,8 @@
-"""Retarget PICO hand skeletons inline and send hand commands to the bridge.
+"""Retarget PICO hand skeletons and send hand commands to the bridge.
 
-One synchronous object, ticked from whichever loop owns the SDK client. No thread
-and no second process: since the pinocchio rewrite a one-hand solve costs about
-1.5 ms, and the pipeline solves at most one side per tick, so the worst a tick
-can cost is one solve. That fits inside the arm loop's 10 ms budget, which the
-jitter benchmark in the deployment notes verifies. The earlier design forwarded
-skeletons to a separate retargeting process because a solve then cost 8-11 ms
-while holding the GIL; that constraint is gone and the process with it.
+The pipeline is a synchronous tickable object. The unified teleop wraps it in a
+local worker so SDK reads and retargeting cannot delay the arm loop; the
+hands-only command ticks it directly. It solves at most one side per tick.
 
 Failure is contained in both directions. `tick` never raises, and losing an
 optical skeleton never disengages an arm: they are independent signals, and a
@@ -139,8 +135,8 @@ class HandPipeline:
 
         `active` optionally gates following per side: a side whose flag is
         False stops sending, exactly as if its skeleton were lost, so the
-        bridge watchdog holds that hand. The arm loop passes its keyboard
-        activations here, making one keyboard control arm and hand together.
+        bridge watchdog holds that hand. The coordinator passes the shared
+        operator engagement here, making one per-side switch control arm and hand.
         Passing None (the standalone hands-only path) keeps every side
         following whenever its skeleton is live.
         """

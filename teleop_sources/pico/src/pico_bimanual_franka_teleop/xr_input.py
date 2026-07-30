@@ -30,27 +30,68 @@ def desktop_gui_pids() -> list[int]:
     return sorted(pids)
 
 
+def _guard_desktop_gui() -> None:
+    gui_pids = desktop_gui_pids()
+    if gui_pids:
+        raise RuntimeError(
+            "The desktop RobotLinuxDemo GUI is running "
+            f"(PID(s): {gui_pids}) and would compete for the PC Service "
+            "stream. Close only the desktop GUI; keep RoboticsService and "
+            "the headset app running."
+        )
+
+
+class PicoSession:
+    """Own exactly one initialized PICO SDK client for selected adapters."""
+
+    def __init__(self) -> None:
+        _guard_desktop_gui()
+        import xrobotoolkit_sdk as xrt
+
+        self.client = xrt
+        try:
+            self.client.init()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self.client is None:
+            return
+        client = self.client
+        self.client = None
+        client.close()
+
+
 class ControllerInput:
     def __init__(
         self,
         grip_threshold: float,
         ready_timeout: float,
         stale_timeout: float,
+        xrt_client=None,
     ) -> None:
-        import xrobotoolkit_sdk as xrt
+        if xrt_client is None:
+            import xrobotoolkit_sdk as xrt
+
+            xrt_client = xrt
+            self._owns_xrt = True
+        else:
+            self._owns_xrt = False
 
         if not 0 < grip_threshold <= 1:
             raise ValueError("Controller grip threshold must be in (0, 1]")
         if ready_timeout <= 0 or stale_timeout <= 0:
             raise ValueError("Controller ready and stale timeouts must be positive")
-        self.xrt = xrt
+        self.xrt = xrt_client
         self.grip_threshold = float(grip_threshold)
         self.stale_timeout = float(stale_timeout)
         self.blocked = {side: True for side in SIDES}
         self.last_timestamp: int | None = None
         self.last_update_at: float | None = None
         try:
-            self.xrt.init()
+            if self._owns_xrt:
+                self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
         except BaseException:
             self.close()
@@ -128,9 +169,9 @@ class ControllerInput:
         self.blocked = {side: True for side in SIDES}
 
     def close(self) -> None:
-        if getattr(self, "xrt", None) is not None:
-            xrt = self.xrt
-            self.xrt = None
+        xrt = getattr(self, "xrt", None)
+        self.xrt = None
+        if self._owns_xrt and xrt is not None:
             xrt.close()
 
 
@@ -362,10 +403,17 @@ class MotionTrackerInput:
         max_linear_speed: float,
         max_angular_speed: float,
         keyboard=None,
+        xrt_client=None,
     ) -> None:
-        import xrobotoolkit_sdk as xrt
+        if xrt_client is None:
+            import xrobotoolkit_sdk as xrt
 
-        if not hasattr(xrt, "get_motion_snapshot"):
+            xrt_client = xrt
+            self._owns_xrt = True
+        else:
+            self._owns_xrt = False
+
+        if not hasattr(xrt_client, "get_motion_snapshot"):
             raise RuntimeError(
                 "xrobotoolkit_sdk lacks atomic motion snapshots; rebuild "
                 "the vendored binding before using motion trackers"
@@ -388,7 +436,7 @@ class MotionTrackerInput:
         if any(not np.isfinite(value) or value <= 0 for value in limits):
             raise ValueError("Tracker timeouts and motion limits must be positive")
 
-        self.xrt = xrt
+        self.xrt = xrt_client
         self.serials = dict(serials)
         self.transforms = {
             side: _local_transform(tracker_to_control[side], side)
@@ -412,15 +460,19 @@ class MotionTrackerInput:
         self.detected_serials: list[str] = []
         self.last_snapshot_ok = True
         self.readiness = {side: "waiting" for side in SIDES}
-        # The injected keyboard/console is adopted, lifecycle included; a
-        # headless OperatorConsole is the default operator surface.
+        # An injected operator is borrowed; only the fallback console created
+        # here is owned and closed by this adapter.
         if keyboard is None:
             from .control_server import OperatorConsole
 
             keyboard = OperatorConsole()
+            self._owns_keyboard = True
+        else:
+            self._owns_keyboard = False
         self.keyboard = keyboard
         try:
-            self.xrt.init()
+            if self._owns_xrt:
+                self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
         except BaseException:
             self.close()
@@ -752,12 +804,12 @@ class MotionTrackerInput:
 
     def close(self) -> None:
         try:
-            if getattr(self, "xrt", None) is not None:
-                xrt = self.xrt
-                self.xrt = None
+            xrt = getattr(self, "xrt", None)
+            self.xrt = None
+            if self._owns_xrt and xrt is not None:
                 xrt.close()
         finally:
-            if getattr(self, "keyboard", None) is not None:
+            if self._owns_keyboard and getattr(self, "keyboard", None) is not None:
                 keyboard = self.keyboard
                 self.keyboard = None
                 keyboard.close()
@@ -886,8 +938,15 @@ class HandRootInput:
         rotation_error_low: float | None = None,
         rotation_error_high: float | None = None,
         keyboard=None,
+        xrt_client=None,
     ) -> None:
-        import xrobotoolkit_sdk as xrt
+        if xrt_client is None:
+            import xrobotoolkit_sdk as xrt
+
+            xrt_client = xrt
+            self._owns_xrt = True
+        else:
+            self._owns_xrt = False
 
         limits = (
             ready_timeout,
@@ -900,7 +959,7 @@ class HandRootInput:
         if any(not np.isfinite(value) or value <= 0 for value in limits):
             raise ValueError("Hand root timeouts and limits must be positive")
 
-        self.xrt = xrt
+        self.xrt = xrt_client
         self.max_position_jump = float(max_position_jump)
         self.max_rotation_jump = float(max_rotation_jump)
         self.liveness = {
@@ -929,9 +988,13 @@ class HandRootInput:
             from .control_server import OperatorConsole
 
             keyboard = OperatorConsole()
+            self._owns_keyboard = True
+        else:
+            self._owns_keyboard = False
         self.keyboard = keyboard
         try:
-            self.xrt.init()
+            if self._owns_xrt:
+                self.xrt.init()
             self._wait_until_ready(float(ready_timeout))
         except BaseException:
             self.close()
@@ -1069,12 +1132,12 @@ class HandRootInput:
 
     def close(self) -> None:
         try:
-            if getattr(self, "xrt", None) is not None:
-                xrt = self.xrt
-                self.xrt = None
+            xrt = getattr(self, "xrt", None)
+            self.xrt = None
+            if self._owns_xrt and xrt is not None:
                 xrt.close()
         finally:
-            if getattr(self, "keyboard", None) is not None:
+            if self._owns_keyboard and getattr(self, "keyboard", None) is not None:
                 keyboard = self.keyboard
                 self.keyboard = None
                 keyboard.close()
@@ -1084,6 +1147,7 @@ def create_pico_input(
     config: InputConfig,
     input_type: str,
     keyboard=None,
+    xrt_client=None,
 ):
     # The desktop GUI and the Python SDK compete for the PC Service feedback
     # stream; whichever connects last can leave the other client open but no
@@ -1092,20 +1156,14 @@ def create_pico_input(
     # client while the GUI displayed them moving accurately. Every diagnostic
     # script already refuses to start next to the GUI; teleoperation, the one
     # place where degraded input moves hardware, must refuse too.
-    gui_pids = desktop_gui_pids()
-    if gui_pids:
-        raise RuntimeError(
-            "The desktop RobotLinuxDemo GUI is running "
-            f"(PID(s): {gui_pids}) and would compete for the PC Service "
-            "stream. Close only the desktop GUI; keep RoboticsService and "
-            "the headset app running."
-        )
+    _guard_desktop_gui()
     if input_type == "controllers":
         controllers = config.controllers
         return ControllerInput(
             grip_threshold=controllers.grip_threshold,
             ready_timeout=controllers.ready_timeout,
             stale_timeout=controllers.stale_timeout,
+            xrt_client=xrt_client,
         )
     if input_type == "motion-trackers":
         trackers = config.motion_trackers
@@ -1128,6 +1186,7 @@ def create_pico_input(
             max_linear_speed=trackers.max_linear_speed,
             max_angular_speed=trackers.max_angular_speed,
             keyboard=keyboard,
+            xrt_client=xrt_client,
         )
     if input_type == "hand-roots":
         hand_roots = config.hand_roots
@@ -1148,6 +1207,7 @@ def create_pico_input(
             rotation_error_low=hand_roots.rotation_error_low,
             rotation_error_high=hand_roots.rotation_error_high,
             keyboard=keyboard,
+            xrt_client=xrt_client,
         )
     raise ValueError(f"Unsupported PICO input type: {input_type}")
 

@@ -15,11 +15,12 @@ import pytest
 
 from pico_bimanual_franka_teleop.hardware import (
     DualFr3HardwareTeleop,
+    disengage_sample_sides,
     reseed_inactive_joints,
 )
 from pico_bimanual_franka_teleop.ik import BimanualPinkIK, classify_step
 from pico_bimanual_franka_teleop.pose_mapping import RelativePoseMapper
-from pico_bimanual_franka_teleop.types import Pose
+from pico_bimanual_franka_teleop.types import Pose, TeleopSample
 
 # A captured hardware home (2026-07-25). The live initial_pose.yaml may be
 # newer; these tests only need a physically plausible dual-arm posture.
@@ -72,8 +73,8 @@ def test_open_hand_disengages_only_selected_side_before_opening():
     denied = []
     opened = []
     teleop = object.__new__(DualFr3HardwareTeleop)
-    teleop.teleop_input = type(
-        "Input",
+    teleop.operator = type(
+        "Operator",
         (),
         {"deny": lambda _self, side, reason: denied.append((side, reason))},
     )()
@@ -93,8 +94,8 @@ def test_open_hand_disengages_only_selected_side_before_opening():
 def test_home_arm_does_not_also_open_the_hand():
     opened = []
     teleop = object.__new__(DualFr3HardwareTeleop)
-    teleop.teleop_input = type(
-        "Input",
+    teleop.operator = type(
+        "Operator",
         (),
         {"disable_all": lambda _self, _reason: None},
     )()
@@ -116,6 +117,22 @@ def test_home_arm_does_not_also_open_the_hand():
     teleop.reset_thread.join(timeout=1.0)
 
     assert opened == []
+
+
+def test_open_hand_removes_stale_same_tick_activation():
+    sample = TeleopSample(
+        poses={
+            "left": Pose(np.zeros(3), np.eye(3)),
+            "right": Pose(np.ones(3), np.eye(3)),
+        },
+        activations={"left": True, "right": True},
+        timestamp=1.0,
+    )
+
+    updated = disengage_sample_sides(sample, ("right",))
+
+    assert updated.activations == {"left": True, "right": False}
+    assert sample.activations == {"left": True, "right": True}
 
 
 def test_translation_maps_one_to_one():

@@ -3,9 +3,9 @@
 Monorepo for dual-FR3 teleoperation, recording, conversion, and replay.
 
 ```text
-PICO input -> retargeting/IK -> UDP -> ROS gateway -> FR3 controllers
-                                      ^
-                                   replay
+arm pose source -> mapping/IK -> UDP -> ROS gateway -> FR3 controllers
+operator engage --------^
+operator engage -> hand worker -> retargeting -> hand bridge
 ```
 
 PICO inputs are selected explicitly on the CLI:
@@ -15,7 +15,13 @@ PICO inputs are selected explicitly on the CLI:
 --arm-source motion-trackers
 ```
 
-The choice is not stored in YAML. Both inputs share the same mapping, IK, UDP, ROS, and robot-control pipeline.
+The choice is not stored in YAML. All arm inputs share the same mapping, IK, UDP, ROS, and robot-control pipeline.
+
+## Input boundaries
+
+`DualFr3HardwareTeleop` receives an arm pose source, operator state, and optional hand controller; it does not construct or import a device adapter. A new arm device such as VIVE implements the small `ArmPoseSource` protocol and is assembled by an entrypoint.
+
+PICO adapters share one explicitly owned `PicoSession`. Hand retargeting runs in a local worker, so hand SDK reads and solves cannot delay the 100 Hz arm loop. Arm and hand command paths are independent; the only intentional runtime coupling is the shared per-side engagement and the policy that an arm-input safety fault disengages its hand.
 
 ## Setup
 

@@ -6,11 +6,12 @@ from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process
 ensure_ros_free_process()
 
 import subprocess
-from functools import partial
 from pathlib import Path
 
 from pico_bimanual_franka_teleop.config import load_config
+from pico_bimanual_franka_teleop.hand_worker import HandWorker
 from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
+from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -111,52 +112,12 @@ def main() -> None:
     if args.hand_debug_log and args.hand_source == "none":
         parser.error("--hand-debug-log requires a hand source")
 
-    hand_sender_factory = None
-    if args.hand_source == "pico":
-        if args.arm_source == "controllers":
-            parser.error(
-                "--hand-source pico cannot be combined with --arm-source "
-                "controllers: holding a controller occupies the operator's "
-                "hand, so the optical skeleton cannot describe a grasp"
-            )
-        from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
-
-        sides = ("left", "right")
-        models = {
-            side: (getattr(args, f"{side}_hand_model") or "g20")
-            for side in sides
-        }
-        hand_sender_factory = partial(
-            HandPipeline,
-            assets_root=REPO_ROOT / "assets",
-            host=args.hand_host,
-            port=args.hand_port,
-            rate=args.hand_rate,
-            sides=sides,
-            models=models,
-            debug_log=args.hand_debug_log,
+    if args.hand_source == "pico" and args.arm_source == "controllers":
+        parser.error(
+            "--hand-source pico cannot be combined with --arm-source "
+            "controllers: holding a controller occupies the operator's "
+            "hand, so the optical skeleton cannot describe a grasp"
         )
-    elif args.hand_source == "manus":
-        if args.arm_source != "motion-trackers":
-            parser.error(
-                "manus requires --arm-source motion-trackers"
-            )
-        from manus_teleop import ManusHandPipeline
-
-        def create_manus_pipeline(_xrt):
-            return ManusHandPipeline(
-                host=args.hand_host,
-                port=args.hand_port,
-                rate=args.hand_rate,
-                debug_log=args.hand_debug_log,
-                dynamic_sides=("left", "right"),
-                models={
-                    "left": args.left_hand_model,
-                    "right": args.right_hand_model or "o30i",
-                },
-            )
-
-        hand_sender_factory = create_manus_pipeline
 
     debug_logger = None
     if args.debug_log:
@@ -180,7 +141,54 @@ def main() -> None:
         "- connect the GUI (teleop_sources/gui) to engage"
     )
 
+    pico_session = None
+    arm_source = None
+    hands = None
     try:
+        pico_session = PicoSession()
+        arm_source = create_pico_input(
+            config.input,
+            args.arm_source,
+            keyboard=ui,
+            xrt_client=pico_session.client,
+        )
+        hand_pipeline = None
+        if args.hand_source == "pico":
+            from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
+
+            sides = ("left", "right")
+            hand_pipeline = HandPipeline(
+                pico_session.client,
+                assets_root=REPO_ROOT / "assets",
+                host=args.hand_host,
+                port=args.hand_port,
+                rate=args.hand_rate,
+                sides=sides,
+                models={
+                    side: (getattr(args, f"{side}_hand_model") or "g20")
+                    for side in sides
+                },
+                debug_log=args.hand_debug_log,
+            )
+        elif args.hand_source == "manus":
+            from manus_teleop import ManusHandPipeline
+
+            hand_pipeline = ManusHandPipeline(
+                host=args.hand_host,
+                port=args.hand_port,
+                rate=args.hand_rate,
+                debug_log=args.hand_debug_log,
+                dynamic_sides=("left", "right"),
+                models={
+                    "left": args.left_hand_model,
+                    "right": args.right_hand_model or "o30i",
+                },
+            )
+        if hand_pipeline is not None:
+            hands = HandWorker(
+                hand_pipeline, tick_rate=config.host.control_rate
+            )
+
         teleop = DualFr3HardwareTeleop(
             command_host=config.udp.command_host,
             command_port=config.udp.command_port,
@@ -192,12 +200,11 @@ def main() -> None:
             control_rate=config.host.control_rate,
             max_joint_speed=config.host.max_joint_speed,
             robot_state_wait_timeout=config.host.robot_state_wait_timeout,
-            input_config=config.input,
-            input_type=args.arm_source,
-            hand_sender_factory=hand_sender_factory,
+            arm_source=arm_source,
+            operator=ui,
+            hands=hands,
             debug_logger=debug_logger,
             reset_invoker=invoke_reset,
-            ui=ui,
         )
         # The keyboard's `q` (and Ctrl-C) surface as KeyboardInterrupt; run()'s
         # finally block has already closed hands, robot, and input by the time
@@ -207,7 +214,15 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
     finally:
-        server.close()
+        try:
+            if hands is not None:
+                hands.close()
+            if arm_source is not None:
+                arm_source.close()
+            if pico_session is not None:
+                pico_session.close()
+        finally:
+            server.close()
     print("\nteleop stopped")
 
 

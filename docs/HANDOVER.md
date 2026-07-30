@@ -20,6 +20,7 @@ PICO tracker ids: config/pico.yaml
 - Do not restore the former multi-getter consistency loop or cached-snapshot engagement grace. An invalid atomic snapshot disengages immediately.
 - Bimanual MANUS works. The right O30i uses full-thumb retargeting; the left G20 remains fixed-opposition in the standard operator path.
 - The experimental left full-thumb solver is available only through `teleop_manus_hands.py --left-thumb full`; validate it before changing the default.
+- Arm sources, operator state, and hands are injected into the hardware coordinator. PICO SDK ownership is explicit and hand retargeting runs outside the arm loop; add future arm adapters without importing them into the coordinator.
 
 ## Invariants
 

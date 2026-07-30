@@ -25,12 +25,10 @@ from .types import SIDES
 
 
 class OperatorConsole:
-    """Headless drop-in for the keyboard object the input sources own.
+    """Thread-safe operator state shared by the GUI and coordinator.
 
-    Same interface (poll / take_requests / disable_all / deny / show /
-    set_status / close), but state arrives from the control server instead
-    of a tty, and feedback accumulates in a ring the `status` command
-    serves to frontends.
+    State arrives from the control server, and feedback accumulates in a ring
+    the `status` command serves to frontends.
     """
 
     def __init__(self) -> None:
@@ -48,7 +46,7 @@ class OperatorConsole:
         self._feedback: list[str] = []
         self._lock = threading.Lock()
 
-    # -- input-source interface ------------------------------------------
+    # -- operator-state interface ----------------------------------------
     # Every mutation happens under the lock: the server thread writes while
     # the 100 Hz control loop reads, and the keyboard-era code was safe only
     # because both sides ran on one thread. Without the lock a request set

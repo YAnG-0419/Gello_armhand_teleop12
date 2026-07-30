@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Drive the Linker Hands from live PICO optical hand tracking, hands only.
 
-The same HandPipeline that `teleop_dual_fr3.py --hand-source pico` ticks from the arm loop,
-ticked here from a plain loop instead. This process owns the single XRoboToolkit
-SDK client, so it must not run at the same time as `teleop_dual_fr3.py`.
+The same HandPipeline that unified teleop runs in a local hand worker is ticked
+here from a plain loop instead. This process owns the single XRoboToolkit SDK
+client, so it must not run at the same time as `teleop_dual_fr3.py`.
 
 Sends hand commands to `linker_hand_bridge`. Nothing reaches the hands unless
 that bridge was launched enabled, so this is safe to run against a dry-run
