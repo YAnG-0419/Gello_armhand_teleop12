@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from PySide6.QtCore import QTimer
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 
 POLL_INTERVAL_MS = 500
 RECONNECT_INTERVAL_MS = 2000
+STATUS_TIMEOUT_SECONDS = 3.0
 SIDES = ("left", "right")
 
 
@@ -44,12 +46,16 @@ class OperatorWindow(QMainWindow):
         self.next_request_id = 1
         self.pending: dict[int, str] = {}
         self.buffer = b""
+        self.connection_state = "disconnected"
+        self.connected_at: float | None = None
+        self.last_status_at: float | None = None
+        self._handling_disconnect = False
 
         self.socket = QTcpSocket(self)
         self.socket.readyRead.connect(self._read_responses)
         self.socket.connected.connect(self._connected)
-        self.socket.disconnected.connect(self._disconnected)
-        self.socket.errorOccurred.connect(lambda _e: self._disconnected())
+        self.socket.disconnected.connect(self._socket_disconnected)
+        self.socket.errorOccurred.connect(self._socket_error)
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(POLL_INTERVAL_MS)
@@ -57,9 +63,12 @@ class OperatorWindow(QMainWindow):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.setInterval(RECONNECT_INTERVAL_MS)
         self.reconnect_timer.timeout.connect(self._connect)
+        self.health_timer = QTimer(self)
+        self.health_timer.setInterval(POLL_INTERVAL_MS)
+        self.health_timer.timeout.connect(self._check_connection_health)
 
         self._build_ui()
-        self._set_connected(False)
+        self._set_connection_state("disconnected", "backend is not connected")
         self._connect()
 
     # ------------------------------------------------------------------ ui
@@ -67,8 +76,13 @@ class OperatorWindow(QMainWindow):
         root = QWidget(self)
         layout = QVBoxLayout(root)
 
+        connection_row = QHBoxLayout()
         self.connection_label = QLabel()
-        layout.addWidget(self.connection_label)
+        connection_row.addWidget(self.connection_label, stretch=1)
+        self.reconnect_button = QPushButton("Reconnect now")
+        self.reconnect_button.clicked.connect(self._reconnect_now)
+        connection_row.addWidget(self.reconnect_button)
+        layout.addLayout(connection_row)
         self.status_label = QLabel("-")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet("font-family: monospace;")
@@ -133,32 +147,94 @@ class OperatorWindow(QMainWindow):
     # -------------------------------------------------------------- socket
     def _connect(self) -> None:
         if self.socket.state() == QAbstractSocket.UnconnectedState:
+            self._set_connection_state("connecting")
             self.socket.connectToHost(self.host, self.port)
 
     def _connected(self) -> None:
-        self._set_connected(True)
         self.reconnect_timer.stop()
-        self.poll_timer.start()
-        self._poll_status()
-
-    def _disconnected(self) -> None:
-        self._set_connected(False)
-        self.poll_timer.stop()
+        self.connected_at = time.monotonic()
+        self.last_status_at = None
         self.pending.clear()
         self.buffer = b""
-        self.socket.abort()
-        self.reconnect_timer.start()
+        self._set_connection_state("syncing")
+        self.poll_timer.start()
+        self.health_timer.start()
+        self._poll_status()
 
-    def _set_connected(self, connected: bool) -> None:
-        self.connection_label.setText(
-            f"connected to {self.host}:{self.port}"
-            if connected
-            else f"connecting to {self.host}:{self.port} ..."
-        )
+    def _socket_error(self, _error) -> None:
+        self._disconnected(self.socket.errorString())
+
+    def _socket_disconnected(self) -> None:
+        self._disconnected(self.socket.errorString())
+
+    def _disconnected(self, reason: str = "") -> None:
+        if self._handling_disconnect:
+            return
+        self._handling_disconnect = True
+        self.poll_timer.stop()
+        self.health_timer.stop()
+        self.pending.clear()
+        self.buffer = b""
+        self.connected_at = None
+        self.last_status_at = None
+        detail = reason.strip() or "backend connection closed"
+        changed = self.connection_state != "disconnected"
+        self._set_connection_state("disconnected", detail)
+        if changed:
+            self.feedback.appendPlainText(f"[connection] {detail}")
+        if self.socket.state() != QAbstractSocket.UnconnectedState:
+            self.socket.abort()
+        self.reconnect_timer.start()
+        self._handling_disconnect = False
+
+    def _set_connection_state(self, state: str, detail: str = "") -> None:
+        self.connection_state = state
+        if state == "connected":
+            text = f"CONNECTED — {self.host}:{self.port}"
+            style = "color: #248a3d; font-weight: bold;"
+        elif state == "syncing":
+            text = f"SYNCING — {self.host}:{self.port}"
+            style = "color: #9a6b00; font-weight: bold;"
+        elif state == "connecting":
+            text = f"CONNECTING — {self.host}:{self.port}"
+            style = "color: #9a6b00; font-weight: bold;"
+        else:
+            suffix = f" — {detail}" if detail else ""
+            text = f"DISCONNECTED — {self.host}:{self.port}{suffix}"
+            style = "color: #b02020; font-weight: bold;"
+        self.connection_label.setText(text)
+        self.connection_label.setStyleSheet(style)
+        ready = state == "connected"
         for button in getattr(self, "action_buttons", []):
-            button.setEnabled(connected)
+            button.setEnabled(ready)
         for button in self.engage_buttons.values():
-            button.setEnabled(connected)
+            button.setEnabled(ready)
+            if not ready:
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.setText("Engage")
+                button.blockSignals(False)
+        self.reconnect_button.setEnabled(state == "disconnected")
+        if state == "disconnected":
+            self.status_label.setText("DISCONNECTED — backend status unavailable")
+
+    def _reconnect_now(self) -> None:
+        self.reconnect_timer.stop()
+        if self.socket.state() != QAbstractSocket.UnconnectedState:
+            self.socket.abort()
+        self._connect()
+
+    def _check_connection_health(self) -> None:
+        if self.socket.state() != QAbstractSocket.ConnectedState:
+            return
+        baseline = self.last_status_at or self.connected_at
+        if baseline is None:
+            return
+        if time.monotonic() - baseline <= STATUS_TIMEOUT_SECONDS:
+            return
+        self._disconnected(
+            f"no status response for {STATUS_TIMEOUT_SECONDS:.0f}s"
+        )
 
     def _send(self, command: str, arguments=None) -> None:
         if self.socket.state() != QAbstractSocket.ConnectedState:
@@ -174,6 +250,8 @@ class OperatorWindow(QMainWindow):
         self.socket.write((json.dumps(payload) + "\n").encode("utf-8"))
 
     def _poll_status(self) -> None:
+        if "status" in self.pending.values():
+            return
         self._send("status")
 
     def _read_responses(self) -> None:
@@ -194,6 +272,9 @@ class OperatorWindow(QMainWindow):
 
     # -------------------------------------------------------------- status
     def _apply_status(self, status: dict) -> None:
+        self.last_status_at = time.monotonic()
+        if self.connection_state != "connected":
+            self._set_connection_state("connected")
         self.status_label.setText(str(status.get("status_line", "-")))
         active = status.get("active", {})
         for side, button in self.engage_buttons.items():
