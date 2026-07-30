@@ -130,6 +130,64 @@ def test_o30i_pinch_closes_the_thumb_index_gap():
     assert gap < 0.008, f"thumb-index gap {1000 * gap:.1f} mm"
 
 
+def test_o30i_endpoint_calibration_reaches_open_and_curled_limits():
+    oracle = O30IRetargeter(URDF, "right", filter_alpha=1.0)
+    opened = oracle.robot_landmarks(np.zeros(20))
+    desired = np.zeros(20)
+    for name in ("pinky_mcp_pitch", "pinky_pip", "pinky_dip"):
+        desired[oracle.joint_names.index(name)] = oracle.upper[
+            oracle.joint_names.index(name)
+        ]
+    curled = oracle.robot_landmarks(desired)
+
+    from pico_bimanual_franka_teleop.hand_retarget import (
+        CANONICAL_FINGERS,
+        chain_bend_angle,
+    )
+
+    open_bend = chain_bend_angle(opened[list(CANONICAL_FINGERS["pinky"])])
+    curl_bend = chain_bend_angle(curled[list(CANONICAL_FINGERS["pinky"])])
+    retargeter = O30IRetargeter(
+        URDF,
+        "right",
+        filter_alpha=1.0,
+        finger_open_ranges={"pinky": (open_bend + 0.01, open_bend + 0.1)},
+        finger_curl_ranges={"pinky": (curl_bend - 0.1, curl_bend - 0.01)},
+    )
+    open_qpos, _ = retargeter.retarget(opened)
+    curled_qpos, _ = retargeter.retarget(curled)
+    for name in ("pinky_mcp_pitch", "pinky_pip", "pinky_dip"):
+        index = retargeter.joint_names.index(name)
+        assert open_qpos[index] == pytest.approx(retargeter.lower[index])
+        assert curled_qpos[index] == pytest.approx(retargeter.upper[index])
+
+
+def test_o30i_middle_pinch_anchor_has_bounded_activation_and_exact_endpoint():
+    anchor = {
+        "thumb_cmc_yaw": 1.2,
+        "middle_mcp_pitch": 1.1,
+        "middle_pip": 0.8,
+    }
+    retargeter = O30IRetargeter(
+        URDF,
+        "right",
+        filter_alpha=1.0,
+        contact_deadzone=0.01,
+        middle_pinch_start=0.04,
+        middle_pinch_activation_step=0.2,
+        middle_pinch_anchor=anchor,
+    )
+    pinch = retargeter.robot_landmarks(np.zeros(20))
+    pinch[4] = pinch[12]
+    for expected in (0.2, 0.4, 0.6, 0.8, 1.0):
+        qpos, _ = retargeter.retarget(pinch)
+        assert retargeter._middle_pinch_activation == pytest.approx(expected)
+    for name, value in anchor.items():
+        assert qpos[retargeter.joint_names.index(name)] == pytest.approx(value)
+    retargeter.reset()
+    assert retargeter._middle_pinch_activation == 0.0
+
+
 def test_o30i_retargeting_assigns_distal_motion_to_dip():
     retargeter = O30IRetargeter(
         URDF,

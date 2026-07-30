@@ -56,7 +56,16 @@ gap at the physical G20 contact pose and previously produced basin flips.
 
 ## O30i behavior
 
-The right O30i driver maps URDF lower and upper limits to normalized ticks 0 and 255 unless `O30_TICKS_AT_LOWER` and `O30_TICKS_AT_UPPER` provide measured endpoints. It verifies model and handedness, requires fresh calibrated feedback before commanding, holds across normal command gaps, and disables on feedback loss or command failure.
+The right O30i retargeter uses recorded MANUS open/curl endpoints, removes the
+glove's residual contact gap for thumb-index pinch, and smoothly blends both
+the thumb and middle finger into a hardware-validated middle-pinch anchor. The
+ordinary mid-range poses remain solver-driven.
+
+The driver maps URDF lower and upper limits to normalized ticks 0 and 255 unless
+`O30_TICKS_AT_LOWER` and `O30_TICKS_AT_UPPER` provide measured endpoints. It
+verifies model and handedness, requires fresh calibrated feedback before
+commanding, holds across normal command gaps, and disables on feedback loss or
+command failure.
 
 ## Accuracy recording
 

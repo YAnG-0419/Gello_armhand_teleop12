@@ -18,7 +18,7 @@ PICO tracker ids: config/pico.yaml
 - Arms are settled; contact torque gating and collision thresholds are hardware-validated. Do not retune without reading the relevant git history.
 - The false-stale PICO regression is resolved and hardware-verified. Motion is parsed first, published atomically, and considered fresh only when the local callback sequence advances; no native parsing exception may cross the vendor callback boundary.
 - Do not restore the former multi-getter consistency loop or cached-snapshot engagement grace. An invalid atomic snapshot disengages immediately.
-- Bimanual MANUS works. The left G20 uses physically calibrated endpoint and pose-anchor retargeting; its thumb interpolates continuously from the ordinary anchor to the tuned thumb-index pinch anchor. The right O30i retains its full solver.
+- Bimanual MANUS works. The left G20 uses physically calibrated endpoint and pose-anchor retargeting. The right O30i uses calibrated open/curl endpoints, contact-biased index pinch, and a smoothly activated cooperative thumb-middle pinch anchor. Both profiles are hardware-validated.
 - Do not restore unconstrained left-thumb CMC IK: the L20 URDF is not the physical G20 (it predicts a 35 mm gap at measured contact), and online IK produced basin flips on hardware.
 - Arm sources, operator state, and hands are injected into the hardware coordinator. PICO SDK ownership is explicit and hand retargeting runs outside the arm loop; add future arm adapters without importing them into the coordinator.
 
@@ -33,7 +33,7 @@ PICO tracker ids: config/pico.yaml
 
 ## Next work
 
-- Apply the same labelled-recording, physical-anchor, and dynamic-transition validation process to the right O30i before changing its retargeting policy.
+- Add lateral, wrap, or other useful grasp anchors only through the same labelled-recording and physical-validation process.
 - Improve hand fidelity only from recordings that include landmarks, solved radians, commands, and feedback; physical contact overrides mismatched URDF FK.
 
 ## Verification

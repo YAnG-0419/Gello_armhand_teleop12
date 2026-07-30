@@ -16,6 +16,7 @@ from pico_bimanual_franka_teleop.hand_landmarks import (
 from pico_bimanual_franka_teleop.hand_retarget import (
     CANONICAL_FINGERS,
     CHAIN_WEIGHTS,
+    chain_bend_angle,
     THUMB_DISTANCE_THRESHOLD,
     THUMB_DISTANCE_WEIGHTS,
     orthonormal_palm_frame,
@@ -85,6 +86,14 @@ class O30IRetargeter:
         max_iterations: int = 30,
         direction_weight: float = 1.0,
         pinch_weight: float = 1.0,
+        contact_deadzone: float = 0.0,
+        distance_weight_scale: float = 1.0,
+        finger_open_ranges: dict[str, tuple[float, float]] | None = None,
+        finger_curl_ranges: dict[str, tuple[float, float]] | None = None,
+        thumb_open_bend_threshold: float = 0.0,
+        middle_pinch_anchor: dict[str, float] | None = None,
+        middle_pinch_start: float = 0.0,
+        middle_pinch_activation_step: float = 1.0,
     ) -> None:
         if side != "right":
             raise ValueError("the checked-in O30i retargeter currently supports right only")
@@ -92,8 +101,30 @@ class O30IRetargeter:
             raise ValueError("filter_alpha must be in (0, 1]")
         if direction_weight < 0.0 or pinch_weight < 0.0:
             raise ValueError("direction_weight and pinch_weight must not be negative")
+        if contact_deadzone < 0.0 or distance_weight_scale <= 0.0:
+            raise ValueError(
+                "contact_deadzone must not be negative and "
+                "distance_weight_scale must be positive"
+            )
         self.direction_weight = float(direction_weight)
         self.pinch_weight = float(pinch_weight)
+        self.contact_deadzone = float(contact_deadzone)
+        self.distance_weight_scale = float(distance_weight_scale)
+        if thumb_open_bend_threshold < 0.0:
+            raise ValueError("thumb_open_bend_threshold must not be negative")
+        self.thumb_open_bend_threshold = float(thumb_open_bend_threshold)
+        if middle_pinch_start < contact_deadzone:
+            raise ValueError("middle_pinch_start must not be below contact_deadzone")
+        if not 0.0 < middle_pinch_activation_step <= 1.0:
+            raise ValueError("middle_pinch_activation_step must be in (0, 1]")
+        self.middle_pinch_start = float(middle_pinch_start)
+        self.middle_pinch_activation_step = float(middle_pinch_activation_step)
+        self.finger_open_ranges = self._validate_bend_ranges(
+            finger_open_ranges, "finger_open_ranges"
+        )
+        self.finger_curl_ranges = self._validate_bend_ranges(
+            finger_curl_ranges, "finger_curl_ranges"
+        )
         self.side = side
         self.urdf_path = Path(urdf_path).resolve()
         if not self.urdf_path.is_file():
@@ -111,6 +142,21 @@ class O30IRetargeter:
             raise ValueError("O30i URDF must contain 20 independent single-DoF joints")
         self.lower = np.asarray(self.model.lowerPositionLimit, dtype=np.float64)
         self.upper = np.asarray(self.model.upperPositionLimit, dtype=np.float64)
+        self.middle_pinch_anchor = {
+            str(name): float(value)
+            for name, value in (middle_pinch_anchor or {}).items()
+        }
+        if set(self.middle_pinch_anchor).difference(self.joint_names):
+            raise ValueError("middle_pinch_anchor contains unknown joints")
+        for name, value in self.middle_pinch_anchor.items():
+            index = self.joint_names.index(name)
+            if (
+                not np.isfinite(value)
+                or value < self.lower[index]
+                or value > self.upper[index]
+            ):
+                raise ValueError(f"middle_pinch_anchor[{name!r}] is out of range")
+        self._middle_pinch_activation = 0.0
         self.smooth_weight = float(smooth_weight)
         self.filter_alpha = float(filter_alpha)
         self.max_iterations = int(max_iterations)
@@ -156,6 +202,26 @@ class O30IRetargeter:
         }
         if self.robot_scale < 1e-6:
             raise ValueError("invalid O30i URDF palm geometry")
+
+    @staticmethod
+    def _validate_bend_ranges(
+        ranges: dict[str, tuple[float, float]] | None, label: str
+    ) -> dict[str, tuple[float, float]]:
+        result = {}
+        for finger, limits in (ranges or {}).items():
+            if finger not in {"index", "middle", "ring", "pinky"}:
+                raise ValueError(f"invalid {label} finger {finger!r}")
+            values = np.asarray(limits, dtype=np.float64)
+            if (
+                values.shape != (2,)
+                or not np.all(np.isfinite(values))
+                or values[0] >= values[1]
+            ):
+                raise ValueError(
+                    f"{label}[{finger!r}] must be finite increasing values"
+                )
+            result[finger] = (float(values[0]), float(values[1]))
+        return result
 
     def _body_frame(self, link_name: str) -> int:
         if not self.model.existFrame(link_name):
@@ -222,6 +288,87 @@ class O30IRetargeter:
                 transformed[chain[index + 1]] = cursor
         return transformed
 
+    def _flex_indices(self, finger: str) -> np.ndarray:
+        return np.asarray(
+            [
+                index
+                for index in self._joint_indices[finger]
+                if not self.joint_names[index].endswith("mcp_roll")
+            ],
+            dtype=int,
+        )
+
+    def _apply_endpoint_calibration(
+        self, solution: np.ndarray, raw: np.ndarray
+    ) -> None:
+        """Map labelled MANUS open/full gestures to mechanical endpoints."""
+        for finger in ("index", "middle", "ring", "pinky"):
+            human_bend = chain_bend_angle(
+                raw[list(CANONICAL_FINGERS[finger])]
+            )
+            indices = self._flex_indices(finger)
+            if finger in self.finger_open_ranges:
+                opened, released = self.finger_open_ranges[finger]
+                activation = 1.0 - float(
+                    np.clip(
+                        (human_bend - opened) / (released - opened), 0.0, 1.0
+                    )
+                )
+                solution[indices] += activation * (
+                    self.lower[indices] - solution[indices]
+                )
+            if finger in self.finger_curl_ranges:
+                started, curled = self.finger_curl_ranges[finger]
+                activation = float(
+                    np.clip(
+                        (human_bend - started) / (curled - started), 0.0, 1.0
+                    )
+                )
+                solution[indices] += activation * (
+                    self.upper[indices] - solution[indices]
+                )
+
+        thumb_bend = chain_bend_angle(
+            raw[list(CANONICAL_FINGERS["thumb"])]
+        )
+        if (
+            self.thumb_open_bend_threshold > 0.0
+            and thumb_bend <= self.thumb_open_bend_threshold
+        ):
+            for name in ("thumb_mcp", "thumb_ip"):
+                index = self.joint_names.index(name)
+                solution[index] = self.lower[index]
+
+    def _apply_middle_pinch_anchor(
+        self, solution: np.ndarray, raw: np.ndarray
+    ) -> None:
+        if not self.middle_pinch_anchor:
+            return
+        raw_distance = float(np.linalg.norm(raw[4] - raw[12]))
+        requested = (
+            float(
+                np.clip(
+                    (self.middle_pinch_start - raw_distance)
+                    / (self.middle_pinch_start - self.contact_deadzone),
+                    0.0,
+                    1.0,
+                )
+            )
+            if self.middle_pinch_start > self.contact_deadzone
+            else 0.0
+        )
+        delta = np.clip(
+            requested - self._middle_pinch_activation,
+            -self.middle_pinch_activation_step,
+            self.middle_pinch_activation_step,
+        )
+        self._middle_pinch_activation += float(delta)
+        for name, target in self.middle_pinch_anchor.items():
+            index = self.joint_names.index(name)
+            solution[index] += self._middle_pinch_activation * (
+                target - solution[index]
+            )
+
     def retarget(
         self, landmarks: np.ndarray
     ) -> tuple[np.ndarray, dict[str, float | int | bool]]:
@@ -261,8 +408,12 @@ class O30IRetargeter:
                 pinch_terms.append(
                     (
                         self._frames[finger_name][-1],
-                        raw_distance * distance_scale,
-                        self.pinch_weight * weight * activation,
+                        max(0.0, raw_distance - self.contact_deadzone)
+                        * distance_scale,
+                        self.pinch_weight
+                        * weight
+                        * activation
+                        * self.distance_weight_scale,
                     )
                 )
         thumb_tip_frame = self._frames["thumb"][-1]
@@ -385,6 +536,9 @@ class O30IRetargeter:
             iterations += int(result.nit)
             evaluations += int(result.nfev)
             success = success and bool(result.success)
+        self._apply_endpoint_calibration(solution, raw)
+        self._apply_middle_pinch_anchor(solution, raw)
+
         self.last_qpos = solution
         if self.filtered_qpos is None:
             self.filtered_qpos = solution.copy()
@@ -398,11 +552,13 @@ class O30IRetargeter:
             "iterations": iterations,
             "function_evaluations": evaluations,
             "pinch_activation": pinch_activation,
+            "middle_pinch_activation": self._middle_pinch_activation,
         }
 
     def reset(self) -> None:
         self.last_qpos = np.clip(np.zeros(self.model.nq), self.lower, self.upper)
         self.filtered_qpos = None
+        self._middle_pinch_activation = 0.0
 
     def close(self) -> None:
         """Pinocchio owns no external resource."""
