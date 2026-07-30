@@ -34,7 +34,6 @@ PICO tracker ids: config/pico.yaml
 
 - Validate the opt-in left full-thumb solver on recorded pinch, wrap, and lateral grasps, then on hardware.
 - Improve MANUS/O30i fidelity only from recordings that include landmarks, solved radians, commands, and feedback.
-- Add collision awareness in simulation before considering hardware deployment.
 
 ## Verification
 
