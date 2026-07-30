@@ -1,6 +1,6 @@
 # Repository handover
 
-State as of 2026-07-29 evening. Runbook: [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md);
+State as of 2026-07-30. Runbook: [HARDWARE_DEPLOY.md](HARDWARE_DEPLOY.md);
 camera: ORBBEC_CAMERA.md. History lives in the git log.
 
 ## Setup
@@ -23,34 +23,39 @@ Status:
 - Arms are settled (quiet EE tremor 3.4 mrad / 0.83 mm); do not retune
   without reading the git history. Contact is RESOLVED (auto thresholds +
   torque gating, [CONTACT_IK_VALIDATION.md](CONTACT_IK_VALIDATION.md)); IK
-  failures are classified live and per tick (follow-debug.v5, with per-tick
-  SDK feed forensics: ts/age/ok/n). Initial pose
+  failures are classified live and per tick (follow-debug.v6, with per-tick
+  SDK feed forensics: frame_ts/ts/seq/age/callback_errors/ok/n). Initial pose
   recaptured 2026-07-29; per-side home services exist. Gateway verdicts
   stream back (protocol v2): a rejected engage shows its reason in the GUI.
+- The false-stale PICO regression is RESOLVED and hardware-verified
+  2026-07-30. A malformed decimal in any SDK JSON section could throw
+  `std::invalid_argument` through the vendor C callback, silently stopping
+  its receive loop while Python and gRPC still looked alive. Motion is now
+  parsed first and atomically published; no exception crosses the callback
+  boundary. Python reads one locked motion snapshot and uses its local
+  callback sequence for feed liveness. Do not restore the former multi-getter
+  consistency loop or cached-snapshot engagement grace.
 - Bimanual MANUS ran on hardware 2026-07-29 evening; both gloves stream
   (probe: inspect_manus_gloves.py), engage/disengage cycles work after the
   re-engage-deadlock fix. Pending: per-side tracker fault drills, feel-check
-  of the O30i thumb change, left-G20 grasp quality (agenda 1).
+  of the O30i thumb change, and left-G20 full-thumb validation (agenda 1).
 - Hand path: MANUS -> canonical landmarks -> per-side solver (right O30i
   full-thumb; left G20 = L20 profile, FIXED thumb opposition) -> UDP :5570
   -> bridge (250 ms watchdog, per-model slew) -> drivers.
 
 ## Research agenda
 
-### 1. G20 thumb: replace the fixed opposition with real retargeting
+### 1. G20 full-thumb validation
 
-The G20 thumb's CMC yaw/roll are frozen at THUMB_OPPOSITION_YAW_ROLL
-(hand_retarget.py ~L66-86; right operator-tuned 2026-07-26, left an
-UNTUNED copy - the mirrored URDF may want a different roll); only the curl
-is live (bend 0.25-1.30 rad -> full pitch+flex). Known costs: 16 mm
-contact gap mimicking the human root (2026-07-26 recordings); one fixed
-orientation cannot serve pinch, wrap, and lateral grasps. Solve it
-systematically, not by re-tuning constants:
+The full left-G20 thumb solver now exists with activation release and a
+0.35-rad-per-tick trust region. It is intentionally opt-in only in the
+hands-only diagnostic (`--left-thumb full`); the operator pipeline remains
+fixed-opposition by default and is unchanged unless the mode is explicitly
+selected. Validate the new mode systematically before changing that default:
 
-- Prior art: the O30i solver's segment-direction + pinch terms took thumb
-  MCP deficit to ~0 deg and pinch-at-touch from 17 to 5.7 mm offline
-  (manus_teleop/o30i_retarget.py). The same method - explicit objectives
-  replayed against recorded landmarks - should drive the G20/L20 thumb.
+- The implementation uses explicit segment-direction, tip, and pinch
+  objectives replayed against recorded landmarks. Confirm that activation
+  release prevents trust-region wedging across changing grasps.
 - Define grasp metrics first (thumb-tip vs finger-tip distances,
   opposition plane angle); evaluate on replayed `hand_fidelity*.jsonl` and
   a NEW recorded pose set (pinch / power wrap / lateral), then feel.
@@ -76,9 +81,12 @@ the mujoco harness before hardware.
 
 - One SDK client owns PICO input, one owns MANUS; never run RobotLinuxDemo
   or a second operator/hands-only script beside a live session.
-- `detected=[]` = the headset stopped sending; probe with
-  inspect_motion_trackers.py alone. isActive + array-change liveness stay
-  mandatory. Trackers are per-side; loss while engaged disengages all.
+- `seq` is local receipt of a successfully parsed Motion object; it, not the
+  vendor payload timestamp, is feed liveness. `callback_errors` increasing
+  identifies rejected SDK fields/frames. `n=0` means the latest parsed Motion
+  object contained no usable trackers; it does not by itself prove the PICO
+  hardware is inactive. Position and rotation liveness checks stay mandatory.
+  Trackers are per-side; loss while engaged disengages all.
 - O30i driver: command gaps hold; feedback loss disables recoverably; only a
   rejected disable is terminal. O30i silent on CANFD: probe_o30i_identity.py.
 - The host stays ROS-free (env_guard.py); pico.yaml is validated by host
@@ -89,7 +97,7 @@ the mujoco harness before hardware.
 
 ## Tests
 
-Pico (124): `pytest -q teleop_sources/pico/tests` in franka-teleop-pico.
+Pico (132): `pytest -q teleop_sources/pico/tests` in franka-teleop-pico.
 Gateway/protocol (10): `PYTHONPATH=ros_ws/src/teleop_core python3 -m pytest
 -q ros_ws/src/teleop_core/test/`. Container suites: HARDWARE_DEPLOY.
 
