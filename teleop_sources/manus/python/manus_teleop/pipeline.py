@@ -1,9 +1,8 @@
 """MANUS glove source with the same lifecycle as the PICO hand pipeline.
 
 Bimanual: each side in ``dynamic_sides`` follows its glove through the
-native skeleton bridge (left uses the physically calibrated G20 pose-anchor
-profile, right uses the O30i solver); every
-other side streams its default pose. A glove only delivers frames once its
+native skeleton bridge (left uses full L20-URDF optimization for the G20,
+right uses the O30i solver); every other side streams its default pose. A glove only delivers frames once its
 calibration file exists next to the bridge's calibration directory
 (``Calibration_left.mcal`` / ``Calibration_right.mcal``) - an uncalibrated
 side simply reports waiting and the rest keeps working.
@@ -34,25 +33,12 @@ CANONICAL_FROM_MANUS = (
 )
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
-# Explicit left-glove endpoint calibration from the labelled
-# manus_accuracy/left_full_01 recording (2026-07-30): held-open p95 was
-# 0.280 rad total thumb bend and held-closed p05 was 2.041 rad. Rounding
-# outward avoids clipping ordinary endpoint noise. MANUS retained a 10.1 mm
-# median skeleton gap during physical thumb-index contact, so 15 mm is treated
-# as sensor/contact deadzone. These values are recorded in every debug header.
-MANUS_LEFT_THUMB_BEND_RANGE = (0.28, 2.05)
-MANUS_LEFT_CONTACT_DEADZONE = 0.015
-MANUS_LEFT_CONTACT_START = 0.040
-MANUS_LEFT_CONTACT_ACTIVATION_STEP = 0.08
-# Physical left-G20 calibration on 2026-07-30 found index contact at 48%
-# synchronized base/tip curl. This supersedes the URDF-only 42% estimate.
-MANUS_LEFT_CONTACT_CURL_FLOOR = 0.48
-# Stable useful-pose anchors replace unconstrained online CMC optimization.
-# Ordinary poses retain the established opposition configuration; approaching
-# thumb-index contact interpolates continuously to the physical G20 anchor
-# tuned against the recorded index-finger pinch pose on 2026-07-30.
-MANUS_LEFT_CMC_REFERENCE = (1.10, 0.52)
-MANUS_LEFT_PINCH_OPPOSITION = (0.41, 0.76)
+# The physical full-retarget run showed a 17.1 mm p95 MANUS skeleton gap
+# during unambiguous thumb-index contact, so the deployed O30i-style distance
+# objective uses an outward-rounded 18 mm deadzone. Values are recorded in
+# every debug header.
+MANUS_LEFT_CONTACT_DEADZONE = 0.018
+MANUS_LEFT_DISTANCE_WEIGHT_SCALE = 10.0
 
 # Explicit right-glove endpoint and contact calibration from the labelled
 # right_o30_accuracy_20260730_201148 recording, followed by hardware validation.
@@ -84,6 +70,35 @@ MANUS_RIGHT_MIDDLE_PINCH_ANCHOR = {
     "middle_mcp_pitch": 1.244,
     "middle_pip": 0.300,
     "middle_dip": 1.176,
+}
+
+# Index-middle contact is a separate gesture: both fingers and the thumb stay
+# approximately straight, the thumb remains clear, and the two fingertips
+# touch. Thresholds are the outward-rounded p95 contact gaps from
+# manus_six_pose_bimanual_20260730_215752. The anchors are the nearest
+# zero-gap URDF poses to each recorded solver pose; physical validation is
+# still required, especially for the G20 represented by an L20 URDF.
+MANUS_LEFT_INDEX_MIDDLE_CONTACT_DISTANCE = 0.028
+MANUS_RIGHT_INDEX_MIDDLE_CONTACT_DISTANCE = 0.024
+MANUS_INDEX_MIDDLE_START_DISTANCE = 0.040
+MANUS_INDEX_MIDDLE_ACTIVATION_STEP = 0.08
+MANUS_LEFT_INDEX_MIDDLE_ANCHOR = {
+    "index_mcp_roll": -0.05757,
+    "index_mcp_pitch": 0.19156,
+    "index_pip": 0.0,
+    "middle_mcp_roll": 0.16941,
+    "middle_mcp_pitch": 0.07697,
+    "middle_pip": 0.22303,
+}
+MANUS_RIGHT_INDEX_MIDDLE_ANCHOR = {
+    "index_mcp_roll": -0.19600,
+    "index_mcp_pitch": 0.04298,
+    "index_pip": 0.01072,
+    "index_dip": 0.00182,
+    "middle_mcp_roll": -0.38000,
+    "middle_mcp_pitch": 0.0,
+    "middle_pip": 0.06494,
+    "middle_dip": 0.04417,
 }
 
 # Start blending into the mechanical endpoint only near the labelled left
@@ -248,10 +263,17 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
             middle_pinch_activation_step=(
                 MANUS_RIGHT_MIDDLE_PINCH_ACTIVATION_STEP
             ),
+            index_middle_pinch_anchor=MANUS_RIGHT_INDEX_MIDDLE_ANCHOR,
+            index_middle_contact_distance=(
+                MANUS_RIGHT_INDEX_MIDDLE_CONTACT_DISTANCE
+            ),
+            index_middle_start_distance=MANUS_INDEX_MIDDLE_START_DISTANCE,
+            index_middle_activation_step=MANUS_INDEX_MIDDLE_ACTIVATION_STEP,
         )
-    # MANUS left-G20 uses calibrated endpoint and useful-pose anchors because
-    # the available L20 URDF does not reproduce the physical G20 thumb. A
-    # fallback right-G20 profile retains the established fixed opposition.
+    # The left G20 uses the vendor L20 URDF and the O30i-style full thumb
+    # solve: yaw, roll, pitch, and the coupled MCP/IP actuator are optimized
+    # from every MANUS frame. A fallback right-G20 profile retains the
+    # established fixed opposition.
     from pico_bimanual_franka_teleop.hand_retarget import (
         L20Retargeter,
         THUMB_OPPOSITION_YAW_ROLL,
@@ -269,30 +291,26 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
         thumb_opposition_fixed=(
             None if calibrated_left else THUMB_OPPOSITION_YAW_ROLL[side]
         ),
-        thumb_bend_range=(
-            MANUS_LEFT_THUMB_BEND_RANGE if calibrated_left else None
-        ),
         thumb_contact_deadzone=(
             MANUS_LEFT_CONTACT_DEADZONE if calibrated_left else 0.0
         ),
-        thumb_contact_start=(
-            MANUS_LEFT_CONTACT_START if calibrated_left else 0.0
-        ),
-        thumb_contact_activation_step=(
-            MANUS_LEFT_CONTACT_ACTIVATION_STEP if calibrated_left else 1.0
-        ),
-        thumb_contact_curl_floor=(
-            MANUS_LEFT_CONTACT_CURL_FLOOR if calibrated_left else 0.0
-        ),
-        thumb_cmc_reference=(
-            MANUS_LEFT_CMC_REFERENCE if calibrated_left else None
-        ),
-        thumb_pinch_opposition=(
-            MANUS_LEFT_PINCH_OPPOSITION if calibrated_left else None
+        thumb_distance_weight_scale=(
+            MANUS_LEFT_DISTANCE_WEIGHT_SCALE if calibrated_left else 1.0
         ),
         finger_curl_ranges=(
             MANUS_LEFT_FINGER_CURL_RANGES if side == "left" else None
         ),
+        solve_thumb_flex=calibrated_left,
+        index_middle_pinch_anchor=(
+            MANUS_LEFT_INDEX_MIDDLE_ANCHOR if calibrated_left else None
+        ),
+        index_middle_contact_distance=(
+            MANUS_LEFT_INDEX_MIDDLE_CONTACT_DISTANCE if calibrated_left else 0.0
+        ),
+        index_middle_start_distance=(
+            MANUS_INDEX_MIDDLE_START_DISTANCE if calibrated_left else 0.0
+        ),
+        index_middle_activation_step=MANUS_INDEX_MIDDLE_ACTIVATION_STEP,
     )
 
 
@@ -455,7 +473,7 @@ class ManusHandPipeline:
                     "models": self.models,
                     "dynamic_sides": list(self.dynamic_sides),
                     "filter_alpha": self.filter_alpha,
-                    "left_thumb_policy": "calibrated_pose_anchors",
+                    "left_thumb_policy": "o30i_style_full_l20_ik",
                     "right_hand_calibration": (
                         {
                             "contact_deadzone_m": MANUS_RIGHT_CONTACT_DEADZONE,
@@ -478,9 +496,23 @@ class ManusHandPipeline:
                                 MANUS_RIGHT_MIDDLE_PINCH_ACTIVATION_STEP
                             ),
                             "middle_pinch_anchor": MANUS_RIGHT_MIDDLE_PINCH_ANCHOR,
+                            "index_middle_contact_distance_m": (
+                                MANUS_RIGHT_INDEX_MIDDLE_CONTACT_DISTANCE
+                            ),
+                            "index_middle_start_distance_m": (
+                                MANUS_INDEX_MIDDLE_START_DISTANCE
+                            ),
+                            "index_middle_activation_step": (
+                                MANUS_INDEX_MIDDLE_ACTIVATION_STEP
+                            ),
+                            "index_middle_anchor": MANUS_RIGHT_INDEX_MIDDLE_ANCHOR,
                             "source_recording": (
                                 "right_o30_accuracy_20260730_201148.jsonl"
                             ),
+                            "index_middle_source_recording": (
+                                "manus_six_pose_bimanual_20260730_215752.jsonl"
+                            ),
+                            "index_middle_physical_validation": "pending",
                             "physical_validation": "2026-07-30",
                         }
                         if "right" in self.dynamic_sides
@@ -488,22 +520,36 @@ class ManusHandPipeline:
                     ),
                     "left_hand_calibration": (
                         {
-                            "thumb_bend_range_rad": list(MANUS_LEFT_THUMB_BEND_RANGE),
+                            "thumb_mode": "o30i_style_full_l20_ik",
+                            "thumb_model": "assets/linkerhand_l20/left/linkerhand_l20_left.urdf",
                             "thumb_contact_deadzone_m": MANUS_LEFT_CONTACT_DEADZONE,
-                            "thumb_contact_start_m": MANUS_LEFT_CONTACT_START,
-                            "thumb_contact_activation_step": (
-                                MANUS_LEFT_CONTACT_ACTIVATION_STEP
-                            ),
-                            "thumb_contact_curl_floor": MANUS_LEFT_CONTACT_CURL_FLOOR,
-                            "thumb_cmc_reference": list(MANUS_LEFT_CMC_REFERENCE),
-                            "thumb_pinch_opposition": list(
-                                MANUS_LEFT_PINCH_OPPOSITION
+                            "thumb_trust_region_rad_per_tick": 0.35,
+                            "solve_thumb_flex": True,
+                            "thumb_distance_weight_scale": (
+                                MANUS_LEFT_DISTANCE_WEIGHT_SCALE
                             ),
                             "finger_curl_ranges_rad": {
                                 finger: list(values)
                                 for finger, values in MANUS_LEFT_FINGER_CURL_RANGES.items()
                             },
+                            "index_middle_contact_distance_m": (
+                                MANUS_LEFT_INDEX_MIDDLE_CONTACT_DISTANCE
+                            ),
+                            "index_middle_start_distance_m": (
+                                MANUS_INDEX_MIDDLE_START_DISTANCE
+                            ),
+                            "index_middle_activation_step": (
+                                MANUS_INDEX_MIDDLE_ACTIVATION_STEP
+                            ),
+                            "index_middle_anchor": MANUS_LEFT_INDEX_MIDDLE_ANCHOR,
                             "source_recording": "left_full_01.jsonl",
+                            "pinch_source_recording": (
+                                "left_full_retarget_physical.jsonl"
+                            ),
+                            "index_middle_source_recording": (
+                                "manus_six_pose_bimanual_20260730_215752.jsonl"
+                            ),
+                            "index_middle_physical_validation": "pending",
                             "physical_pinch_calibration": "2026-07-30",
                         }
                         if "left" in self.dynamic_sides

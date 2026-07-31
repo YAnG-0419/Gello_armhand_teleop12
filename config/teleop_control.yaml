@@ -2,6 +2,7 @@ teleop_safety_gateway:
   ros__parameters:
     allowed_sources:
       - pico
+      - vive
       - replay
     state_timeout: 0.25
     command_timeout: 0.25

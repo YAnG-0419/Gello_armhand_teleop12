@@ -42,8 +42,13 @@ class PicoTeleopBridge(Node):
         self.state_timeout = self._required_parameter(
             "state_timeout", Parameter.Type.DOUBLE
         )
+        self.source_id = self._required_parameter(
+            "source_id", Parameter.Type.STRING
+        ).strip()
         if self.state_timeout <= 0:
             raise ValueError("State timeout must be positive.")
+        if not self.source_id:
+            raise ValueError("Source ID must be non-empty.")
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((listen_host, command_port))
@@ -75,7 +80,8 @@ class PicoTeleopBridge(Node):
         )
         self.create_timer(0.01, self._tick)
         self.get_logger().info(
-            f"PICO adapter listening on udp://{listen_host}:{command_port}."
+            f"{self.source_id} adapter listening on "
+            f"udp://{listen_host}:{command_port}."
         )
 
     def _required_parameter(self, name, parameter_type):
@@ -103,7 +109,9 @@ class PicoTeleopBridge(Node):
     def _reject(self, reason):
         self.rejected += 1
         if self.rejected <= 3 or self.rejected % 100 == 0:
-            self.get_logger().warn(f"Rejected PICO packet: {reason}")
+            self.get_logger().warn(
+                f"Rejected {self.source_id} packet: {reason}"
+            )
 
     def _send_state(self, measured, now):
         packet = JointPacket(
@@ -148,7 +156,7 @@ class PicoTeleopBridge(Node):
 
     def _gateway_status(self, message):
         if (
-            message.source != "pico"
+            message.source != self.source_id
             or message.session_id != self.command_stream_id
             or int(message.sequence) <= self.gateway_status_sequence
         ):
@@ -167,7 +175,7 @@ class PicoTeleopBridge(Node):
             return
         output = ArmCommand()
         output.header.stamp = self.get_clock().now().to_msg()
-        output.source = "pico"
+        output.source = self.source_id
         output.session_id = packet.stream_id
         output.sequence = packet.sequence
         output.active_sides = list(packet.active_sides)

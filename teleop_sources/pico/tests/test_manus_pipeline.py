@@ -11,7 +11,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "ros_ws" / "src" / "linker_hand_bridge"))
 
 from linker_hand_bridge.core import G20Mapper
-from manus_teleop.pipeline import ManusFrame, ManusHandPipeline, SIDE_CODES
+from manus_teleop.pipeline import (
+    ManusFrame,
+    ManusHandPipeline,
+    SIDE_CODES,
+    _create_retargeter,
+)
 from manus_teleop import o30i_retarget
 from pico_bimanual_franka_teleop import hand_retarget
 
@@ -48,6 +53,22 @@ class FakeBridge:
 
 class RightOnlyFakeBridge(FakeBridge):
     serving = ("right",)
+
+
+def test_deployed_left_g20_uses_vendor_l20_urdf_and_full_thumb_solve():
+    retargeter = _create_retargeter("left", "g20", 0.85)
+
+    assert retargeter.urdf_path == (
+        REPO_ROOT
+        / "assets"
+        / "linkerhand_l20"
+        / "left"
+        / "linkerhand_l20_left.urdf"
+    ).resolve()
+    assert retargeter.thumb_opposition_fixed is None
+    assert retargeter.solve_thumb_flex is True
+    assert retargeter.thumb_contact_deadzone == 0.018
+    assert retargeter.thumb_distance_weight_scale == 10.0
 
 
 class FakeRetargeter:

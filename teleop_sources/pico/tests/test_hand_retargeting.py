@@ -10,6 +10,7 @@ from pico_bimanual_franka_teleop.hand_retarget import (
     CANONICAL_FINGERS,
     L20Retargeter,
     chain_bend_angle,
+    index_middle_pinch_request,
 )
 from pico_bimanual_franka_teleop.hand_stream import (
     HandQposPacket,
@@ -59,6 +60,47 @@ def test_chain_bend_angle_is_length_and_pose_invariant():
     assert chain_bend_angle(4.2 * bent + np.array([5.0, -2.0, 9.0])) == pytest.approx(
         np.pi
     )
+
+
+def test_index_middle_pinch_request_rejects_fists_and_thumb_curl():
+    points = np.zeros((21, 3), dtype=float)
+    chains = {
+        "thumb": (1, 2, 3, 4),
+        "index": (5, 6, 7, 8),
+        "middle": (9, 10, 11, 12),
+        "ring": (13, 14, 15, 16),
+        "pinky": (17, 18, 19, 20),
+    }
+    starts = {
+        "thumb": np.array([0.0, -0.10, 0.0]),
+        "index": np.array([0.0, 0.00, 0.0]),
+        "middle": np.array([0.0, 0.02, 0.0]),
+        "ring": np.array([0.0, 0.05, 0.0]),
+        "pinky": np.array([0.0, 0.08, 0.0]),
+    }
+    for finger, chain in chains.items():
+        for step, landmark in enumerate(chain):
+            points[landmark] = starts[finger] + np.array([0.03 * step, 0.0, 0.0])
+    request = index_middle_pinch_request(
+        points, contact_distance=0.025, start_distance=0.04
+    )
+    assert request == pytest.approx(1.0)
+
+    fist = points.copy()
+    fist[[6, 7, 8]] = ([0.03, 0.0, 0.0], [0.03, 0.03, 0.0], [0.09, 0.0, 0.0])
+    assert index_middle_pinch_request(
+        fist, contact_distance=0.025, start_distance=0.04
+    ) == pytest.approx(0.0)
+
+    thumb_curled = points.copy()
+    thumb_curled[[2, 3, 4]] = (
+        [0.03, -0.10, 0.0],
+        [0.03, -0.07, 0.0],
+        [0.09, -0.10, 0.0],
+    )
+    assert index_middle_pinch_request(
+        thumb_curled, contact_distance=0.025, start_distance=0.04
+    ) == pytest.approx(0.0)
 
 
 def test_validate_skeleton_rejects_bad_input():
@@ -408,44 +450,6 @@ def test_abduction_polarity_matches_urdf_geometry(side):
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
-def test_calibrated_thumb_bend_drives_full_base_and_tip_range(side):
-    with L20Retargeter(urdf_for(side), side, filter_alpha=1.0) as oracle:
-        oracle.reset()
-        opened = oracle.robot_landmarks()
-        open_bend = chain_bend_angle(
-            opened[list(CANONICAL_FINGERS["thumb"])]
-        )
-        closed_qpos = np.zeros(oracle.dof)
-        closed_qpos[oracle.joint_names.index("thumb_mcp")] = oracle.upper[
-            oracle.joint_names.index("thumb_mcp")
-        ]
-        oracle._reset_joints(closed_qpos)
-        closed = oracle.robot_landmarks()
-        closed_bend = chain_bend_angle(
-            closed[list(CANONICAL_FINGERS["thumb"])]
-        )
-
-    with L20Retargeter(
-        urdf_for(side),
-        side,
-        filter_alpha=1.0,
-        thumb_bend_range=(open_bend, closed_bend),
-    ) as retargeter:
-        open_qpos, _ = retargeter.retarget(opened)
-        closed_qpos, _ = retargeter.retarget(closed)
-        for name in (
-            "thumb_cmc_pitch",
-            "thumb_mcp",
-            "thumb_ip" if side == "left" else "thumb_dip",
-        ):
-            index = retargeter.joint_names.index(name)
-            assert open_qpos[index] == pytest.approx(retargeter.lower[index])
-            assert closed_qpos[index] == pytest.approx(
-                retargeter.upper[index], abs=1e-5
-            )
-
-
-@pytest.mark.parametrize("side", ["left", "right"])
 def test_calibrated_finger_endpoint_reaches_full_mechanical_curl(side):
     with L20Retargeter(urdf_for(side), side, filter_alpha=1.0) as oracle:
         desired = np.zeros(oracle.dof)
@@ -468,44 +472,6 @@ def test_calibrated_finger_endpoint_reaches_full_mechanical_curl(side):
         for name in ("pinky_mcp_pitch", "pinky_pip", "pinky_dip"):
             index = retargeter.joint_names.index(name)
             assert qpos[index] == pytest.approx(retargeter.upper[index], abs=5e-5)
-
-
-@pytest.mark.parametrize("side", ["left", "right"])
-def test_pinch_anchor_interpolates_with_bounded_activation(side):
-    reference = (1.0, 0.4)
-    pinch_opposition = (0.6, 0.8)
-    with L20Retargeter(
-        urdf_for(side),
-        side,
-        filter_alpha=1.0,
-        thumb_bend_range=(0.0, 3.0),
-        thumb_contact_deadzone=0.01,
-        thumb_contact_start=0.04,
-        thumb_contact_activation_step=0.2,
-        thumb_cmc_reference=reference,
-        thumb_pinch_opposition=pinch_opposition,
-    ) as retargeter:
-        opened = retargeter.robot_landmarks()
-        pinch = opened.copy()
-        pinch[4] = pinch[8]
-        indices = [
-            retargeter.joint_names.index(name)
-            for name in ("thumb_cmc_yaw", "thumb_cmc_roll")
-        ]
-        previous = np.asarray(reference)
-        for expected_activation in (0.2, 0.4, 0.6, 0.8, 1.0):
-            qpos, _ = retargeter.retarget(pinch)
-            current = qpos[indices]
-            expected = np.asarray(reference) + expected_activation * (
-                np.asarray(pinch_opposition) - np.asarray(reference)
-            )
-            assert current == pytest.approx(expected)
-            assert np.max(np.abs(current - previous)) <= 0.08 + 1e-9
-            previous = current
-
-        retargeter.reset()
-        qpos, _ = retargeter.retarget(opened)
-        assert qpos[indices] == pytest.approx(reference)
 
 
 @pytest.mark.parametrize("side", ["left", "right"])

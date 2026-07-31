@@ -8,14 +8,15 @@ operator engage --------^
 operator engage -> hand worker -> retargeting -> hand bridge
 ```
 
-PICO inputs are selected explicitly on the CLI:
+Arm inputs are selected explicitly on the CLI:
 
 ```text
 --arm-source controllers
 --arm-source motion-trackers
+--arm-source vive-trackers --vive-config config/vive.yaml
 ```
 
-The choice is not stored in YAML. All arm inputs share the same mapping, IK, UDP, ROS, and robot-control pipeline.
+The choice is not stored in YAML. VIVE Trackers are the operational default; PICO remains optional. All arm inputs share the same mapping, IK, UDP, ROS, and robot-control pipeline.
 
 ## Input boundaries
 
@@ -34,8 +35,10 @@ cp docker/.env.example docker/.env
 The only public scripts are:
 
 - `build.sh`: build the Docker image and ROS workspace
-- `setup_pico_env.sh`: create/update the PICO Conda environment
+- `setup_pico_env.sh`: create/update the host teleoperation Conda environment
 - `start_orbbec_viewer.sh`: open the compatible SDK v2 Viewer when ROS is stopped
+- `run_teleop.sh`: start the default VIVE-arm/MANUS-hand host operator
+- `run_pico_teleop.sh`: start the optional PICO-arm/MANUS-hand host operator
 - `export_lerobot.sh`: export complete arm, hand, and RGB-D bags to LeRobot
 
 Docker services use ordinary Compose commands from `docker/`; Compose reads `docker/.env` automatically.
@@ -48,7 +51,7 @@ conda run --no-capture-output --name franka-teleop-pico \
   --config config/pico.yaml --arm-source mock --headless --duration 2
 ```
 
-See [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md) for hardware operation, recording, export, and replay. See [docs/HANDOVER.md](docs/HANDOVER.md) for current state and next work. MANUS implementation notes are in [teleop_sources/manus/README.md](teleop_sources/manus/README.md).
+See [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md) for hardware operation, recording, export, and replay. VIVE setup and its read-only connectivity tool are documented in [teleop_sources/vive/README.md](teleop_sources/vive/README.md). See [docs/HANDOVER.md](docs/HANDOVER.md) for current state and next work. MANUS implementation notes are in [teleop_sources/manus/README.md](teleop_sources/manus/README.md).
 
 ## Configuration ownership
 

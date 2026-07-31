@@ -45,16 +45,21 @@ def invoke_reset(side: str | None = None) -> tuple[bool, str]:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Unified FR3 and LinkerHand teleoperation. PICO supplies arm poses; "
-            "PICO optical tracking or MANUS may supply hand poses in this same "
-            "operator process."
+            "Unified FR3 and LinkerHand teleoperation. PICO or VIVE Trackers "
+            "supply arm poses; PICO optical tracking or MANUS may supply hand "
+            "poses in this same operator process."
         )
     )
     parser.add_argument("--config", required=True)
     parser.add_argument(
         "--arm-source",
         required=True,
-        choices=("controllers", "motion-trackers", "hand-roots"),
+        choices=("controllers", "motion-trackers", "hand-roots", "vive-trackers"),
+    )
+    parser.add_argument(
+        "--vive-config",
+        default=None,
+        help="VIVE Tracker configuration; required with --arm-source vive-trackers",
     )
     parser.add_argument("--control-host", default="127.0.0.1")
     parser.add_argument(
@@ -111,6 +116,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.hand_debug_log and args.hand_source == "none":
         parser.error("--hand-debug-log requires a hand source")
+    if args.arm_source == "vive-trackers" and not args.vive_config:
+        parser.error("--arm-source vive-trackers requires --vive-config")
+    if args.arm_source != "vive-trackers" and args.vive_config:
+        parser.error("--vive-config is only valid with --arm-source vive-trackers")
 
     if args.hand_source == "pico" and args.arm_source == "controllers":
         parser.error(
@@ -145,15 +154,26 @@ def main() -> None:
     arm_source = None
     hands = None
     try:
-        pico_session = PicoSession()
-        arm_source = create_pico_input(
-            config.input,
-            args.arm_source,
-            keyboard=ui,
-            xrt_client=pico_session.client,
-        )
+        if args.arm_source == "vive-trackers":
+            from vive_tracker_teleop import ViveTrackerInput, load_vive_config
+
+            arm_source = ViveTrackerInput(
+                load_vive_config(args.vive_config),
+                ui,
+            )
+        else:
+            pico_session = PicoSession()
+            arm_source = create_pico_input(
+                config.input,
+                args.arm_source,
+                keyboard=ui,
+                xrt_client=pico_session.client,
+            )
         hand_pipeline = None
         if args.hand_source == "pico":
+            if pico_session is None:
+                pico_session = PicoSession()
+            assert pico_session.client is not None
             from pico_bimanual_franka_teleop.hand_teleop import HandPipeline
 
             sides = ("left", "right")

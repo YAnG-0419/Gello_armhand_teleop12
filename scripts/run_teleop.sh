@@ -7,9 +7,10 @@
 # pending, and the next paste glues onto it. A single short command has no
 # such failure mode.
 #
-# Extra arguments pass through to teleop_dual_fr3.py and later flags win,
-# so e.g. `scripts/run_teleop.sh --hand-source pico` switches the hand
-# source. TELEOP_RUN_DIR overrides the
+# VIVE Trackers are the default arm source and MANUS is the default hand
+# source. Passing any explicit --arm-source suppresses the VIVE defaults;
+# scripts/run_pico_teleop.sh is the convenience path for PICO. Other extra
+# arguments pass through to teleop_dual_fr3.py. TELEOP_RUN_DIR overrides the
 # run directory.
 set -euo pipefail
 
@@ -31,6 +32,14 @@ else
 fi
 echo "RUN_DIR=$RUN_DIR"
 
+ARM_ARGS=(--arm-source vive-trackers --vive-config "$REPO_ROOT/config/vive.yaml")
+for argument in "$@"; do
+  if [[ "$argument" == "--arm-source" || "$argument" == --arm-source=* ]]; then
+    ARM_ARGS=()
+    break
+  fi
+done
+
 cd "$REPO_ROOT"
 # activate + exec, NOT `conda run`: conda run wraps python in a subprocess
 # and dies first on Ctrl-C, orphaning python into the background where it
@@ -41,7 +50,7 @@ CONDA_BASE="$(conda info --base)"
 source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate franka-teleop-pico
 exec python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml --arm-source motion-trackers \
+  --config config/pico.yaml "${ARM_ARGS[@]}" \
   --hand-source manus \
   --debug-log "$RUN_DIR/ee_jitter.jsonl" \
   --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl" \

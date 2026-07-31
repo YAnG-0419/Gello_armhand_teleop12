@@ -17,4 +17,5 @@ conda run --name "${environment}" python -m pip install \
 conda run --name "${environment}" python -m pip install \
   -e "${repo}/ros_ws/src/teleop_core" \
   -e "${repo}/teleop_sources/pico" \
+  -e "${repo}/teleop_sources/vive" \
   -e "${repo}/teleop_sources/manus/python"

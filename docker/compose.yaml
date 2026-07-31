@@ -92,12 +92,27 @@ services:
 
   pico-bridge:
     <<: *runtime
+    # Optional legacy arm input; mutually exclusive with the default vive-bridge.
+    profiles: [pico]
     command:
       - ros2
       - launch
       - pico_teleop_bridge
       - pico.launch.py
       - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
+      - source_id:=pico
+
+  vive-bridge:
+    <<: *runtime
+    # Default arm input. Mutually exclusive with pico-bridge: both use the
+    # same host UDP ports.
+    command:
+      - ros2
+      - launch
+      - pico_teleop_bridge
+      - pico.launch.py
+      - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
+      - source_id:=vive
 
   orbbec:
     <<: *runtime

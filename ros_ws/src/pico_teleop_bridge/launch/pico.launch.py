@@ -156,6 +156,7 @@ def launch_bridge(context):
                     "feedback_host": udp["state_host"],
                     "feedback_port": udp["state_port"],
                     "state_timeout": udp["state_timeout"],
+                    "source_id": LaunchConfiguration("source_id").perform(context),
                 }
             ],
         )
@@ -166,7 +167,12 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
-                "config", description="Required PICO configuration file"
+                "config", description="Required host teleoperation configuration file"
+            ),
+            DeclareLaunchArgument(
+                "source_id",
+                default_value="pico",
+                description="ArmCommand source identifier",
             ),
             OpaqueFunction(function=launch_bridge),
         ]

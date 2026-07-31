@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize open, curl, thumb, index-pinch, and middle-pinch criteria."""
+"""Summarize the six labelled MANUS endpoint and pinch criteria."""
 
 from __future__ import annotations
 
@@ -60,21 +60,9 @@ def closure(row: dict, contract: dict, selected: tuple[str, ...]) -> float:
 
 def replay_current(rows: list[dict], metadata: dict) -> None:
     """Replace recorded solver outputs using current code and exact inputs."""
-    from manus_teleop.pipeline import (
-        MANUS_LEFT_CONTACT_CURL_FLOOR,
-        MANUS_LEFT_PINCH_OPPOSITION,
-        _create_retargeter,
-    )
+    from manus_teleop.pipeline import _create_retargeter
 
     sides = sorted({row["side"] for row in rows})
-    if "left" in sides:
-        metadata.setdefault("left_hand_calibration", {}).update(
-            {
-                "thumb_pinch_opposition": list(MANUS_LEFT_PINCH_OPPOSITION),
-                "thumb_contact_curl_floor": MANUS_LEFT_CONTACT_CURL_FLOOR,
-                "physical_pinch_calibration": "2026-07-30",
-            }
-        )
     retargeters = {
         side: _create_retargeter(
             side, metadata["models"][side], metadata["filter_alpha"]
@@ -100,22 +88,33 @@ def replay_current(rows: list[dict], metadata: dict) -> None:
             retargeter.close()
 
 
-def pinch_gaps(rows: list[dict], fingertip: int) -> tuple[list[float], list[float]]:
+def pair_gaps(
+    rows: list[dict], first_tip: int, second_tip: int
+) -> tuple[list[float], list[float], list[float]]:
     robot_gaps = []
     target_gaps = []
+    human_gaps = []
     for row in rows:
+        landmarks = np.asarray(row.get("landmarks"), dtype=float)
+        if landmarks.shape == (21, 3):
+            human_gaps.append(
+                1000.0
+                * float(np.linalg.norm(landmarks[first_tip] - landmarks[second_tip]))
+            )
         derived = row.get("derived") or {}
         robot = np.asarray(derived.get("robot_landmarks_emitted"), dtype=float)
         target = np.asarray(derived.get("target_landmarks_robot"), dtype=float)
         if robot.shape == (21, 3):
             robot_gaps.append(
-                1000.0 * float(np.linalg.norm(robot[4] - robot[fingertip]))
+                1000.0
+                * float(np.linalg.norm(robot[first_tip] - robot[second_tip]))
             )
         if target.shape == (21, 3):
             target_gaps.append(
-                1000.0 * float(np.linalg.norm(target[4] - target[fingertip]))
+                1000.0
+                * float(np.linalg.norm(target[first_tip] - target[second_tip]))
             )
-    return robot_gaps, target_gaps
+    return robot_gaps, target_gaps, human_gaps
 
 
 def main() -> int:
@@ -162,11 +161,14 @@ def main() -> int:
             closure(row, contract, ("thumb",))
             for row in grouped[(side, "thumb_fully_curled")]
         ]
-        gaps, target_gaps = pinch_gaps(
-            grouped[(side, "thumb_index_pinch")], 8
+        gaps, target_gaps, _ = pair_gaps(
+            grouped[(side, "thumb_index_pinch")], 4, 8
         )
-        middle_gaps, middle_target_gaps = pinch_gaps(
-            grouped[(side, "thumb_middle_pinch")], 12
+        middle_gaps, middle_target_gaps, _ = pair_gaps(
+            grouped[(side, "thumb_middle_pinch")], 4, 12
+        )
+        index_middle_gaps, index_middle_targets, index_middle_human = pair_gaps(
+            grouped[(side, "index_middle_pinch")], 8, 12
         )
         thumb_bends = []
         for row in grouped[(side, "thumb_fully_curled")]:
@@ -208,7 +210,7 @@ def main() -> int:
         if side == "left" and physical_pinch:
             print(
                 "3 thumb-index pinch: L20 URDF FK gap mm "
-                "(diagnostic only; physical G20 anchor calibrated by contact)"
+                "(diagnostic for the pose saved in this recording)"
             )
         else:
             print("3 thumb-index pinch: robot FK gap mm, ideal 0")
@@ -225,6 +227,25 @@ def main() -> int:
             print(
                 "  normalized MANUS target gap mm: "
                 + percentile(middle_target_gaps)
+            )
+        print("6 index-middle contact: robot FK gap mm, ideal 0")
+        print(
+            "  "
+            + (
+                percentile(index_middle_gaps)
+                if index_middle_gaps
+                else "not recorded"
+            )
+        )
+        if index_middle_targets:
+            print(
+                "  normalized MANUS target gap mm: "
+                + percentile(index_middle_targets)
+            )
+        if index_middle_human:
+            print(
+                "  raw MANUS fingertip gap mm: "
+                + percentile(index_middle_human)
             )
     return 0
 

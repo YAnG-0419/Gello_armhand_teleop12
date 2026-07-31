@@ -41,6 +41,11 @@ PHASES = (
         "thumb_middle_pinch",
         "Touch the thumb tip to the middle fingertip in a firm pinch.",
     ),
+    (
+        "index_middle_pinch",
+        "Touch the index and middle fingertips together firmly with no object; "
+        "keep both fingers straight and the thumb clear.",
+    ),
 )
 
 
@@ -52,9 +57,10 @@ def main() -> int:
         "--sides", choices=("left", "right", "both"), default="both"
     )
     parser.add_argument("--filter-alpha", type=float, default=0.85)
+    parser.add_argument("--ready-timeout", type=float, default=15.0)
     args = parser.parse_args()
-    if args.seconds <= 0.0:
-        parser.error("--seconds must be positive")
+    if args.seconds <= 0.0 or args.ready_timeout <= 0.0:
+        parser.error("--seconds and --ready-timeout must be positive")
     if args.output.exists():
         parser.error(f"refusing to overwrite existing output: {args.output}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -77,16 +83,42 @@ def main() -> int:
             dynamic_sides=sides,
         )
         print("Connected to MANUS. No robot commands can leave this process.")
-        print(f"Recording {', '.join(sides)} to {args.output}")
+        print(f"Waiting up to {args.ready_timeout:.0f}s for {', '.join(sides)} gloves...")
+        inactive = {side: False for side in ("left", "right")}
+        ready_deadline = time.monotonic() + args.ready_timeout
+        while time.monotonic() < ready_deadline:
+            started = time.monotonic()
+            pipeline.tick(started, active=inactive)
+            if all(pipeline.last_frame[side] is not None for side in sides):
+                break
+            remaining = 0.01 - (time.monotonic() - started)
+            if remaining > 0.0:
+                time.sleep(remaining)
+        missing = [side for side in sides if pipeline.last_frame[side] is None]
+        if missing:
+            faults = {
+                side: pipeline.status.sides[side].fault for side in missing
+            }
+            raise RuntimeError(
+                f"no calibrated MANUS frames for {missing}; status={faults}. "
+                "Check glove power, MANUS license, and calibration files."
+            )
+        print(f"Both requested gloves are live. Recording to {args.output}")
         active = {side: side in sides for side in ("left", "right")}
+        minimum_frames = max(5, int(args.seconds * 2.0))
         for phase, instruction in PHASES:
             pipeline.set_debug_phase(None)
             input(f"\n{instruction}\nHold the pose, then press Enter to record: ")
             pipeline.set_debug_phase(phase)
+            observed = {side: set() for side in sides}
             deadline = time.monotonic() + args.seconds
             while time.monotonic() < deadline:
                 started = time.monotonic()
                 pipeline.tick(started, active=active)
+                for side in sides:
+                    frame = pipeline.last_frame[side]
+                    if frame is not None:
+                        observed[side].add(int(frame.sequence))
                 try:
                     while sink.recv(65_535):
                         pass
@@ -95,7 +127,22 @@ def main() -> int:
                 remaining = 0.01 - (time.monotonic() - started)
                 if remaining > 0.0:
                     time.sleep(remaining)
-            print(f"Captured {phase}.")
+            insufficient = {
+                side: len(sequences)
+                for side, sequences in observed.items()
+                if len(sequences) < minimum_frames
+            }
+            if insufficient:
+                raise RuntimeError(
+                    f"phase {phase!r} did not receive enough new MANUS frames: "
+                    f"{insufficient}; required at least {minimum_frames} per side"
+                )
+            print(
+                f"Captured {phase}: "
+                + ", ".join(
+                    f"{side}={len(observed[side])} frames" for side in sides
+                )
+            )
         pipeline.set_debug_phase(None)
     finally:
         if pipeline is not None:

@@ -6,6 +6,8 @@ The MuJoCo FR3 model includes Franka Robotics description assets. Their license 
 
 The PICO adapter includes the XRoboToolkit PC Service Python binding and its prebuilt Linux SDK library under `third_party/xrobotoolkit_sdk`. Its upstream license is retained alongside the source. The included native library targets x86-64 Linux; rebuild it from upstream for another architecture.
 
+The VIVE Tracker adapter depends on the upstream `openvr` Python package and the locally installed SteamVR/OpenVR runtime. Those components remain governed by their respective upstream licenses and are not vendored in this repository.
+
 The MANUS hand adapter includes MANUS CoreSDK 3.1.1 headers and its integrated x86-64 Linux library under `third_party/manus_sdk`. These proprietary files remain governed by the vendor agreement retained as `LICENSE.vendor`. The adapter source adds the attribution required for derivatives of vendor sample code.
 
 The hand retargeting assets under `assets/linkerhand_l20` are LinkerHand L20 URDFs and meshes distributed by the vendor under Apache-2.0. Their upstream license is retained alongside the models.

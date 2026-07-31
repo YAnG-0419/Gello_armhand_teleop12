@@ -17,6 +17,7 @@ from pico_bimanual_franka_teleop.hand_retarget import (
     CANONICAL_FINGERS,
     CHAIN_WEIGHTS,
     chain_bend_angle,
+    index_middle_pinch_request,
     THUMB_DISTANCE_THRESHOLD,
     THUMB_DISTANCE_WEIGHTS,
     orthonormal_palm_frame,
@@ -94,6 +95,10 @@ class O30IRetargeter:
         middle_pinch_anchor: dict[str, float] | None = None,
         middle_pinch_start: float = 0.0,
         middle_pinch_activation_step: float = 1.0,
+        index_middle_pinch_anchor: dict[str, float] | None = None,
+        index_middle_contact_distance: float = 0.0,
+        index_middle_start_distance: float = 0.0,
+        index_middle_activation_step: float = 1.0,
     ) -> None:
         if side != "right":
             raise ValueError("the checked-in O30i retargeter currently supports right only")
@@ -119,6 +124,19 @@ class O30IRetargeter:
             raise ValueError("middle_pinch_activation_step must be in (0, 1]")
         self.middle_pinch_start = float(middle_pinch_start)
         self.middle_pinch_activation_step = float(middle_pinch_activation_step)
+        if index_middle_contact_distance < 0.0:
+            raise ValueError("index_middle_contact_distance must not be negative")
+        if index_middle_pinch_anchor and (
+            index_middle_start_distance <= index_middle_contact_distance
+        ):
+            raise ValueError(
+                "index_middle_start_distance must exceed contact distance"
+            )
+        if not 0.0 < index_middle_activation_step <= 1.0:
+            raise ValueError("index_middle_activation_step must be in (0, 1]")
+        self.index_middle_contact_distance = float(index_middle_contact_distance)
+        self.index_middle_start_distance = float(index_middle_start_distance)
+        self.index_middle_activation_step = float(index_middle_activation_step)
         self.finger_open_ranges = self._validate_bend_ranges(
             finger_open_ranges, "finger_open_ranges"
         )
@@ -146,9 +164,18 @@ class O30IRetargeter:
             str(name): float(value)
             for name, value in (middle_pinch_anchor or {}).items()
         }
+        self.index_middle_pinch_anchor = {
+            str(name): float(value)
+            for name, value in (index_middle_pinch_anchor or {}).items()
+        }
         if set(self.middle_pinch_anchor).difference(self.joint_names):
             raise ValueError("middle_pinch_anchor contains unknown joints")
-        for name, value in self.middle_pinch_anchor.items():
+        if set(self.index_middle_pinch_anchor).difference(self.joint_names):
+            raise ValueError("index_middle_pinch_anchor contains unknown joints")
+        for name, value in {
+            **self.middle_pinch_anchor,
+            **self.index_middle_pinch_anchor,
+        }.items():
             index = self.joint_names.index(name)
             if (
                 not np.isfinite(value)
@@ -157,6 +184,7 @@ class O30IRetargeter:
             ):
                 raise ValueError(f"middle_pinch_anchor[{name!r}] is out of range")
         self._middle_pinch_activation = 0.0
+        self._index_middle_activation = 0.0
         self.smooth_weight = float(smooth_weight)
         self.filter_alpha = float(filter_alpha)
         self.max_iterations = int(max_iterations)
@@ -369,6 +397,29 @@ class O30IRetargeter:
                 target - solution[index]
             )
 
+    def _apply_index_middle_pinch_anchor(
+        self, solution: np.ndarray, raw: np.ndarray
+    ) -> float:
+        requested = 0.0
+        if self.index_middle_pinch_anchor:
+            requested = index_middle_pinch_request(
+                raw,
+                contact_distance=self.index_middle_contact_distance,
+                start_distance=self.index_middle_start_distance,
+            )
+        delta = np.clip(
+            requested - self._index_middle_activation,
+            -self.index_middle_activation_step,
+            self.index_middle_activation_step,
+        )
+        self._index_middle_activation += float(delta)
+        for name, target in self.index_middle_pinch_anchor.items():
+            index = self.joint_names.index(name)
+            solution[index] += self._index_middle_activation * (
+                target - solution[index]
+            )
+        return requested
+
     def retarget(
         self, landmarks: np.ndarray
     ) -> tuple[np.ndarray, dict[str, float | int | bool]]:
@@ -538,6 +589,7 @@ class O30IRetargeter:
             success = success and bool(result.success)
         self._apply_endpoint_calibration(solution, raw)
         self._apply_middle_pinch_anchor(solution, raw)
+        index_middle_request = self._apply_index_middle_pinch_anchor(solution, raw)
 
         self.last_qpos = solution
         if self.filtered_qpos is None:
@@ -546,19 +598,27 @@ class O30IRetargeter:
             self.filtered_qpos += self.filter_alpha * (
                 solution - self.filtered_qpos
             )
-        return self.filtered_qpos.copy(), {
+        emitted = self.filtered_qpos.copy()
+        emitted_landmarks = self.robot_landmarks(emitted)
+        return emitted, {
             "success": success,
             "loss": total_loss,
             "iterations": iterations,
             "function_evaluations": evaluations,
             "pinch_activation": pinch_activation,
             "middle_pinch_activation": self._middle_pinch_activation,
+            "index_middle_pinch_request": index_middle_request,
+            "index_middle_pinch_activation": self._index_middle_activation,
+            "index_middle_gap": float(
+                np.linalg.norm(emitted_landmarks[8] - emitted_landmarks[12])
+            ),
         }
 
     def reset(self) -> None:
         self.last_qpos = np.clip(np.zeros(self.model.nq), self.lower, self.upper)
         self.filtered_qpos = None
         self._middle_pinch_activation = 0.0
+        self._index_middle_activation = 0.0
 
     def close(self) -> None:
         """Pinocchio owns no external resource."""

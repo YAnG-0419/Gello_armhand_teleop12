@@ -16,7 +16,7 @@ Terminal 1:
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop/docker
-docker compose up franka-control teleop-control pico-bridge hand-control
+docker compose up franka-control teleop-control vive-bridge hand-control
 ```
 
 Terminal 2:
@@ -38,20 +38,43 @@ The backend starts disengaged and writes a fresh diagnostics directory. GUI loss
 
 ## Stop
 
-Disengage in the GUI, stop the operator, stop Compose, then disable FCI. Do not run another PICO or MANUS diagnostic until the operator has exited.
+Disengage in the GUI, stop the operator, stop Compose, then disable FCI. Do not run another VIVE, PICO, or MANUS diagnostic until the operator has exited.
 
 ## Tracker checks
 
-Tracker availability is per-side. A missing tracker refuses that side; loss while engaged disengages. Freshness uses the native Motion callback sequence, while position and rotation freeze independently.
+Tracker availability is per-side. A missing tracker refuses that side; loss or a motion fault while engaged disengages both sides.
 
-With teleop stopped, inspect or assign tracker serials:
+Before connecting any robot process, the default VIVE read-only connectivity check is:
+
+```bash
+conda run --no-capture-output -n franka-teleop-pico \
+  python teleop_sources/vive/scripts/inspect_vive_trackers.py \
+  --config config/vive.yaml --watch
+```
+
+For optional PICO motion-tracker arms, replace `vive-bridge` with
+`pico-bridge`; never run both because they own the same host UDP ports:
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop/docker
+docker compose --profile pico up franka-control teleop-control pico-bridge hand-control
+```
+
+```bash
+cd /home/descfly/hsc/franka_upper_body_teleop
+scripts/run_pico_teleop.sh
+```
+
+With teleoperation stopped, PICO trackers can be inspected or assigned with:
 
 ```bash
 conda run --no-capture-output -n franka-teleop-pico python teleop_sources/pico/scripts/hardware/inspect_motion_trackers.py
 conda run --no-capture-output -n franka-teleop-pico python teleop_sources/pico/scripts/hardware/calibrate_tracker_sides.py --write
 ```
 
-Diagnostics use `follow-debug.v6`: `seq` is accepted Motion callbacks, `callback_errors` counts rejected SDK fields/frames, `n` is usable trackers in the last parsed frame, and `age` is time since `seq` advanced.
+PICO diagnostics use `follow-debug.v6`: `seq` is accepted Motion callbacks,
+`callback_errors` counts rejected SDK fields/frames, `n` is usable trackers in
+the last parsed frame, and `age` is time since `seq` advanced.
 
 ## Alternate input and hand modes
 
@@ -79,7 +102,7 @@ cd /home/descfly/hsc/franka_upper_body_teleop
 conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/scripts/teleop_manus_hands.py --sides both
 ```
 
-The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. The calibrated left-G20 pose-anchor policy is always active. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `teleop_sources/manus/config`.
+The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. The left G20 uses full L20-URDF retargeting. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `teleop_sources/manus/config`.
 
 ## Arm home and hand open
 

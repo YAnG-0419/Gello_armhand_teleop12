@@ -188,6 +188,57 @@ def test_o30i_middle_pinch_anchor_has_bounded_activation_and_exact_endpoint():
     assert retargeter._middle_pinch_activation == 0.0
 
 
+def test_o30i_index_middle_anchor_has_bounded_activation_and_zero_gap():
+    anchor = {
+        "index_mcp_roll": -0.19600,
+        "index_mcp_pitch": 0.04298,
+        "index_pip": 0.01072,
+        "index_dip": 0.00182,
+        "middle_mcp_roll": -0.38000,
+        "middle_mcp_pitch": 0.0,
+        "middle_pip": 0.06494,
+        "middle_dip": 0.04417,
+    }
+    retargeter = O30IRetargeter(
+        URDF,
+        "right",
+        filter_alpha=1.0,
+        index_middle_pinch_anchor=anchor,
+        index_middle_contact_distance=0.024,
+        index_middle_start_distance=0.040,
+        index_middle_activation_step=0.25,
+    )
+    landmarks = np.zeros((21, 3))
+    starts = {
+        "thumb": np.array([0.0, -0.10, 0.0]),
+        "index": np.array([0.0, 0.00, 0.0]),
+        "middle": np.array([0.0, 0.02, 0.0]),
+        "ring": np.array([0.0, 0.05, 0.0]),
+        "pinky": np.array([0.0, 0.08, 0.0]),
+    }
+    chains = {
+        "thumb": (1, 2, 3, 4),
+        "index": (5, 6, 7, 8),
+        "middle": (9, 10, 11, 12),
+        "ring": (13, 14, 15, 16),
+        "pinky": (17, 18, 19, 20),
+    }
+    for finger, chain in chains.items():
+        for step, landmark in enumerate(chain):
+            landmarks[landmark] = starts[finger] + [0.03 * step, 0.0, 0.0]
+    for expected in (0.25, 0.5, 0.75, 1.0):
+        qpos = np.zeros(20)
+        requested = retargeter._apply_index_middle_pinch_anchor(qpos, landmarks)
+        assert requested == pytest.approx(1.0)
+        assert retargeter._index_middle_activation == pytest.approx(expected)
+    for name, value in anchor.items():
+        assert qpos[retargeter.joint_names.index(name)] == pytest.approx(value)
+    achieved = retargeter.robot_landmarks(qpos)
+    assert np.linalg.norm(achieved[8] - achieved[12]) < 1e-4
+    retargeter.reset()
+    assert retargeter._index_middle_activation == 0.0
+
+
 def test_o30i_retargeting_assigns_distal_motion_to_dip():
     retargeter = O30IRetargeter(
         URDF,

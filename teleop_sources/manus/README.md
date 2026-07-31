@@ -6,7 +6,7 @@ MANUS supplies calibrated hand skeletons to the unified operator. Each dynamic s
 
 - Only one MANUS CoreSDK client may run at a time.
 - Each glove needs `teleop_sources/manus/config/Calibration_left.mcal` or `Calibration_right.mcal`.
-- The standard models are the physically calibrated left G20 pose-anchor profile and the right O30i solver.
+- The standard models are the full L20-URDF retargeter for the left G20 and the right O30i solver.
 
 Build the native bridge:
 
@@ -48,11 +48,16 @@ conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/
 
 Controls are `L`/`R`, `Space`, `X`, `O`, and `Q`.
 
-The left thumb uses continuous interpolation between a stable ordinary-pose
-anchor and a physically tuned thumb-index pinch anchor. Curl endpoints and the
-four finger endpoints come from the labelled MANUS recording. Do not replace
-this policy with unconstrained per-frame CMC IK: the L20 URDF predicts a 35 mm
-gap at the physical G20 contact pose and previously produced basin flips.
+The left G20 uses the vendor L20 URDF and full per-frame thumb retargeting.
+The left thumb follows the same optimization policy as the O30i: every actuated
+thumb coordinate—CMC yaw/roll/pitch and the coupled MCP/IP flex actuator—is
+solved from landmark positions, segment directions, and activated fingertip
+distance objectives. `left_full_retarget_physical.jsonl` supplies the 18 mm
+MANUS contact deadzone; the pinch objective uses the O30i's validated 10x
+distance weighting. There is no thumb-index pose anchor. The solve retains its
+warm start, activation-release smoothing, 0.35 rad/tick thumb trust region,
+output EMA, and joint limits. Four-finger curl endpoints still use the labelled
+MANUS ranges.
 
 ## O30i behavior
 
@@ -69,12 +74,16 @@ command failure.
 
 ## Accuracy recording
 
-The endpoint protocol tests five explicit expectations: a fully open human hand
-maps to an open robot, four fully curled fingers map to their closed range,
-thumb-index and thumb-middle pinches reach contact, and a fully curled thumb
-reaches its closed range. For the left G20, physical contact—not L20 URDF FK—is
-the pinch ground truth. Stop the normal operator first, then record without
-hardware:
+The endpoint protocol records six explicit expectations: a fully open human
+hand maps to an open robot, four fully curled fingers map to their closed range,
+thumb-index and thumb-middle pinches reach contact, a fully curled thumb reaches
+its closed range, and the index and middle fingertips contact directly with the
+thumb clear. Separate zero-gap G20 and O30i
+candidate anchors are fitted from `manus_six_pose_bimanual_20260730_215752` and
+activate only for that labelled gesture. Offline replay reaches a 0.0 mm median
+FK gap without activating in the other five phases; physical contact validation
+is still required before calling those anchors final. Stop the normal operator
+first, then record without hardware:
 
 ```bash
 conda run --no-capture-output -n franka-teleop-pico \
