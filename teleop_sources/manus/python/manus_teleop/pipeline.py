@@ -83,12 +83,16 @@ MANUS_RIGHT_INDEX_MIDDLE_CONTACT_DISTANCE = 0.024
 MANUS_INDEX_MIDDLE_START_DISTANCE = 0.040
 MANUS_INDEX_MIDDLE_ACTIVATION_STEP = 0.08
 MANUS_LEFT_INDEX_MIDDLE_ANCHOR = {
-    "index_mcp_roll": -0.05757,
-    "index_mcp_pitch": 0.19156,
-    "index_pip": 0.0,
-    "middle_mcp_roll": 0.16941,
-    "middle_mcp_pitch": 0.07697,
-    "middle_pip": 0.22303,
+    # Re-solved against the verified left L20 V10.1 kinematics from the stable
+    # portion of manus_six_pose_bimanual_20260730_215752. This is the nearest
+    # zero-tip-gap pose to the unanchored median solver pose in normalized
+    # joint distance; hardware contact remains the acceptance criterion.
+    "index_mcp_roll": 0.22690,
+    "index_mcp_pitch": 0.28952,
+    "index_pip": 0.01731,
+    "middle_mcp_roll": -0.02321,
+    "middle_mcp_pitch": 0.0,
+    "middle_pip": 0.44250,
 }
 MANUS_RIGHT_INDEX_MIDDLE_ANCHOR = {
     "index_mcp_roll": -0.19600,
@@ -274,6 +278,7 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
     # solve: yaw, roll, pitch, and the coupled MCP/IP actuator are optimized
     # from every MANUS frame. A fallback right-G20 profile retains the
     # established fixed opposition.
+    from pico_bimanual_franka_teleop.hand_profiles import g20_urdf_path
     from pico_bimanual_franka_teleop.hand_retarget import (
         L20Retargeter,
         THUMB_OPPOSITION_YAW_ROLL,
@@ -281,11 +286,7 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
 
     calibrated_left = side == "left"
     return L20Retargeter(
-        REPO_ROOT
-        / "assets"
-        / "linkerhand_l20"
-        / side
-        / f"linkerhand_l20_{side}.urdf",
+        g20_urdf_path(REPO_ROOT / "assets", side),
         side,
         filter_alpha=filter_alpha,
         thumb_opposition_fixed=(
@@ -315,14 +316,14 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
 
 
 def _default_joint_names(side: str) -> tuple[str, ...]:
-    urdf = (
-        REPO_ROOT
-        / "assets"
-        / "linkerhand_l20"
-        / side
-        / f"linkerhand_l20_{side}.urdf"
+    from pico_bimanual_franka_teleop.hand_profiles import g20_urdf_path
+    from pico_bimanual_franka_teleop.hand_retarget import (
+        LEFT_G20_PACKET_JOINT_NAMES,
     )
-    root = ElementTree.parse(urdf).getroot()
+
+    if side == "left":
+        return LEFT_G20_PACKET_JOINT_NAMES
+    root = ElementTree.parse(g20_urdf_path(REPO_ROOT / "assets", side)).getroot()
     return tuple(
         element.attrib["name"]
         for element in root.findall("joint")
@@ -521,7 +522,7 @@ class ManusHandPipeline:
                     "left_hand_calibration": (
                         {
                             "thumb_mode": "o30i_style_full_l20_ik",
-                            "thumb_model": "assets/linkerhand_l20/left/linkerhand_l20_left.urdf",
+                            "thumb_model": "assets/linkerhand_l20_v101/linkerhand_L20_V10.1_left.urdf/linkerhand_L20v10.1_left.urdf",
                             "thumb_contact_deadzone_m": MANUS_LEFT_CONTACT_DEADZONE,
                             "thumb_trust_region_rad_per_tick": 0.35,
                             "solve_thumb_flex": True,

@@ -49,6 +49,10 @@ G20_JOINT_NAMES = (
 
 FINGERS = ("index", "middle", "ring", "pinky")
 
+# Radian endpoints must match the kinematic model that produced each packet.
+# The installed left G20 is the officially supplied L20 V10.1 mechanism.  The
+# right G20 fallback remains on the older model until that physical serial is
+# verified; the deployed right hand is normally an O30i and uses another mapper.
 FINGER_LIMITS = {
     "mcp_roll": (-0.17, 0.17),
     "mcp_pitch": (0.0, 1.4),
@@ -62,36 +66,34 @@ THUMB_LIMITS = {
     "thumb_mcp": (0.0, 1.05),
     "thumb_tip": (0.0, 1.22),
 }
+LEFT_V101_FINGER_LIMITS = {
+    "mcp_roll": (-0.23, 0.23),
+    "mcp_pitch": (0.0, 1.2217),
+    "pip": (0.0, 1.7279),
+    "dip": (0.0, 1.3614),
+}
+LEFT_V101_THUMB_LIMITS = {
+    "thumb_cmc_yaw": (0.0, 1.5882),
+    "thumb_cmc_roll": (0.0, 1.309),
+    "thumb_cmc_pitch": (0.0, 0.7854),
+    "thumb_mcp": (0.0, 1.2217),
+    "thumb_tip": (0.0, 1.2392),
+}
 
-# Whether a side's vendor abduction slot runs opposite to the URDF's mcp_roll.
-#
-# Every vendor abduction slot sets its own finger's lateral angle, and the four
-# share one positive direction. Driving all four slots to a single value therefore
-# swings the whole hand sideways and leaves the finger gaps unchanged, confirmed on
-# hardware. Spread reaches the hand as fingers holding OPPOSITE roll values, which
-# the IK produces by itself. The URDF agrees: its four mcp_roll joints also share
-# the axis [1,0,0], and sweeping any one across its full 0.34 rad shifts that
-# fingertip by an identical 0.0333 m. One sign per side is therefore the correct
-# structure. Per-finger signs are actively wrong: they cancel the opposition
-# between fingers and collapse a spread gesture into a uniform swing.
-#
-# The values below are derived, not guessed. One fact had to be observed, because
-# the vendor's radian tables describe only its internal convention and say nothing
-# about its relationship to this URDF:
-#
-#     commanding the left hand's index abduction slot to 255 moves the index
-#     finger toward the THUMB side.
-#
-# Combined with the URDF geometry that fixes both sides. On the left, +roll moves a
-# fingertip toward the thumb side, so 255 must mean +roll: not inverted. On the
-# right, +roll moves it toward the little-finger side, so reaching the same
-# anatomical result needs 255 to mean -roll: inverted. Note this comes out exactly
-# opposite to the vendor's own `derict` table for L20, which inverts left and not
-# right; that table is about the vendor's internal joint sign, not about this URDF.
-#
-# `test_abduction_polarity_matches_urdf_geometry` re-derives this from the URDF and
-# will fail if the assets are replaced with different geometry.
-ABDUCTION_INVERTED = {"left": False, "right": True}
+
+def _g20_limits(side: str):
+    if side == "left":
+        return LEFT_V101_FINGER_LIMITS, LEFT_V101_THUMB_LIMITS
+    return FINGER_LIMITS, THUMB_LIMITS
+
+# Whether a side's vendor abduction slot runs opposite to its selected URDF's
+# mcp_roll coordinate. Hardware establishes that left slot 255 moves the index
+# toward the thumb. In the verified left V10.1 model the roll axis is reversed
+# from the former URDF, so its mapping must now be inverted. The unverified
+# fallback right G20 remains paired with the former right model and polarity.
+# `test_abduction_polarity_matches_urdf_geometry` re-derives the result from the
+# selected model and fails if an asset changes without a matching migration.
+ABDUCTION_INVERTED = {"left": True, "right": True}
 
 
 @dataclass(frozen=True)
@@ -241,8 +243,10 @@ class G20Mapper:
         if len(joint_names) != len(qpos):
             raise ValueError("joint_names and qpos lengths differ")
         values = dict(zip(joint_names, (float(value) for value in qpos)))
-        # The left URDF names the distal thumb joint thumb_ip and the right one
-        # names it thumb_dip, so key by whichever is present.
+        finger_limits, thumb_limits = _g20_limits(side)
+        # The packet contract keeps thumb_ip for the left V10.1 URDF even
+        # though that URDF calls the physical follower thumb_dip. Accept both
+        # names so diagnostic and legacy senders remain readable.
         thumb_tip_name = "thumb_ip" if "thumb_ip" in values else "thumb_dip"
         required = {
             "thumb_cmc_yaw",
@@ -266,17 +270,17 @@ class G20Mapper:
 
         output = [0.0] * COMMAND_SLOTS
         output[0] = _raw(
-            _unit(values["thumb_cmc_pitch"], THUMB_LIMITS["thumb_cmc_pitch"]),
+            _unit(values["thumb_cmc_pitch"], thumb_limits["thumb_cmc_pitch"]),
             inverted=True,
         )
         for slot, finger in enumerate(FINGERS, start=1):
             output[slot] = _raw(
-                _unit(values[f"{finger}_mcp_pitch"], FINGER_LIMITS["mcp_pitch"]),
+                _unit(values[f"{finger}_mcp_pitch"], finger_limits["mcp_pitch"]),
                 inverted=True,
             )
 
         output[5] = _raw(
-            _unit(values["thumb_cmc_roll"], THUMB_LIMITS["thumb_cmc_roll"]),
+            _unit(values["thumb_cmc_roll"], thumb_limits["thumb_cmc_roll"]),
             inverted=True,
         )
         # One sign for all four fingers, matching both the URDF's shared roll axis
@@ -287,25 +291,25 @@ class G20Mapper:
             inverted = not inverted
         for slot, finger in enumerate(FINGERS, start=6):
             output[slot] = _raw(
-                _unit(values[f"{finger}_mcp_roll"], FINGER_LIMITS["mcp_roll"]),
+                _unit(values[f"{finger}_mcp_roll"], finger_limits["mcp_roll"]),
                 inverted=inverted,
             )
 
         output[10] = _raw(
-            _unit(values["thumb_cmc_yaw"], THUMB_LIMITS["thumb_cmc_yaw"]),
+            _unit(values["thumb_cmc_yaw"], thumb_limits["thumb_cmc_yaw"]),
             inverted=True,
         )
         output[RESERVED_SLOTS] = [0.0] * 4
 
         thumb_flexion = 0.5 * (
-            _unit(values["thumb_mcp"], THUMB_LIMITS["thumb_mcp"])
-            + _unit(values[thumb_tip_name], THUMB_LIMITS["thumb_tip"])
+            _unit(values["thumb_mcp"], thumb_limits["thumb_mcp"])
+            + _unit(values[thumb_tip_name], thumb_limits["thumb_tip"])
         )
         output[15] = _raw(thumb_flexion, inverted=True)
         for slot, finger in enumerate(FINGERS, start=16):
             distal_flexion = 0.5 * (
-                _unit(values[f"{finger}_pip"], FINGER_LIMITS["pip"])
-                + _unit(values[f"{finger}_dip"], FINGER_LIMITS["dip"])
+                _unit(values[f"{finger}_pip"], finger_limits["pip"])
+                + _unit(values[f"{finger}_dip"], finger_limits["dip"])
             )
             output[slot] = _raw(distal_flexion, inverted=True)
         return tuple(output)
@@ -314,8 +318,9 @@ class G20Mapper:
         """An open-hand command, used to seed the limiter when state is absent."""
         names: list[str] = []
         values: list[float] = []
+        finger_limits, _ = _g20_limits(side)
         for finger in ("pinky", "ring", "middle", "index"):
-            for suffix, limits in FINGER_LIMITS.items():
+            for suffix, limits in finger_limits.items():
                 names.append(f"{finger}_{suffix}")
                 values.append(0.0 if suffix != "mcp_roll" else sum(limits) / 2.0)
         for name in ("thumb_cmc_yaw", "thumb_cmc_roll", "thumb_cmc_pitch", "thumb_mcp"):

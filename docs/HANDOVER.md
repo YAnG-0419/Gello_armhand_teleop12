@@ -18,8 +18,8 @@ VIVE hand tracker ids: config/vive.yaml    PICO fallback ids: config/pico.yaml
 - Arms are settled; contact torque gating and collision thresholds are hardware-validated. Do not retune without reading the relevant git history.
 - The false-stale PICO regression is resolved and hardware-verified. Motion is parsed first, published atomically, and considered fresh only when the local callback sequence advances; no native parsing exception may cross the vendor callback boundary.
 - Do not restore the former multi-getter consistency loop or cached-snapshot engagement grace. An invalid atomic snapshot disengages immediately.
-- Bimanual MANUS works. The left G20 uses full thumb retargeting against the vendor L20 URDF. CMC yaw/roll/pitch and coupled MCP/IP flex are jointly optimized using the O30i-style position, segment-direction, and activated excess-distance terms, with an 18 mm recorded contact deadzone and 10x distance weighting. There is no thumb-index pose anchor. Warm start, activation release, a 0.35 rad/tick thumb trust region, output EMA, and joint limits remain active. `left_o30i_style_pinch.jsonl` and the 2026-07-31 physical check confirmed accurate pinch and acceptable thumb rotation. The right O30i retains calibrated open/curl endpoints, contact-biased index pinch, and a smoothly activated cooperative thumb-middle pinch anchor.
-- The left model is `assets/linkerhand_l20/left/linkerhand_l20_left.urdf`, copied from `linker-bot/linkerhand-urdf` commit `735145e8843f44d85c1464725e6971ba97a6258e`. The prior claim that the G20 geometry differed from this L20 model was an inference from model-vs-contact observations, not a verified vendor fact; the operator states G20 should use this L20 URDF.
+- Bimanual MANUS uses the optimization retargeter by default. The left G20 now solves against the verified official L20 V10.1 model. CMC yaw/roll/pitch and coupled MCP/DIP flex are jointly optimized using position, segment-direction, and activated excess-distance terms, with the recorded 18 mm MANUS contact deadzone and 10x distance weighting. There is no thumb-index pose anchor. Warm start, activation release, a 0.35 rad/tick thumb trust region, output EMA, and joint limits remain active. The right O30i is unchanged.
+- The left model is `assets/linkerhand_l20_v101/linkerhand_L20_V10.1_left.urdf/linkerhand_L20v10.1_left.urdf`. FK uses its `thumb_dip`; the UDP contract deliberately retains `thumb_ip`. Bridge normalization and abduction polarity use V10.1 limits and axes. Existing MANUS landmarks were replayed into `/home/descfly/franka_teleop_data/manus_accuracy/v101_retargeted/`; the labelled six-pose model-space medians are 0.6 mm thumb-index, 3.9 mm thumb-middle, and 0.0 mm index-middle. Physical V10.1 acceptance is still pending, so the old-model physical claims must not be treated as validation of this migration.
 - Arm sources, operator state, and hands are injected into the hardware coordinator. PICO SDK ownership is explicit and hand retargeting runs outside the arm loop; add future arm adapters without importing them into the coordinator.
 
 ## Invariants
@@ -33,7 +33,7 @@ VIVE hand tracker ids: config/vive.yaml    PICO fallback ids: config/pico.yaml
 
 ## Next work
 
-- Physically validate the new index-middle contact anchors on each hand before marking them final.
+- Physically validate the migrated left V10.1 open/curl, thumb-index, thumb-middle, index-middle, and thumb-rotation behavior before marking it final. Keep hardware disengaged for the first inspection and use the normal gateway/slew protections.
 - Improve hand fidelity only from recordings that include landmarks, solved radians, commands, and feedback; do not add posture-specific thumb anchors when the continuous optimizer can represent the motion.
 
 ## Verification

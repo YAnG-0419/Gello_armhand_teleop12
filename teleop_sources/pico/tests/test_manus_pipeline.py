@@ -61,10 +61,16 @@ def test_deployed_left_g20_uses_vendor_l20_urdf_and_full_thumb_solve():
     assert retargeter.urdf_path == (
         REPO_ROOT
         / "assets"
-        / "linkerhand_l20"
-        / "left"
-        / "linkerhand_l20_left.urdf"
+        / "linkerhand_l20_v101"
+        / "linkerhand_L20_V10.1_left.urdf"
+        / "linkerhand_L20v10.1_left.urdf"
     ).resolve()
+    assert retargeter.joint_names[:-1] == FakeRetargeter.joint_names[:-1]
+    assert retargeter.joint_names[-1] == "thumb_ip"
+    assert "thumb_ip" in retargeter.joint_names
+    assert "thumb_dip" not in retargeter.joint_names
+    assert retargeter._thumb_distal_urdf_name == "thumb_dip"
+    assert retargeter._thumb_mimic_multiplier == 1.0142
     assert retargeter.thumb_opposition_fixed is None
     assert retargeter.solve_thumb_flex is True
     assert retargeter.thumb_contact_deadzone == 0.018

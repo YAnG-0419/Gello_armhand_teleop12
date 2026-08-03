@@ -28,6 +28,7 @@ from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noq
 ensure_ros_free_process()
 
 from pico_bimanual_franka_teleop import hand_landmarks as hl  # noqa: E402
+from pico_bimanual_franka_teleop.hand_profiles import g20_urdf_path  # noqa: E402
 from pico_bimanual_franka_teleop.hand_retarget import L20Retargeter  # noqa: E402
 from pico_bimanual_franka_teleop.hand_stream import build_hand_packet  # noqa: E402
 
@@ -88,9 +89,9 @@ def main() -> int:
         print("No usable frames for the selected sides.", file=sys.stderr)
         return 1
 
-    assets = REPO_ROOT / "assets" / "linkerhand_l20"
+    assets = REPO_ROOT / "assets"
     retargeters = {
-        side: L20Retargeter(assets / side / f"linkerhand_l20_{side}.urdf", side)
+        side: L20Retargeter(g20_urdf_path(assets, side), side)
         for side in sides
         if frames[side]
     }
