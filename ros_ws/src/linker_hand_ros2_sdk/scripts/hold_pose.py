@@ -107,13 +107,20 @@ def main() -> int:
         hand.set_target_position(driver_vector(pose))
         time.sleep(1.5)
         measured = hand.get_current_position()
-        if measured is not None:
+        if measured is None:
+            print("  holding, but the hand did not answer a position read")
+        else:
             by_urdf = {O30I_DRIVER_TO_URDF[d]: v
                        for d, v in zip(list(o30i_control.JOINT_NAMES), measured)}
-            worst = max(O30I_URDF_JOINT_NAMES,
-                        key=lambda n: abs(by_urdf[n] - pose[n]))
-            print(f"  holding. largest tick error: {worst} "
-                  f"commanded {pose[worst]}, reports {by_urdf[worst]}")
+            print("\n  commanded vs reported, ticks (same assumed map both "
+                  "ways -- a zero/scale error is invisible here and shows "
+                  "only to the eye):")
+            print(f"  {'joint':<20}{'cmd':>6}{'reported':>10}{'diff':>7}")
+            for name in O30I_URDF_JOINT_NAMES:
+                diff = by_urdf[name] - pose[name]
+                flag = "  <-- did not reach its tick" if abs(diff) > 5 else ""
+                print(f"  {name:<20}{pose[name]:>6}{by_urdf[name]:>10}"
+                      f"{diff:>+7}{flag}")
         input("  compare with the model now; press Enter to release ")
         return 0
     except KeyboardInterrupt:
