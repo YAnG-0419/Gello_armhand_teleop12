@@ -192,6 +192,7 @@ def main() -> None:
             )
         elif args.hand_source == "manus":
             from manus_teleop import ManusHandPipeline
+            from manus_teleop.pipeline import split_legacy_model
 
             hand_pipeline = ManusHandPipeline(
                 host=args.hand_host,
@@ -199,9 +200,17 @@ def main() -> None:
                 rate=args.hand_rate,
                 debug_log=args.hand_debug_log,
                 dynamic_sides=("left", "right"),
-                models={
-                    "left": args.left_hand_model,
-                    "right": args.right_hand_model or "o30i",
+                # These flags predate the hardware/solver split and still carry
+                # combined names; decode them into the two facts they mean.
+                hands={
+                    "left": split_legacy_model(args.left_hand_model)[0],
+                    "right": split_legacy_model(
+                        args.right_hand_model or "o30i")[0],
+                },
+                solvers={
+                    "left": split_legacy_model(args.left_hand_model)[1],
+                    "right": split_legacy_model(
+                        args.right_hand_model or "o30i")[1],
                 },
             )
         if hand_pipeline is not None:

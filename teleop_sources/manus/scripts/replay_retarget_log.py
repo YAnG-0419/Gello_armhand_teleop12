@@ -2,7 +2,7 @@
 """Re-run recorded MANUS landmarks through the deployed retargeter offline.
 
 Input must be ``hand-retarget-debug.v2`` JSONL. No socket or hardware driver is
-opened. Old qpos, derived FK, and solver statistics are deliberately ignored;
+opened. Old qpos, derived FK, and method statistics are deliberately ignored;
 the raw canonical landmarks are the replay contract.
 """
 
@@ -38,9 +38,14 @@ def main() -> int:
         parser.error("--filter-alpha must be in (0, 1]")
 
     sides = ("left", "right") if args.side == "both" else (args.side,)
-    models = {"left": "g20", "right": "o30i"}
+    # This replay reproduces the landmark method; the sharpa method
+    # need the raw 25x7 frames rather than the canonical landmarks logged here.
+    hands = {"left": "g20", "right": "o30i"}
+    methods = {side: "landmark" for side in ("left", "right")}
     retargeters = {
-        side: _create_retargeter(side, models[side], args.filter_alpha)
+        side: _create_retargeter(
+            side, hands[side], methods[side], args.filter_alpha
+        )
         for side in sides
     }
     counts = {side: 0 for side in sides}
@@ -67,7 +72,8 @@ def main() -> int:
                             "source": "offline-retarget-replay",
                             "input": str(args.input.resolve()),
                             "input_metadata": old_header.get("metadata", {}),
-                            "models": models,
+                            "hands": hands,
+                            "methods": methods,
                             "filter_alpha": args.filter_alpha,
                             "urdfs": {
                                 side: str(retargeters[side].urdf_path)
@@ -111,7 +117,7 @@ def main() -> int:
                     targets = canonical_targets
                 robot_points = (
                     retargeter.robot_landmarks(qpos)
-                    if models[side] == "o30i"
+                    if hands[side] == "o30i"
                     else retargeter.robot_landmarks()
                 )
                 replayed = {

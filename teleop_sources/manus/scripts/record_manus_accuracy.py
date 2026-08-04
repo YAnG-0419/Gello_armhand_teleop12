@@ -79,7 +79,8 @@ def main() -> int:
             rate=30.0,
             filter_alpha=args.filter_alpha,
             debug_log=args.output,
-            models={"left": "g20", "right": "o30i"},
+            hands={"left": "g20", "right": "o30i"},
+            methods={"left": "landmark", "right": "landmark"},
             dynamic_sides=sides,
         )
         print("Connected to MANUS. No robot commands can leave this process.")

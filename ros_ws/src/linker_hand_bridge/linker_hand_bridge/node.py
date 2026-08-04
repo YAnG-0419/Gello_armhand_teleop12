@@ -190,6 +190,12 @@ class LinkerHandBridge(Node):
         self.last_log_time = time.monotonic()
         self.invalid_count = 0
         self.out_of_order_count = 0
+        # Why packets were rejected, not just how many. A rejected packet is
+        # indistinguishable from an absent one in the rate columns, so without
+        # the reason "rx=0.0Hz" cannot separate a dead network from a sender
+        # whose contract disagrees with this bridge's configuration.
+        self.last_invalid_reason: str | None = None
+        self.last_invalid_log = 0.0
 
         effective_slew_rates = {
             side: min(max_command_rate, profile.max_slew_rate)
@@ -287,8 +293,19 @@ class LinkerHandBridge(Node):
                 target = self.profiles[packet.side].map_packet(packet)
             except (TypeError, ValueError) as error:
                 self.invalid_count += 1
-                if self.invalid_count <= 3:
-                    self.get_logger().warn(f"Ignoring invalid UDP packet: {error}")
+                self.last_invalid_reason = str(error)
+                # Rate-limited rather than capped at three: a steady mismatch
+                # used to fall silent after three lines, so an operator who
+                # attached later saw only a dead rate column and no cause.
+                if (
+                    self.invalid_count <= 3
+                    or now - self.last_invalid_log >= self.log_period
+                ):
+                    self.last_invalid_log = now
+                    self.get_logger().warn(
+                        f"Ignoring invalid UDP packet ({self.invalid_count} so "
+                        f"far): {error}"
+                    )
                 continue
             side_state.target = target
             side_state.received_at = now
@@ -357,6 +374,11 @@ class LinkerHandBridge(Node):
                 "; ".join(summaries)
                 + f"; invalid={self.invalid_count} "
                 f"out_of_order={self.out_of_order_count}"
+                + (
+                    f"; last_invalid: {self.last_invalid_reason}"
+                    if self.last_invalid_reason is not None
+                    else ""
+                )
             )
             self.last_log_time = now
 

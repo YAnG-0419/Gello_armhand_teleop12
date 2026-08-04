@@ -58,14 +58,35 @@ def closure(row: dict, contract: dict, selected: tuple[str, ...]) -> float:
     return 100.0 * float(np.mean(values))
 
 
+def hands_and_methods(metadata: dict) -> tuple[dict, dict]:
+    """Per-side hardware and method, from either log schema.
+
+    Logs written before the two were separated carry one combined "models"
+    key; decode those through the same table the deprecated CLI flags use.
+    """
+    from manus_teleop.pipeline import split_legacy_model
+
+    if "hands" in metadata and "methods" in metadata:
+        return dict(metadata["hands"]), dict(metadata["methods"])
+    legacy = {
+        side: split_legacy_model(model)
+        for side, model in metadata["models"].items()
+    }
+    return (
+        {side: pair[0] for side, pair in legacy.items()},
+        {side: pair[1] for side, pair in legacy.items()},
+    )
+
+
 def replay_current(rows: list[dict], metadata: dict) -> None:
-    """Replace recorded solver outputs using current code and exact inputs."""
+    """Replace recorded method outputs using current code and exact inputs."""
     from manus_teleop.pipeline import _create_retargeter
 
+    hands, methods = hands_and_methods(metadata)
     sides = sorted({row["side"] for row in rows})
     retargeters = {
         side: _create_retargeter(
-            side, metadata["models"][side], metadata["filter_alpha"]
+            side, hands[side], methods[side], metadata["filter_alpha"]
         )
         for side in sides
     }
@@ -75,7 +96,8 @@ def replay_current(rows: list[dict], metadata: dict) -> None:
             qpos, stats = retargeter.retarget(np.asarray(row["landmarks"], dtype=float))
             robot = (
                 retargeter.robot_landmarks(qpos)
-                if metadata["models"][row["side"]] == "o30i"
+                if (hands[row["side"]] == "o30i"
+                    and methods[row["side"]] == "landmark")
                 else retargeter.robot_landmarks()
             )
             row["qpos"] = np.asarray(qpos).tolist()
@@ -123,7 +145,7 @@ def main() -> int:
     parser.add_argument(
         "--replay-current",
         action="store_true",
-        help="run the recorded landmarks through the current solver before reporting",
+        help="run the recorded landmarks through the current method before reporting",
     )
     args = parser.parse_args()
     with open(args.recording, encoding="utf-8") as stream:
@@ -133,7 +155,7 @@ def main() -> int:
         raise SystemExit("expected hand-retarget-debug.v2")
     if args.replay_current:
         replay_current(rows, header["metadata"])
-        print("Replayed exact recorded landmarks through the current solver.")
+        print("Replayed exact recorded landmarks through the current method.")
     contracts = header["metadata"].get("joint_contracts", {})
     grouped = defaultdict(list)
     for row in rows:
@@ -147,7 +169,8 @@ def main() -> int:
         available = {phase for selected, phase in grouped if selected == side}
         if not available:
             continue
-        print(f"\n=== {side} ({header['metadata']['models'][side]}) ===")
+        log_hands, log_methods = hands_and_methods(header["metadata"])
+        print(f"\n=== {side} ({log_hands[side]}, {log_methods[side]}) ===")
         contract = contracts[side]
         opened = [
             closure(row, contract, FINGERS + ("thumb",))

@@ -19,6 +19,11 @@ sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
 sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "manus" / "python"))
 
 from manus_teleop import ManusHandPipeline  # noqa: E402
+from manus_teleop.pipeline import (  # noqa: E402
+    DEFAULT_HANDS,
+    DEFAULT_METHODS,
+    split_legacy_model,
+)
 from pico_bimanual_franka_teleop.xr_input import KeyboardActivation  # noqa: E402
 
 
@@ -40,6 +45,45 @@ def main() -> int:
         default=0.85,
         help="EMA response in (0, 1]; 1 disables retarget-output smoothing",
     )
+    # Which hand is attached is a fact about the robot; which method runs is a
+    # free choice. They used to share one --*-model flag, whose value also
+    # travelled on the wire as the hardware tag -- so selecting a method
+    # silently made the bridge drop every packet.
+    parser.add_argument(
+        "--left-method",
+        default=None,
+        choices=("landmark", "sharpa"),
+        help="left retargeting method: sharpa is the twelve-term objective "
+             "ported from the SharpaWave optimiser, driven by an operator "
+             "calibration; landmark is the earlier canonical-landmark solve "
+             "(default: sharpa)",
+    )
+    parser.add_argument(
+        "--right-method",
+        default=None,
+        choices=("landmark", "sharpa"),
+        help="right retargeting method, same choices as --left-method "
+             "(default: sharpa)",
+    )
+    parser.add_argument(
+        "--right-hand",
+        default=None,
+        choices=("g20", "o30i"),
+        help="physical right hand; must match the bridge's right_model in "
+             "docker/compose.yaml (default: o30i)",
+    )
+    parser.add_argument(
+        "--left-model",
+        default=None,
+        choices=("g20", "g20_casadi"),
+        help="deprecated: use --left-method",
+    )
+    parser.add_argument(
+        "--right-model",
+        default=None,
+        choices=("g20", "o30i", "o30i_casadi"),
+        help="deprecated: use --right-method and --right-hand",
+    )
     parser.add_argument("--keyboard-device", default="/dev/tty")
     parser.add_argument("--debug-log")
     parser.add_argument(
@@ -53,6 +97,41 @@ def main() -> int:
         parser.error("--duration must not be negative")
     sides = ("left", "right") if args.sides == "both" else (args.sides,)
 
+    hands = dict(DEFAULT_HANDS)
+    methods = dict(DEFAULT_METHODS)
+    for side, legacy, new in (
+        ("left", args.left_model, args.left_method),
+        ("right", args.right_model, args.right_method),
+    ):
+        if legacy is not None:
+            if new is not None:
+                parser.error(
+                    f"--{side}-model is deprecated; pass --{side}-method alone"
+                )
+            hands[side], methods[side] = split_legacy_model(legacy)
+            print(
+                f"  WARNING --{side}-model is deprecated: read as "
+                f"--{side}-method {methods[side]}"
+                + (f" --{side}-hand {hands[side]}" if side == "right" else "")
+            )
+        elif new is not None:
+            methods[side] = new
+    if args.right_hand is not None:
+        if args.right_model is not None:
+            parser.error("--right-hand conflicts with the deprecated --right-model")
+        hands["right"] = args.right_hand
+
+    # State the wire contract before anything can fail. The bridge announces
+    # the hands it was launched for; a disagreement between the two banners is
+    # the whole failure mode and is otherwise invisible, because UDP sends
+    # succeed while the bridge drops every packet it cannot match.
+    for side in sides:
+        print(
+            f"  {side:5s}: hand={hands[side]} method={methods[side]} "
+            f"-> packets tagged model={hands[side]!r} "
+            f"(bridge must run with {side}_model:={hands[side]})"
+        )
+
     pipeline = None
     keyboard = None
     try:
@@ -64,7 +143,8 @@ def main() -> int:
             stale_timeout=args.stale_timeout,
             filter_alpha=args.filter_alpha,
             debug_log=args.debug_log,
-            models={"left": "g20", "right": "o30i"},
+            hands=hands,
+            methods=methods,
         )
         keyboard = KeyboardActivation(args.keyboard_device, sides=sides)
         keyboard.show(
