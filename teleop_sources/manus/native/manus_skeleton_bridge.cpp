@@ -361,7 +361,6 @@ void OnRawSkeleton(const SkeletonStreamInfo* const stream)
         constexpr float kHalfAngle = -0.7853981633974483F;
         const Quaternion basis_rotation{
             std::cos(kHalfAngle), 0.0F, std::sin(kHalfAngle), 0.0F};
-        const Quaternion inverse_basis = Conjugate(basis_rotation);
 
         LitchiManusFrame frame{};
         frame.side = side;
@@ -390,8 +389,28 @@ void OnRawSkeleton(const SkeletonStreamInfo* const stream)
                 Multiply(
                     inverse_root,
                     FromManus(skeleton_node.transform.rotation));
+            // A basis change that sends p -> B*p must send R -> B*R. This
+            // conjugated instead, B*R*B^-1, which rotates every node's own body
+            // frame by 90 deg while leaving its position alone -- so position
+            // and orientation stopped describing the same frame.
+            //
+            // It survived because the retargeter rebuilds its palm alignment
+            // per frame from POSITIONS (retargeter.py _palm_align, whose note
+            // claims any fixed rotation between data sources "drops out
+            // entirely" -- true for positions, false for orientations): the
+            // left B cancels and the stray B^-1 on the right does not. It then
+            // reaches exactly one solver input, tgt_R, the only parameter
+            // derived from node quaternions, and through it the tip_ori cost
+            // term. Every other target (tgt_dir, tgt_dipdir, pinch_dir,
+            // gap_tgt) is positions-only and was unaffected.
+            //
+            // Measured over a 10180-frame hardware session: with the operator's
+            // hand flat the four fingertips were driven to 69-89 deg of DIP
+            // flexion; consistent, they sit at 0.1-8.4 deg. Thumb-middle pad
+            // facing 121 -> 161 deg, non-converged frames 1 -> 0, pinch closure
+            // and thumb tracking unchanged.
             const Quaternion orientation = Normalize(
-                Multiply(Multiply(basis_rotation, relative_rotation), inverse_basis));
+                Multiply(basis_rotation, relative_rotation));
 
             LitchiManusPose& output = frame.keypoints[output_index];
             output.position_x = position.x;
