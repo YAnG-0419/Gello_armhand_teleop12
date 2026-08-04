@@ -273,10 +273,19 @@ def raw_keypoints(frame: ManusFrame) -> np.ndarray:
 # dimensions, joint ranges and the operator-to-robot frame all come from two
 # recorded poses -- so the file is named here rather than discovered, and a
 # missing one is an error at construction instead of a silently untracked hand.
-# Operator calibration for the sharpa method. One capture serves both sides:
-# the file stores raw operator frames, and the loader mirrors a left capture
-# onto a right hand.
-SHARPA_PROFILE = REPO_ROOT / "config" / "hand_profiles" / "left_manus_gui.json"
+# Operator calibration for the sharpa method, PER SIDE.
+#
+# The loader can mirror a left capture onto a right hand, and this used to lean
+# on that: one constant served both sides. That is geometrically valid and
+# anatomically wrong -- a mirrored left hand is not this operator's right hand,
+# and everything the cost function knows about them (finger lengths, reach,
+# fingertip separations, the wrist-frame alignment) comes from the capture. Use
+# the capture of the side being driven; mirroring is the fallback for when one
+# does not exist, not the arrangement.
+SHARPA_PROFILES = {
+    "left": REPO_ROOT / "config" / "hand_profiles" / "left_manus_gui.json",
+    "right": REPO_ROOT / "config" / "hand_profiles" / "right_manus_gui.json",
+}
 
 # Which physical hand is on each side. A FACT about the robot -- it changes only
 # when hardware is re-cabled -- and it must agree with the bridge's own
@@ -358,7 +367,7 @@ def _create_retargeter(side: str, hand: str, method: str, filter_alpha: float):
         from .casadi_retarget import CasadiHandRetargeter
 
         if hand == "g20":
-            return CasadiHandRetargeter(side, SHARPA_PROFILE)
+            return CasadiHandRetargeter(side, SHARPA_PROFILES[side])
         # The O30i packet follows the URDF joint order exactly as
         # O30IRetargeter derives it (pinocchio idx_q order), so both right-hand
         # methods emit interchangeable packets; a name mismatch fails at
@@ -373,7 +382,7 @@ def _create_retargeter(side: str, hand: str, method: str, filter_alpha: float):
                 (pin_model.joints[j].idx_q, pin_model.names[j])
                 for j in range(1, pin_model.njoints)))
         return CasadiHandRetargeter(
-            side, SHARPA_PROFILE, hand=f"o30i_{side}",
+            side, SHARPA_PROFILES[side], hand=f"o30i_{side}",
             packet_joint_names=packet_joint_names)
     if hand == "o30i":
         from .o30i_retarget import O30IRetargeter
