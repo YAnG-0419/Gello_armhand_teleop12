@@ -185,7 +185,7 @@ class RetargetConfig:
     tol: float = 1e-4
 
 
-# Operator profiles written by calibrate.py. Validated on load rather
+# Operator profiles written by viz.py's side panel. Validated on load rather
 # than trusted: link names repeat across hands, and a profile recorded
 # against the wrong keypoint layout would silently mis-map every finger.
 PROFILE_FORMAT = "linkerhand-retargeting/operator-profile"
@@ -326,7 +326,7 @@ class Retargeter:
     # ----------------------------------------------------------- calibration
 
     def load_profile(self, path: str) -> dict:
-        """Apply an operator profile recorded by `calibrate.py`.
+        """Apply an operator profile recorded from viz.py's side panel.
 
         Always explicit -- nothing loads a profile on its own. A stale profile
         that silently applies is worse than no profile, because the numbers look
@@ -656,7 +656,6 @@ class Retargeter:
 
         self._param_spec = [
             ("wrist", 3), ("tgt_tip", 15), ("revgate", 4), ("fade", 4),
-            ("revgate_th", 1),
             ("tgt_R", 45),
             ("tgt_dir", 15), ("tgt_dipdir", 12),
             ("pinch_tgt", 4), ("pinch_dir", 12), ("gate", 4), ("ori_gate", 4),
@@ -730,7 +729,8 @@ class Retargeter:
         #   approach band + thumb_ang fading on the wide gate: thumb tracks
         #     (corr 0.65), pinch 5.1 mm @ 150 deg.
         # The band is the kept trade. If closure ever matters more than thumb
-        # bend, the always-on variant is this gate swapped to P["revgate_th"].
+        # bend, the always-on variant is this gate swapped to P["thumb_fade"],
+        # which is the rescaled reversed gate: on everywhere except at contact.
         _g_th = P["thumb_band"]
         e = (quat_th if A else _g_th * quat_th)
         for i, f in enumerate(FINGERS[1:], start=1):
@@ -1046,14 +1046,40 @@ class Retargeter:
         # it was rewarding a 32 mm stall.
         contact_frac = np.array([1.0 - _snap(d) / max(d, 1e-9) for d in pinch_d])
         pad_gate = gate * contact_frac
-        thumb_fade = np.array([1.0 - gate.max()])
-        thumb_band = np.array([(gate * (1.0 - contact_frac)).max()])
+        # thumb_ang's fade, put through the fade family like every other faded
+        # term. It was the RAW `1 - gate.max()`, i.e. revgate.min() unrescaled,
+        # so it floored at 0.231 at operator contact instead of reaching zero --
+        # the one place the fade family's rescale was not applied, though
+        # thumb_ang is one of the three terms the commit that introduced _fade
+        # names as the coalition it was removing. The floor matters here and not
+        # on the L20 because of how much of the thumb thumb_ang owns: this map
+        # pins two of the O30i thumb's four joints (thumb_mcp, thumb_ip) against
+        # one of the L20's four, leaving the pinch only cmc_roll and cmc_yaw to
+        # close with -- and cmc_roll saturates at its 35 deg limit while it
+        # tries. Measured, rescaling alone: O30i thumb-index 21.0 -> 2.3 mm
+        # median at operator contact, pad angle 133 -> 139 deg; L20 left
+        # near-contact 7.3 -> 4.2 mm at 152 deg; thumb bend tracking unchanged
+        # on the open-hand sweeps (corr 0.54 -> 0.53).
+        thumb_fade = np.array([_fade(revgate.min())])
+        # The approach band that carries the thumb's tip_ori/finger_ori share.
+        # Its own note requires it to be off in three states: open (the gate),
+        # at contact (the contact fraction), and -- the part the max() lost --
+        # at contact on ANY pair. Per pair the factor is right, but the max over
+        # pairs is zero exactly for the pair that has arrived, so a neighbouring
+        # finger still crossing the 30-50 mm band re-armed the prior while the
+        # operator was fully pinched: median 0.43 over the middle pair's contact
+        # frames, 100% of them above 0.2, against a thumb_fade of 0.09 on the
+        # same frames. Middle is the worst pair because it is the only one with
+        # a neighbour on each side to be re-armed by. Gating the band on
+        # thumb_fade -- the file's existing "no pair has arrived" factor -- is
+        # what "at contact it must yield to the contact terms" already meant.
+        thumb_band = np.array([(gate * (1.0 - contact_frac)).max() * thumb_fade[0]])
 
         self._last = {"pinch_dist": pinch_d, "gate": gate,
                       "gap_target": pinch_tgt.copy()}
         return np.concatenate([
             self.wrist_offset,
-            np.concatenate(tgt_tip), revgate, fade, [_fade(revgate.min())],
+            np.concatenate(tgt_tip), revgate, fade,
             np.concatenate(tgt_R),
             np.concatenate(tgt_dir), np.concatenate(tgt_dipdir),
             pinch_tgt, np.concatenate(pinch_dir), gate, ori_gate, pad_gate,

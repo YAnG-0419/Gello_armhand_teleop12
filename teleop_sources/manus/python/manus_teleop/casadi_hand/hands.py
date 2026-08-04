@@ -33,15 +33,16 @@ FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 # 2026-08-03): the centre of the palmar face a few mm below the tip apex, so a
 # pinch closes pad-to-pad instead of apex-to-apex. The palmar side is +x on
 # both the fingers and the thumb -- verified from flexion kinematics, the tip
-# curls toward local +x. Do NOT regenerate these with calibrate_tips.py: its
-# axis-cross palmar heuristic picks the dorsal side on the L20, and the mesh
-# centroid it takes lands on the tip apex. The right hand is the left mirrored
-# across y (joint origins mirror exactly).
+# curls toward local +x. Do NOT regenerate these from the meshes: an
+# axis-cross palmar heuristic picks the dorsal side on the L20, and a mesh
+# centroid lands on the tip apex. (The script that did this, calibrate_tips.py,
+# was deleted for that reason.) The right hand is the left mirrored across y
+# (joint origins mirror exactly).
 #
-# The O30i values are still mesh-derived (calibrate_tips.py) and share both
-# defects; re-annotate them the same way when that hand matters. None of these
-# can come from the URDFs: L20's `*_tip` frames put the thumb tip 62 mm from
-# the mesh, behind the distal joint; O30i ships no tip frame at all, and its
+# The O30i values are hand-annotated too, on 2026-08-04 -- see the per-hand
+# note on its dict below for the axis convention, which differs from the L20's.
+# None of these can come from the URDFs: L20's `*_tip` frames put the thumb
+# tip 62 mm from the mesh, behind the distal joint; O30i ships no tip frame at all, and its
 # left hand reuses the right hand's un-mirrored thumb meshes, so its left
 # thumb offset is mirrored from the right rather than measured.
 TIP_OFFSETS = {
