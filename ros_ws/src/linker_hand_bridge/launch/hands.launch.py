@@ -24,6 +24,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from linker_hand_bridge.profiles import create_hand_profile
 
 SIDES = (("left", "can0"), ("right", "can1"))
@@ -139,6 +140,14 @@ def _nodes(context):
                             "calibration_verified": True,
                             "tick_at_lower": tick_at_lower,
                             "tick_at_upper": tick_at_upper,
+                            "initial_velocity": ParameterValue(
+                                LaunchConfiguration("o30_initial_velocity"),
+                                value_type=int,
+                            ),
+                            "initial_stall_current": ParameterValue(
+                                LaunchConfiguration("o30_initial_stall_current"),
+                                value_type=int,
+                            ),
                             "command_timeout": LaunchConfiguration(
                                 "o30_command_timeout"
                             ),
@@ -250,6 +259,25 @@ def generate_launch_description() -> LaunchDescription:
             "o30_tick_at_upper",
             default_value=",".join(["255"] * 20),
             description="Twenty O30i ticks corresponding to the URDF upper limits.",
+        ),
+        DeclareLaunchArgument(
+            "o30_initial_velocity",
+            default_value="-1",
+            description=(
+                "O30i joint velocity 0..255 applied at startup; -1 leaves the "
+                "device's power-up value. Unlike the G20, this hand was never "
+                "configured at all -- the driver logs what it booted with "
+                "either way."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "o30_initial_stall_current",
+            default_value="-1",
+            description=(
+                "O30i holding current after stall, 0..255, applied at startup; "
+                "-1 leaves the device's power-up value. This is grip force and "
+                "motor heating: raise it deliberately and in steps."
+            ),
         ),
         DeclareLaunchArgument(
             "o30_command_timeout",
