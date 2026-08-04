@@ -123,8 +123,24 @@ TIP_NORMALS = {
 }
 
 
+# Contact-point inset, in metres along -normal INTO the link. It existed to
+# compensate a 5-10 mm sim-to-real pinch gap whose cause was later found: the
+# 0706 URDF's joint limits were wrong, and the tick map inherits them. With
+# the 0803 limits (assets URDFs + o30i_contract.py, updated 2026-08-04) the
+# metal closes exactly where the model does, so the compensation is retired
+# -- kept at 0.0 as the knob for any future measured, deliberate offset.
+# Keep this file identical to the linkerhand-retargeting repo's hands.py.
+CONTACT_INSET = {
+    "o30i_left": 0.0,
+    "o30i_right": 0.0,
+}
+
+
 def _tip_frames(name: str) -> dict[str, tuple[str, np.ndarray]]:
-    return {f: (f"{f}_distal", np.array(o)) for f, o in TIP_OFFSETS[name].items()}
+    inset = CONTACT_INSET.get(name, 0.0)
+    normals = _tip_normals(name)
+    return {f: (f"{f}_distal", np.array(o) - inset * normals.get(f, np.zeros(3)))
+            for f, o in TIP_OFFSETS[name].items()}
 
 
 def _tip_normals(name: str) -> dict[str, np.ndarray]:

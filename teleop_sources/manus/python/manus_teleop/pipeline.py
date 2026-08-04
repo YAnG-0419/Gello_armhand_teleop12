@@ -292,7 +292,8 @@ SHARPA_PROFILES = {
 # configuration in docker/compose.yaml (left_model / right_model), because that
 # is what the packet's model tag is checked against. Two configs, one meaning;
 # tests/test_manus_pipeline.py pins them together so they cannot drift apart.
-DEFAULT_HANDS = {"left": "g20", "right": "o30i"}
+# Both mounts are O30i since 2026-08-04 (the left G20 was swapped out).
+DEFAULT_HANDS = {"left": "o30i", "right": "o30i"}
 
 # Which retargeting algorithm runs on each side. A CHOICE, orthogonal to the
 # hardware: both drive the same physical hand and emit the same packet layout,
@@ -509,11 +510,6 @@ class ManusHandPipeline:
         methods = _resolve_side_map(
             methods, DEFAULT_METHODS, "methods", METHODS, self.sides
         )
-        if hands["left"] != "g20":
-            raise ValueError(
-                "the left hand is a G20/L20: this tree ships no left O30i asset"
-            )
-
         self.hands = dict(hands)
         self.methods = dict(methods)
         self.filter_alpha = float(filter_alpha)

@@ -63,8 +63,12 @@ class O30IDriver(Node):
         self.declare_parameter("initial_stall_current", -1)
 
         side = str(self.get_parameter("hand_type").value).strip().lower()
-        if side != "right":
-            raise ValueError("the checked-in O30i contract currently supports right only")
+        # Left and right share one contract: the vendor's left/right URDFs
+        # carry identical joint names and limits (verified 2026-08-04, when
+        # the left mount became an O30-family hand). The device's own
+        # identity read below still enforces that the side matches.
+        if side not in ("left", "right"):
+            raise ValueError(f"hand_type must be left or right, got {side!r}")
         transport = str(self.get_parameter("transport").value).strip().lower()
         if transport not in {"socketcan", "libcanbus"}:
             raise ValueError("transport must be socketcan or libcanbus")
@@ -149,9 +153,10 @@ class O30IDriver(Node):
             reported_side = str(self.controller.get_hand_side() or "").upper()
             if "O30" not in model:
                 raise RuntimeError(f"connected device is not O30i: {model!r}")
-            if reported_side != "RIGHT":
+            if reported_side != side.upper():
                 raise RuntimeError(
-                    f"connected O30i reports {reported_side}, expected RIGHT"
+                    f"connected O30i reports {reported_side}, expected "
+                    f"{side.upper()} -- wrong CANFD device index for this side?"
                 )
         except BaseException:
             self.controller.close()
@@ -163,11 +168,11 @@ class O30IDriver(Node):
         self._apply_motion_settings()
 
         self._settings_subscription = self.create_subscription(
-            String, "/cb_right_hand_setting_cmd", self._setting, 10)
+            String, f"/cb_{side}_hand_setting_cmd", self._setting, 10)
         self.command_subscription = (
             self.create_subscription(
                 JointState,
-                "/cb_right_hand_control_cmd",
+                f"/cb_{side}_hand_control_cmd",
                 self._command,
                 10,
             )
@@ -175,10 +180,10 @@ class O30IDriver(Node):
             else None
         )
         self.state_publisher = self.create_publisher(
-            JointState, "/cb_right_hand_state", 10
+            JointState, f"/cb_{side}_hand_state", 10
         )
         self.raw_state_publisher = self.create_publisher(
-            JointState, "/linker_hand_o30i/raw_state", 10
+            JointState, f"/linker_hand_o30i/{side}/raw_state", 10
         )
         self.state_timer = self.create_timer(1.0 / publish_rate, self._publish_state)
         self.watchdog_timer = self.create_timer(

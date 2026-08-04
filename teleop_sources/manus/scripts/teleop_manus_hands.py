@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Drive the LinkerHands from MANUS gloves, no arms - per-side activation.
 
-`--sides left` tests only the left G20, `--sides right` only the right
-O30i, `both` (default) runs bimanual. Keys: `L`/`R` toggle one side,
-`Space` toggles the selected sides together, `X` stops, `O` requests the
-open pose while disengaged, `Q` exits.
+`--sides left` tests only the left hand, `--sides right` only the right,
+`both` (default) runs bimanual. Both mounts are O30i by default; a G20 side
+is still selectable via `--left-hand`/`--right-hand`. Keys: `L`/`R` toggle
+one side, `Space` toggles the selected sides together, `X` stops, `O`
+requests the open pose while disengaged, `Q` exits.
 """
 
 from __future__ import annotations
@@ -73,6 +74,13 @@ def main() -> int:
              "docker/compose.yaml (default: o30i)",
     )
     parser.add_argument(
+        "--left-hand",
+        default=None,
+        choices=("g20", "o30i"),
+        help="physical left hand; must match the bridge's left_model in "
+             "docker/compose.yaml (default: o30i)",
+    )
+    parser.add_argument(
         "--left-model",
         default=None,
         choices=("g20", "g20_casadi"),
@@ -112,7 +120,7 @@ def main() -> int:
             print(
                 f"  WARNING --{side}-model is deprecated: read as "
                 f"--{side}-method {methods[side]}"
-                + (f" --{side}-hand {hands[side]}" if side == "right" else "")
+                + f" --{side}-hand {hands[side]}"
             )
         elif new is not None:
             methods[side] = new
@@ -120,6 +128,10 @@ def main() -> int:
         if args.right_model is not None:
             parser.error("--right-hand conflicts with the deprecated --right-model")
         hands["right"] = args.right_hand
+    if args.left_hand is not None:
+        if args.left_model is not None:
+            parser.error("--left-hand conflicts with the deprecated --left-model")
+        hands["left"] = args.left_hand
 
     # State the wire contract before anything can fail. The bridge announces
     # the hands it was launched for; a disagreement between the two banners is

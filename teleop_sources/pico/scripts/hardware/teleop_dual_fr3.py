@@ -105,7 +105,14 @@ def main() -> None:
         help="hand commands per second per side; the vendor driver drops "
         "commands above about 100 Hz (default: 30)",
     )
-    parser.add_argument("--left-hand-model", default="g20")
+    parser.add_argument(
+        "--left-hand-model",
+        default=None,
+        help=(
+            "left hand model; defaults to g20 for PICO and o30i for MANUS "
+            "(both mounts are O30i since 2026-08-04)"
+        ),
+    )
     parser.add_argument(
         "--right-hand-model",
         default=None,
@@ -203,12 +210,14 @@ def main() -> None:
                 # These flags predate the hardware/solver split and still carry
                 # combined names; decode them into the two facts they mean.
                 hands={
-                    "left": split_legacy_model(args.left_hand_model)[0],
+                    "left": split_legacy_model(
+                        args.left_hand_model or "o30i")[0],
                     "right": split_legacy_model(
                         args.right_hand_model or "o30i")[0],
                 },
                 solvers={
-                    "left": split_legacy_model(args.left_hand_model)[1],
+                    "left": split_legacy_model(
+                        args.left_hand_model or "o30i")[1],
                     "right": split_legacy_model(
                         args.right_hand_model or "o30i")[1],
                 },

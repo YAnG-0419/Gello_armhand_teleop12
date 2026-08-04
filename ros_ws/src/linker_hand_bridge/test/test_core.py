@@ -275,8 +275,13 @@ def test_o30i_profile_preserves_canonical_urdf_radians():
     )
     assert profile.map_packet(packet) == pytest.approx(qpos)
     assert profile.startup_settings(255, 200, 250) == ()
-    with pytest.raises(ValueError, match="right only"):
-        create_hand_profile("o30i", side="left")
+    # Both sides serve the same contract since the left mount became an O30i
+    # (2026-08-04); the vendor's left URDF carries identical names and limits.
+    left = create_hand_profile("o30i", side="left")
+    assert left.lower_bounds == profile.lower_bounds
+    assert left.upper_bounds == profile.upper_bounds
+    with pytest.raises(ValueError, match="unknown side"):
+        create_hand_profile("o30i", side="up")
 
 
 def test_limiter_supports_profile_defined_dimensions_and_bounds():

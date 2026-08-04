@@ -73,27 +73,40 @@ def usb_adapters() -> list[tuple[str, str]]:
 
 
 def probe(index: int) -> dict:
-    controller = None
-    try:
-        controller = O30IController(canfd_device=index, comm_type="libcanbus")
-        if not controller.is_connected:
-            return {"index": index, "status": "no transport"}
-        model = str(controller.get_product_model() or "")
-        side = str(controller.get_hand_side() or "")
-        uid = str(controller.get_device_uid() or "")
-        if not model:
-            return {"index": index, "status": "opened, but no product info "
-                                              "(nothing answering on this bus)"}
-        return {"index": index, "status": "OK", "model": model,
-                "side": side, "uid": uid}
-    except Exception as error:  # noqa: BLE001 - a probe must survive any adapter
-        return {"index": index, "status": f"error: {type(error).__name__}: {error}"}
-    finally:
-        if controller is not None:
-            try:
-                controller.close()
-            except Exception:  # noqa: BLE001
-                pass
+    """Try the right request ID (0x01), then the left (0x02).
+
+    A hand answers only its own device ID, so probing with one side's ID
+    reports a healthy other-side hand as silence -- exactly what happened
+    when the left mount became an O30i and index 0 looked dead.
+    """
+    last = {"index": index, "status": "no transport"}
+    for hand_type, frame_id in (("right", 1), ("left", 2)):
+        controller = None
+        try:
+            controller = O30IController(
+                hand_type=hand_type, canfd_device=index,
+                frame_id=frame_id, comm_type="libcanbus")
+            if not controller.is_connected:
+                return {"index": index, "status": "no transport"}
+            model = str(controller.get_product_model() or "")
+            side = str(controller.get_hand_side() or "")
+            uid = str(controller.get_device_uid() or "")
+            if model:
+                return {"index": index, "status": "OK", "model": model,
+                        "side": side, "uid": uid}
+            last = {"index": index,
+                    "status": "opened, but no product info on either request "
+                              "ID (nothing answering on this bus)"}
+        except Exception as error:  # noqa: BLE001 - survive any adapter
+            last = {"index": index,
+                    "status": f"error: {type(error).__name__}: {error}"}
+        finally:
+            if controller is not None:
+                try:
+                    controller.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    return last
 
 
 def main() -> int:
@@ -128,9 +141,10 @@ def main() -> int:
         print("  no O30i found on any index. Is the hand powered and cabled?")
         return 1
     for result in matches:
+        side = str(result["side"]).strip().lower() or "unknown"
         print(f"  O30i is at index {result['index']} "
               f"({result['side']}). Launch with "
-              f"o30_canfd_device:={result['index']}")
+              f"o30_canfd_device_{side}:={result['index']}")
     return 0
 
 

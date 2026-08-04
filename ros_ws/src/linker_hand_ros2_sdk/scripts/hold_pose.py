@@ -5,7 +5,10 @@
     python3 hold_pose.py --device 1 --joint index_pip --tick 128   # one joint, rest straight
 
 THIS MOVES THE HAND. It goes to the pose, holds it until you press Enter, then
-returns to straight.
+returns to NEUTRAL (every joint at URDF 0 deg). Neutral is NOT all ticks 0:
+on the yaw joints tick 0 is the lateral extreme, and the index's extreme
+presses the hand's pinched cable -- parking there all day made the yaw
+failures worse (2026-08-04).
 
 It prints the same vector in the form `pose_view.py --ticks` expects, so the
 model and the metal can be put in provably identical configurations. That
@@ -50,10 +53,25 @@ def urdf_degrees(name: str, tick: int) -> float:
     return math.degrees(lower + (tick / 255.0) * (upper - lower))
 
 
+def neutral_pose() -> dict[str, int]:
+    """Every joint at URDF 0 deg, clamped into its range, as ticks."""
+    pose = {}
+    for i, name in enumerate(O30I_URDF_JOINT_NAMES):
+        lower, upper = O30I_RIGHT_LOWER[i], O30I_RIGHT_UPPER[i]
+        q = min(max(0.0, lower), upper)
+        pose[name] = round((q - lower) / (upper - lower) * 255)
+    return pose
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--device", type=int, default=1)
+    parser.add_argument("--side", choices=("left", "right"), default="right",
+                        help="which hand; left and right share one tick "
+                             "contract (identical URDF limits)")
+    parser.add_argument("--device", type=int, default=None,
+                        help="CANFD adapter index; defaults per side to the "
+                             "identified mapping right=1, left=0")
     parser.add_argument("--channel", type=int, default=0)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--ticks", help="20 values 0..255 in URDF joint order")
@@ -75,19 +93,23 @@ def main() -> int:
     else:
         if not 0 <= args.tick <= 255:
             raise SystemExit("--tick must be within 0..255")
-        pose = {name: 0 for name in O30I_URDF_JOINT_NAMES}
+        pose = neutral_pose()
         pose[args.joint] = args.tick
+
+    if args.device is None:
+        args.device = 1 if args.side == "right" else 0
 
     ordered = [pose[n] for n in O30I_URDF_JOINT_NAMES]
     print("\n  the identical configuration for the model:\n")
-    print("    python pose_view.py --hand o30i_right --ticks "
+    print(f"    python pose_view.py --hand o30i_{args.side} --ticks "
           + ",".join(str(v) for v in ordered) + "\n")
     print(f"  {'joint':<20}{'tick':>6}{'URDF deg':>10}")
     for name in O30I_URDF_JOINT_NAMES:
         print(f"  {name:<20}{pose[name]:>6}{urdf_degrees(name, pose[name]):>10.1f}")
 
     hand = o30i_control.LinkerHandO30IController(
-        hand_type="right", canfd_device=args.device, channel=args.channel,
+        hand_type=args.side, canfd_device=args.device, channel=args.channel,
+        frame_id=1 if args.side == "right" else 2,
         comm_type="libcanbus")
     if not hand.is_connected:
         print("\n  no transport; is the bridge still holding the bus?")
@@ -97,13 +119,13 @@ def main() -> int:
         print(f"\n  index {args.device} is not an O30i ({model!r})")
         hand.close()
         return 1
-    straight = {name: 0 for name in O30I_URDF_JOINT_NAMES}
+    straight = neutral_pose()
     try:
         hand.setup()
         time.sleep(0.2)
         hand.set_target_position(driver_vector(straight))
         time.sleep(1.2)
-        input("\n  hand is straight; press Enter to move to the pose ")
+        input("\n  hand is at neutral; press Enter to move to the pose ")
         hand.set_target_position(driver_vector(pose))
         time.sleep(1.5)
         measured = hand.get_current_position()

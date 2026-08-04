@@ -29,7 +29,9 @@ services:
       - linker_hand_bridge
       - hands.launch.py
       - sides:=right
-      - left_model:=g20
+      # Inert under sides:=right; kept matching the base file, where the left
+      # mount is now also an O30i (2026-08-04).
+      - left_model:=o30i
       - right_model:=o30i
       # This host has TWO identical CANFD analysers (a8fa:8598, serials
       # F0802074338B5231 and F080207737804130) and the driver picks one by
