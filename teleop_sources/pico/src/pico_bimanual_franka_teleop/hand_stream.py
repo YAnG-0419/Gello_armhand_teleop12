@@ -24,6 +24,15 @@ PROTOCOL_VERSION = 1
 MAX_DATAGRAM_BYTES = 16_384
 SIDES = ("left", "right")
 
+# The physical hands this protocol can address. `model` names HARDWARE: the
+# bridge refuses a packet whose tag disagrees with the hand it is wired to, so
+# it is a handshake between two independent configurations and never a name for
+# the retargeter or solver that produced the pose. Enforced here, at the one
+# point every packet passes through, rather than trusted from callers -- a
+# solver name on the wire is dropped by the bridge and looks exactly like a
+# dead network from the sending side.
+HARDWARE_MODELS = ("g20", "o30i")
+
 
 @dataclass(frozen=True)
 class HandQposPacket:
@@ -44,6 +53,12 @@ def encode_hand_packet(packet: HandQposPacket) -> bytes:
         raise ValueError("stream_id must be non-empty")
     if not packet.model:
         raise ValueError("model must be non-empty")
+    if packet.model not in HARDWARE_MODELS:
+        raise ValueError(
+            f"model must name a physical hand, one of {list(HARDWARE_MODELS)}, "
+            f"got {packet.model!r}. This field is the hardware handshake with "
+            f"the bridge, not the retargeter or solver in use."
+        )
     if packet.sequence < 0:
         raise ValueError("sequence must be non-negative")
     if len(packet.joint_names) != len(packet.qpos):

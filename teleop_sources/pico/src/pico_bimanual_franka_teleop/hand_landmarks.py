@@ -132,8 +132,8 @@ def palm_scale(landmarks: np.ndarray) -> float:
 
     This is the retargeting scale reference. It is a genuine anatomical width on
     both the human and the robot, it is measured from four points rather than
-    two so sensor noise averages down, and it varies only with abduction, which
-    the L20 limits to +/-0.17 rad.
+    two so sensor noise averages down, and it varies only with the mechanism's
+    tightly bounded abduction joints.
     """
     points = np.asarray(landmarks, dtype=np.float64)
     bases = points[list(CANONICAL_FINGER_BASES)]

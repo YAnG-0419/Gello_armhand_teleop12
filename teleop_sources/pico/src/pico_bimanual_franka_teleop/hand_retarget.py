@@ -44,6 +44,17 @@ FINGER_LINKS = {
     "pinky": ("pinky_proximal", "pinky_middle", "pinky_distal"),
 }
 
+# Historical left-G20 UDP order. The protocol is named, but preserving order
+# keeps recordings and downstream diagnostics stable across the V10.1 rename.
+LEFT_G20_PACKET_JOINT_NAMES = (
+    "index_mcp_roll", "index_mcp_pitch", "index_pip", "index_dip",
+    "middle_mcp_roll", "middle_mcp_pitch", "middle_pip", "middle_dip",
+    "pinky_mcp_roll", "pinky_mcp_pitch", "pinky_pip", "pinky_dip",
+    "ring_mcp_roll", "ring_mcp_pitch", "ring_pip", "ring_dip",
+    "thumb_cmc_yaw", "thumb_cmc_roll", "thumb_cmc_pitch", "thumb_mcp",
+    "thumb_ip",
+)
+
 DISTAL_TIP_OFFSETS = {
     "thumb": np.array([0.0, 0.0, 0.032], dtype=np.float64),
     "index": np.array([0.0, 0.0, 0.023], dtype=np.float64),
@@ -300,13 +311,34 @@ class L20Retargeter:
             (packet_model.joints[joint_id].idx_q, packet_model.names[joint_id])
             for joint_id in range(1, packet_model.njoints)
         )
-        self.joint_names: list[str] = [name for _, name in packet_entries]
+        # The UDP/bridge contract predates V10.1 and calls the left coupled
+        # thumb follower ``thumb_ip``.  Keep that external name stable while
+        # all FK and optimization use the URDF's real ``thumb_dip`` name.
+        self._packet_aliases = (
+            {"thumb_dip": "thumb_ip"} if side == "left" else {}
+        )
+        self._packet_name = lambda name: self._packet_aliases.get(name, name)
+        packet_records = {
+            self._packet_name(name): (
+                float(packet_model.lowerPositionLimit[index]),
+                float(packet_model.upperPositionLimit[index]),
+            )
+            for index, name in packet_entries
+        }
+        packet_order = (
+            list(LEFT_G20_PACKET_JOINT_NAMES)
+            if side == "left"
+            else [self._packet_name(name) for _, name in packet_entries]
+        )
+        if set(packet_order) != set(packet_records):
+            raise ValueError("URDF joints do not match the stable packet contract")
+        self.joint_names = packet_order
         self.lower = np.asarray(
-            packet_model.lowerPositionLimit, dtype=np.float64
-        ).copy()
+            [packet_records[name][0] for name in packet_order], dtype=np.float64
+        )
         self.upper = np.asarray(
-            packet_model.upperPositionLimit, dtype=np.float64
-        ).copy()
+            [packet_records[name][1] for name in packet_order], dtype=np.float64
+        )
 
         self.model = pin.buildModelFromUrdf(str(self.urdf_path), True)
         active_entries = []
@@ -323,7 +355,10 @@ class L20Retargeter:
         active_entries.sort()
         self._active_joint_names = [name for _, name in active_entries]
         self._active_output_indices = np.asarray(
-            [self.joint_names.index(name) for name in self._active_joint_names],
+            [
+                self.joint_names.index(self._packet_name(name))
+                for name in self._active_joint_names
+            ],
             dtype=int,
         )
         self._active_lower = np.asarray(
@@ -360,9 +395,18 @@ class L20Retargeter:
                 float(mimic.attrib.get("multiplier", "1")),
                 float(mimic.attrib.get("offset", "0")),
             )
-        thumb_distal = "thumb_ip" if side == "left" else "thumb_dip"
+        thumb_distals = [
+            name
+            for name, (source, _, _) in self._mimics.items()
+            if name.startswith("thumb_") and source == "thumb_mcp"
+        ]
+        if len(thumb_distals) != 1:
+            raise ValueError(
+                "Expected exactly one distal thumb joint mimicking thumb_mcp"
+            )
+        self._thumb_distal_urdf_name = thumb_distals[0]
         thumb_source, self._thumb_mimic_multiplier, thumb_offset = self._mimics[
-            thumb_distal
+            self._thumb_distal_urdf_name
         ]
         if thumb_source != "thumb_mcp" or thumb_offset != 0.0:
             raise ValueError(
@@ -489,9 +533,11 @@ class L20Retargeter:
         output[self._active_output_indices] = active_qpos
         by_name = dict(zip(self.joint_names, output))
         for name, (source, multiplier, offset) in self._mimics.items():
-            value = multiplier * by_name[source] + offset
-            output[self.joint_names.index(name)] = value
-            by_name[name] = value
+            packet_name = self._packet_name(name)
+            packet_source = self._packet_name(source)
+            value = multiplier * by_name[packet_source] + offset
+            output[self.joint_names.index(packet_name)] = value
+            by_name[packet_name] = value
         return np.clip(output, self.lower, self.upper)
 
     def robot_landmarks(self) -> np.ndarray:

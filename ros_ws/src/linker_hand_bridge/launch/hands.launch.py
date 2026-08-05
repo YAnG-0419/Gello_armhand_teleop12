@@ -1,7 +1,10 @@
 """Bring up model-specific Linker Hand drivers and the safety bridge.
 
-This launch supports a left G20 and a right G20 or O30i. PICO optical hand
-tracking remains a G20 source; the right O30i source is the MANUS pipeline.
+Either side may be a G20 or an O30i; the current robot mounts an O30i on
+both. PICO optical hand tracking remains a G20 source; the O30i source is
+the MANUS pipeline. Two O30i sides need two USB-CANFD adapters, named
+per side via o30_canfd_device_left / o30_canfd_device_right (indices from
+identify_canfd_devices.py).
 
 The G20 bus-to-side mapping is confirmed from each hand's own reported comm ID:
 `can0` is the left hand at 0x28. The current O30i uses HOP CAN-FD through the
@@ -24,6 +27,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from linker_hand_bridge.profiles import create_hand_profile
 
 SIDES = (("left", "can0"), ("right", "can1"))
@@ -80,13 +84,40 @@ def _nodes(context):
     )
     if selected_o30 and o30_transport not in {"socketcan", "libcanbus"}:
         raise ValueError("o30_transport must be socketcan or libcanbus")
-    for argument in ("o30_canfd_device", "o30_canfd_channel"):
+    # Two O30i sides mean two USB-CANFD adapters, selected by integer index
+    # (USB enumeration order). Each side may name its own; the historical
+    # shared `o30_canfd_device` remains the fallback so single-sided
+    # launches keep working unchanged.
+    o30_canfd_devices = {}
+    for side, _ in SIDES:
+        argument = f"o30_canfd_device_{side}"
+        text = LaunchConfiguration(argument).perform(context).strip()
+        if not text:
+            argument = "o30_canfd_device"
+            text = LaunchConfiguration(argument).perform(context).strip()
         try:
-            index = int(LaunchConfiguration(argument).perform(context))
+            o30_canfd_devices[side] = int(text)
         except ValueError as error:
             raise ValueError(f"{argument} must be an integer") from error
-        if selected_o30 and index < 0:
+        if side in selected_o30 and o30_canfd_devices[side] < 0:
             raise ValueError(f"{argument} must not be negative")
+    if (
+        len(selected_o30) == 2
+        and o30_canfd_devices["left"] == o30_canfd_devices["right"]
+    ):
+        raise ValueError(
+            "left and right O30i cannot share one CANFD adapter: set "
+            "o30_canfd_device_left and o30_canfd_device_right to the two "
+            "indices reported by identify_canfd_devices.py"
+        )
+    try:
+        channel_index = int(
+            LaunchConfiguration("o30_canfd_channel").perform(context)
+        )
+    except ValueError as error:
+        raise ValueError("o30_canfd_channel must be an integer") from error
+    if selected_o30 and channel_index < 0:
+        raise ValueError("o30_canfd_channel must not be negative")
     if selected_o30 and calibration_verified != "true":
         raise ValueError(
             "real O30i output requires o30_calibration_verified:=true"
@@ -126,9 +157,7 @@ def _nodes(context):
                             ),
                             "can": channel,
                             "frame_id": 1 if side == "right" else 2,
-                            "canfd_device": LaunchConfiguration(
-                                "o30_canfd_device"
-                            ),
+                            "canfd_device": o30_canfd_devices[side],
                             "canfd_channel": LaunchConfiguration(
                                 "o30_canfd_channel"
                             ),
@@ -139,6 +168,14 @@ def _nodes(context):
                             "calibration_verified": True,
                             "tick_at_lower": tick_at_lower,
                             "tick_at_upper": tick_at_upper,
+                            "initial_velocity": ParameterValue(
+                                LaunchConfiguration("o30_initial_velocity"),
+                                value_type=int,
+                            ),
+                            "initial_stall_current": ParameterValue(
+                                LaunchConfiguration("o30_initial_stall_current"),
+                                value_type=int,
+                            ),
                             "command_timeout": LaunchConfiguration(
                                 "o30_command_timeout"
                             ),
@@ -232,7 +269,30 @@ def generate_launch_description() -> LaunchDescription:
                 "USB-CANFD adapter, or socketcan for a native CAN interface."
             ),
         ),
-        DeclareLaunchArgument("o30_canfd_device", default_value="0"),
+        DeclareLaunchArgument(
+            "o30_canfd_device",
+            default_value="0",
+            description=(
+                "Fallback CANFD adapter index for any O30i side that does not "
+                "name its own via o30_canfd_device_<side>."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "o30_canfd_device_left",
+            default_value="",
+            description=(
+                "CANFD adapter index for the LEFT O30i; empty falls back to "
+                "o30_canfd_device."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "o30_canfd_device_right",
+            default_value="",
+            description=(
+                "CANFD adapter index for the RIGHT O30i; empty falls back to "
+                "o30_canfd_device."
+            ),
+        ),
         DeclareLaunchArgument("o30_canfd_channel", default_value="0"),
         DeclareLaunchArgument(
             "o30_libcanbus_path",
@@ -250,6 +310,25 @@ def generate_launch_description() -> LaunchDescription:
             "o30_tick_at_upper",
             default_value=",".join(["255"] * 20),
             description="Twenty O30i ticks corresponding to the URDF upper limits.",
+        ),
+        DeclareLaunchArgument(
+            "o30_initial_velocity",
+            default_value="-1",
+            description=(
+                "O30i joint velocity 0..255 applied at startup; -1 leaves the "
+                "device's power-up value. Unlike the G20, this hand was never "
+                "configured at all -- the driver logs what it booted with "
+                "either way."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "o30_initial_stall_current",
+            default_value="-1",
+            description=(
+                "O30i holding current after stall, 0..255, applied at startup; "
+                "-1 leaves the device's power-up value. This is grip force and "
+                "motor heating: raise it deliberately and in steps."
+            ),
         ),
         DeclareLaunchArgument(
             "o30_command_timeout",

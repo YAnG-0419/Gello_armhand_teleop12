@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 import time
@@ -10,6 +11,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 
 from .LinkerHand import o30i_control
 from .o30i_contract import (
@@ -49,10 +51,24 @@ class O30IDriver(Node):
         self.declare_parameter("command_timeout", 0.25)
         self.declare_parameter("state_timeout", 0.5)
         self.declare_parameter("state_publish_rate", 30.0)
+        # Motion settings, 0..255 in the vendor's own units. -1 means "leave
+        # the device's power-up value alone", which is what this driver did
+        # unconditionally until now: the bridge configures speed and torque
+        # for the G20 and had nothing for the O30i, so the hand ran on
+        # whatever it booted with. Measured 2026-08-04 on a teleop capture,
+        # the O30i settles 2-14 deg short of a static command -- worst on the
+        # joints doing the pinch -- leaving a 3.3 mm fingertip gap where the
+        # command asked for 0.4 mm.
+        self.declare_parameter("initial_velocity", -1)
+        self.declare_parameter("initial_stall_current", -1)
 
         side = str(self.get_parameter("hand_type").value).strip().lower()
-        if side != "right":
-            raise ValueError("the checked-in O30i contract currently supports right only")
+        # Left and right share one contract: the vendor's left/right URDFs
+        # carry identical joint names and limits (verified 2026-08-04, when
+        # the left mount became an O30-family hand). The device's own
+        # identity read below still enforces that the side matches.
+        if side not in ("left", "right"):
+            raise ValueError(f"hand_type must be left or right, got {side!r}")
         transport = str(self.get_parameter("transport").value).strip().lower()
         if transport not in {"socketcan", "libcanbus"}:
             raise ValueError("transport must be socketcan or libcanbus")
@@ -137,9 +153,10 @@ class O30IDriver(Node):
             reported_side = str(self.controller.get_hand_side() or "").upper()
             if "O30" not in model:
                 raise RuntimeError(f"connected device is not O30i: {model!r}")
-            if reported_side != "RIGHT":
+            if reported_side != side.upper():
                 raise RuntimeError(
-                    f"connected O30i reports {reported_side}, expected RIGHT"
+                    f"connected O30i reports {reported_side}, expected "
+                    f"{side.upper()} -- wrong CANFD device index for this side?"
                 )
         except BaseException:
             self.controller.close()
@@ -148,11 +165,14 @@ class O30IDriver(Node):
             f"Verified {model} {reported_side}; uid={device_uid!r}; "
             f"protocol={protocol_version!r}; transport={transport}"
         )
+        self._apply_motion_settings()
 
+        self._settings_subscription = self.create_subscription(
+            String, f"/cb_{side}_hand_setting_cmd", self._setting, 10)
         self.command_subscription = (
             self.create_subscription(
                 JointState,
-                "/cb_right_hand_control_cmd",
+                f"/cb_{side}_hand_control_cmd",
                 self._command,
                 10,
             )
@@ -160,10 +180,10 @@ class O30IDriver(Node):
             else None
         )
         self.state_publisher = self.create_publisher(
-            JointState, "/cb_right_hand_state", 10
+            JointState, f"/cb_{side}_hand_state", 10
         )
         self.raw_state_publisher = self.create_publisher(
-            JointState, "/linker_hand_o30i/raw_state", 10
+            JointState, f"/linker_hand_o30i/{side}/raw_state", 10
         )
         self.state_timer = self.create_timer(1.0 / publish_rate, self._publish_state)
         self.watchdog_timer = self.create_timer(
@@ -270,6 +290,124 @@ class O30IDriver(Node):
                 self._disable(f"O30i command failed after enable: {error}")
                 return
             self.get_logger().warning(f"rejecting O30i command: {error}")
+
+    # ------------------------------------------------------------- settings
+
+    _SETTINGS = {
+        # name -> (main index, human label). Writable from parameters/topic.
+        "velocity": (o30i_control.MI.VELOCITY, "velocity"),
+        "stall_current": (o30i_control.MI.STALL_CURRENT, "stall current"),
+    }
+    # Read and logged only. These decide WHEN the hand calls a joint stalled,
+    # which is the other half of what stall_current then does about it; a
+    # holding current is meaningless without knowing the threshold that arms
+    # it. Not writable here until there is a measured reason to change them.
+    _LOGGED = {
+        "stall time": o30i_control.MI.STALL_TIME,
+        "stall threshold": o30i_control.MI.STALL_THRESH,
+        "accel": o30i_control.MI.ACCEL,
+        "move time": o30i_control.MI.MOVE_TIME,
+    }
+
+    def _read_setting(self, main_index: int) -> list[int] | None:
+        body = self.controller._request(main_index, 0x00, self.controller.phys_span)
+        return list(body) if body else None
+
+    def _write_setting(self, name: str, value: int) -> None:
+        """Write one 0..255 motion setting to every joint, and verify it."""
+        main_index, label = self._SETTINGS[name]
+        before = self._read_setting(main_index)
+        span = self.controller.phys_span
+        ok = self.controller._write(
+            main_index, 0x00, self.controller._pack_u8([int(value)] * span))
+        after = self._read_setting(main_index)
+        self.get_logger().info(
+            f"{label}: requested {value}; device reported "
+            f"{'?' if before is None else before[:4]} -> "
+            f"{'?' if after is None else after[:4]} (first 4 joints), "
+            f"write {'accepted' if ok else 'REJECTED'}"
+        )
+        if after is not None and any(v != int(value) for v in after[:span]):
+            self.get_logger().warn(
+                f"{label} did not take on every joint; the device may clamp it "
+                f"or the field may be read-only on this firmware"
+            )
+
+    def _apply_motion_settings(self) -> None:
+        """Log what the hand booted with, then apply any requested overrides.
+
+        The log comes first and happens unconditionally: until now nothing
+        configured this hand, so the power-up values were never recorded
+        anywhere, and they are the baseline any later change has to be judged
+        against.
+        """
+        readable = ([(label, index) for index, label in self._SETTINGS.values()]
+                    + list(self._LOGGED.items()))
+        for label, main_index in readable:
+            found = self._read_setting(main_index)
+            self.get_logger().info(
+                f"power-up {label}: "
+                f"{'unreadable' if found is None else found[:self.controller.phys_span]}"
+            )
+        # The device's own unit/range declaration. This is the only on-device
+        # source for the tick-to-angle mapping, and that mapping has never been
+        # checked: tick_at_lower/upper default to 0..255 spanning each URDF
+        # limit, purely by assumption. A wrong map is invisible in every
+        # command-versus-measurement comparison -- both sides use it -- and
+        # shows up only as the hand stopping somewhere other than where the
+        # model thinks it was sent. Logged raw; decoding it needs the vendor's
+        # field layout, and a guess here would be worse than the bytes.
+        declared = self.controller._request(o30i_control.MI.UNIT_RANGE, 0x00, 162)
+        if declared is None:
+            self.get_logger().warn(
+                "unit/range (MI 0x43) unreadable; the tick-to-angle map cannot "
+                "be confirmed from the device and still rests on the "
+                "0..255-spans-the-URDF-limit assumption")
+        else:
+            self.get_logger().info(f"unit/range (MI 0x43), {len(declared)} bytes:")
+            for offset in range(0, len(declared), 24):
+                chunk = declared[offset:offset + 24]
+                self.get_logger().info(
+                    f"  {offset:04x}  " + " ".join(f"{b:02x}" for b in chunk))
+
+        for name in self._SETTINGS:
+            requested = int(self.get_parameter(f"initial_{name}").value)
+            if requested < 0:
+                continue
+            if not 0 <= requested <= 255:
+                self.get_logger().error(
+                    f"initial_{name}={requested} out of range 0..255; ignored")
+                continue
+            self._write_setting(name, requested)
+
+    def _setting(self, message: String) -> None:
+        """Runtime setting changes, same wire shape the G20 node accepts.
+
+        Lets a value be tried without restarting the stack; nothing is written
+        to flash, so a power cycle restores the device's own defaults.
+        """
+        try:
+            data = json.loads(message.data)
+            command = str(data["setting_cmd"])
+            params = data.get("params") or {}
+        except (ValueError, KeyError, TypeError):
+            self.get_logger().warn(f"unparseable setting command: {message.data!r}")
+            return
+        name = {"set_speed": "velocity",
+                "set_velocity": "velocity",
+                "set_stall_current": "stall_current"}.get(command)
+        if name is None:
+            self.get_logger().warn(
+                f"unsupported setting {command!r}; this driver accepts "
+                f"set_velocity and set_stall_current")
+            return
+        values = params.get(name) or params.get("speed") or params.get("value")
+        if isinstance(values, (list, tuple)):
+            values = values[0] if values else None
+        if values is None:
+            self.get_logger().warn(f"{command}: no value given")
+            return
+        self._write_setting(name, int(values))
 
     def _publish_state(self) -> None:
         try:

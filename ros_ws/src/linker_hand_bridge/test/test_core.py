@@ -6,6 +6,10 @@ from linker_hand_bridge.core import (
     ABDUCTION_INVERTED,
     COMMAND_SLOTS,
     G20_JOINT_NAMES,
+    FINGER_LIMITS,
+    LEFT_V101_FINGER_LIMITS,
+    LEFT_V101_THUMB_LIMITS,
+    THUMB_LIMITS,
     CommandLimiter,
     G20Mapper,
     QposPacket,
@@ -119,16 +123,20 @@ def test_zero_flexion_maps_to_an_open_hand(side):
 def test_full_flexion_maps_to_a_closed_hand(side):
     mapper = G20Mapper()
     names = joints_for(side)
-    # Drive every flexion joint to its upper limit.
+    # Drive every flexion joint to the selected model's upper limit.
+    finger_limits = LEFT_V101_FINGER_LIMITS if side == "left" else FINGER_LIMITS
+    thumb_limits = LEFT_V101_THUMB_LIMITS if side == "left" else THUMB_LIMITS
     upper = {
-        "mcp_pitch": 1.4,
-        "pip": 1.57,
-        "dip": 1.4,
-        "thumb_cmc_pitch": 0.79,
-        "thumb_mcp": 1.05,
-        "thumb_ip": 1.22,
-        "thumb_dip": 1.22,
+        suffix: limits[1] for suffix, limits in finger_limits.items()
     }
+    upper.update(
+        {
+            "thumb_cmc_pitch": thumb_limits["thumb_cmc_pitch"][1],
+            "thumb_mcp": thumb_limits["thumb_mcp"][1],
+            "thumb_ip": thumb_limits["thumb_tip"][1],
+            "thumb_dip": thumb_limits["thumb_tip"][1],
+        }
+    )
     qpos = []
     for name in names:
         if name.endswith("mcp_roll"):
@@ -156,25 +164,10 @@ def test_all_four_abduction_slots_share_one_polarity(side):
         assert len(set(command[6:10])) == 1, (side, roll, command[6:10])
 
 
-def test_abduction_is_inverted_on_exactly_one_side():
-    # The two URDFs are mirror geometries sharing one roll axis, so the same roll
-    # value means opposite anatomy on the two hands and exactly one side inverts.
-    # The geometric derivation itself is checked by the host-side test
-    # test_abduction_polarity_matches_urdf_geometry.
-    assert ABDUCTION_INVERTED == {"left": False, "right": True}
-    mapper = G20Mapper()
-    left = mapper.map_qpos(
-        "left",
-        joints_for("left"),
-        [0.17 if n.endswith("mcp_roll") else 0.0 for n in joints_for("left")],
-    )
-    right = mapper.map_qpos(
-        "right",
-        joints_for("right"),
-        [0.17 if n.endswith("mcp_roll") else 0.0 for n in joints_for("right")],
-    )
-    for slot in range(6, 10):
-        assert left[slot] + right[slot] == pytest.approx(255.0, abs=1.0), slot
+def test_abduction_polarity_tracks_each_selected_urdf():
+    # V10.1 reversed the left roll axis. Both currently selected URDFs therefore
+    # need inversion even though they are not a mutually mirrored model pair.
+    assert ABDUCTION_INVERTED == {"left": True, "right": True}
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
@@ -193,11 +186,15 @@ def test_opposed_rolls_drive_slots_apart(side):
     # the invariant the earlier per-finger signs destroyed.
     mapper = G20Mapper()
     names = joints_for(side)
+    limits = LEFT_V101_FINGER_LIMITS if side == "left" else FINGER_LIMITS
+    roll_limit = limits["mcp_roll"][1]
     values = []
     for name in names:
         if name.endswith("mcp_roll"):
             finger = name.split("_")[0]
-            values.append(0.17 if finger in ("ring", "pinky") else -0.17)
+            values.append(
+                roll_limit if finger in ("ring", "pinky") else -roll_limit
+            )
         else:
             values.append(0.0)
     command = mapper.map_qpos(side, names, values)
@@ -278,8 +275,13 @@ def test_o30i_profile_preserves_canonical_urdf_radians():
     )
     assert profile.map_packet(packet) == pytest.approx(qpos)
     assert profile.startup_settings(255, 200, 250) == ()
-    with pytest.raises(ValueError, match="right only"):
-        create_hand_profile("o30i", side="left")
+    # Both sides serve the same contract since the left mount became an O30i
+    # (2026-08-04); the vendor's left URDF carries identical names and limits.
+    left = create_hand_profile("o30i", side="left")
+    assert left.lower_bounds == profile.lower_bounds
+    assert left.upper_bounds == profile.upper_bounds
+    with pytest.raises(ValueError, match="unknown side"):
+        create_hand_profile("o30i", side="up")
 
 
 def test_limiter_supports_profile_defined_dimensions_and_bounds():

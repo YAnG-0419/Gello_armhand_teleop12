@@ -2,7 +2,7 @@
 
 Bimanual: each side in ``dynamic_sides`` follows its glove through the
 native skeleton bridge (left uses full L20-URDF optimization for the G20,
-right uses the O30i solver); every other side streams its default pose. A glove only delivers frames once its
+right uses the O30i method); every other side streams its default pose. A glove only delivers frames once its
 calibration file exists next to the bridge's calibration directory
 (``Calibration_left.mcal`` / ``Calibration_right.mcal``) - an uncalibrated
 side simply reports waiting and the rest keeps working.
@@ -20,6 +20,7 @@ from xml.etree import ElementTree
 import numpy as np
 
 from pico_bimanual_franka_teleop.hand_sender import HandCommandSender, HandStatus
+from pico_bimanual_franka_teleop.hand_stream import HARDWARE_MODELS
 
 KEYPOINT_COUNT = 25
 SIDE_CODES = {"left": 1, "right": 2}
@@ -58,7 +59,7 @@ MANUS_RIGHT_FINGER_CURL_RANGES = {
     "pinky": (np.deg2rad(90.0), np.deg2rad(112.0)),
 }
 # Nearest O30i model pose within 1 mm of middle-thumb contact while preserving
-# the recorded solver configuration. Physical contact still gates acceptance.
+# the recorded method configuration. Physical contact still gates acceptance.
 MANUS_RIGHT_MIDDLE_PINCH_START = 0.040
 MANUS_RIGHT_MIDDLE_PINCH_ACTIVATION_STEP = 0.08
 MANUS_RIGHT_MIDDLE_PINCH_ANCHOR = {
@@ -76,19 +77,23 @@ MANUS_RIGHT_MIDDLE_PINCH_ANCHOR = {
 # approximately straight, the thumb remains clear, and the two fingertips
 # touch. Thresholds are the outward-rounded p95 contact gaps from
 # manus_six_pose_bimanual_20260730_215752. The anchors are the nearest
-# zero-gap URDF poses to each recorded solver pose; physical validation is
+# zero-gap URDF poses to each recorded method pose; physical validation is
 # still required, especially for the G20 represented by an L20 URDF.
 MANUS_LEFT_INDEX_MIDDLE_CONTACT_DISTANCE = 0.028
 MANUS_RIGHT_INDEX_MIDDLE_CONTACT_DISTANCE = 0.024
 MANUS_INDEX_MIDDLE_START_DISTANCE = 0.040
 MANUS_INDEX_MIDDLE_ACTIVATION_STEP = 0.08
 MANUS_LEFT_INDEX_MIDDLE_ANCHOR = {
-    "index_mcp_roll": -0.05757,
-    "index_mcp_pitch": 0.19156,
-    "index_pip": 0.0,
-    "middle_mcp_roll": 0.16941,
-    "middle_mcp_pitch": 0.07697,
-    "middle_pip": 0.22303,
+    # Re-solved against the verified left L20 V10.1 kinematics from the stable
+    # portion of manus_six_pose_bimanual_20260730_215752. This is the nearest
+    # zero-tip-gap pose to the unanchored median method pose in normalized
+    # joint distance; hardware contact remains the acceptance criterion.
+    "index_mcp_roll": 0.22690,
+    "index_mcp_pitch": 0.28952,
+    "index_pip": 0.01731,
+    "middle_mcp_roll": -0.02321,
+    "middle_mcp_pitch": 0.0,
+    "middle_pip": 0.44250,
 }
 MANUS_RIGHT_INDEX_MIDDLE_ANCHOR = {
     "index_mcp_roll": -0.19600,
@@ -239,8 +244,148 @@ def canonical_landmarks(frame: ManusFrame) -> np.ndarray:
     return selected
 
 
-def _create_retargeter(side: str, model: str, filter_alpha: float):
-    if model == "o30i":
+def raw_keypoints(frame: ManusFrame) -> np.ndarray:
+    """The full 25-node skeleton, position and orientation, as (25, 7).
+
+    ``canonical_landmarks`` selects 21 of the 25 nodes and drops the
+    orientations. The CasADi retargeter needs them: four of its twelve cost
+    terms are orientation terms, and without them the fingertip roll and the
+    per-phalanx directions are unconstrained.
+
+    Quaternions come out w,x,y,z -- the order that retargeter reads. The SDK
+    struct stores x,y,z,w.
+    """
+    out = np.empty((KEYPOINT_COUNT, 7), dtype=np.float64)
+    for index, point in enumerate(frame.keypoints):
+        out[index, 0] = point.position_x
+        out[index, 1] = point.position_y
+        out[index, 2] = point.position_z
+        out[index, 3] = point.orientation_w
+        out[index, 4] = point.orientation_x
+        out[index, 5] = point.orientation_y
+        out[index, 6] = point.orientation_z
+    if not np.isfinite(out).all():
+        raise ValueError("MANUS skeleton contains invalid keypoints")
+    return out
+
+
+# Operator calibration for the CasADi retargeter. It has no defaults -- hand
+# dimensions, joint ranges and the operator-to-robot frame all come from two
+# recorded poses -- so the file is named here rather than discovered, and a
+# missing one is an error at construction instead of a silently untracked hand.
+# Operator calibration for the sharpa method, PER SIDE.
+#
+# The loader can mirror a left capture onto a right hand, and this used to lean
+# on that: one constant served both sides. That is geometrically valid and
+# anatomically wrong -- a mirrored left hand is not this operator's right hand,
+# and everything the cost function knows about them (finger lengths, reach,
+# fingertip separations, the wrist-frame alignment) comes from the capture. Use
+# the capture of the side being driven; mirroring is the fallback for when one
+# does not exist, not the arrangement.
+SHARPA_PROFILES = {
+    "left": REPO_ROOT / "config" / "hand_profiles" / "left_manus_gui.json",
+    "right": REPO_ROOT / "config" / "hand_profiles" / "right_manus_gui.json",
+}
+
+# Which physical hand is on each side. A FACT about the robot -- it changes only
+# when hardware is re-cabled -- and it must agree with the bridge's own
+# configuration in docker/compose.yaml (left_model / right_model), because that
+# is what the packet's model tag is checked against. Two configs, one meaning;
+# tests/test_manus_pipeline.py pins them together so they cannot drift apart.
+# Both mounts are O30i since 2026-08-04 (the left G20 was swapped out).
+DEFAULT_HANDS = {"left": "o30i", "right": "o30i"}
+
+# Which retargeting algorithm runs on each side. A CHOICE, orthogonal to the
+# hardware: both drive the same physical hand and emit the same packet layout,
+# so the method name must never reach the wire. Conflating the two is what made
+# every ported-objective packet get dropped by the bridge as a model mismatch
+# while the sender reported a healthy send rate.
+#
+#   landmark -- the canonical-landmark solve these hands started with: match
+#               the 21 landmarks and per-segment directions, with hand-tuned
+#               contact deadzones and pinch anchors per hand.
+#   sharpa   -- the twelve-term objective ported from the SharpaWave
+#               optimiser, with the operator mapping derived from a
+#               calibration capture.
+#
+# Named for the algorithm, not for the numerical library each happens to use:
+# both are optimisations, and "pinocchio vs casadi" said nothing about what
+# actually differs between them.
+METHODS = ("landmark", "sharpa")
+DEFAULT_METHODS = {"left": "sharpa", "right": "sharpa"}
+
+# Combined names from before the two concepts were separated. One decoder,
+# shared by the deprecated CLI flags and by readers of older debug logs.
+LEGACY_MODELS = {
+    "g20": ("g20", "landmark"),
+    "g20_casadi": ("g20", "sharpa"),
+    "o30i": ("o30i", "landmark"),
+    "o30i_casadi": ("o30i", "sharpa"),
+}
+
+
+def split_legacy_model(model: str) -> tuple[str, str]:
+    """Decode a legacy combined name into (hardware model, method)."""
+    try:
+        return LEGACY_MODELS[str(model).strip().lower()]
+    except KeyError:
+        raise ValueError(
+            f"unknown legacy hand model {model!r}; "
+            f"expected one of {sorted(LEGACY_MODELS)}"
+        ) from None
+
+
+def _resolve_side_map(given, defaults, label, allowed, sides):
+    """Normalise a per-side configuration map and reject unknown values."""
+    if given is not None and set(given) != set(sides):
+        raise ValueError(f"{label} must define exactly {' and '.join(sides)}")
+    resolved = (
+        dict(defaults)
+        if given is None
+        else {side: str(given[side]).strip().lower() for side in sides}
+    )
+    unsupported = {
+        side: value for side, value in resolved.items() if value not in allowed
+    }
+    if unsupported:
+        raise ValueError(
+            f"unsupported {label}: {unsupported}; allowed: {list(allowed)}"
+        )
+    return resolved
+
+
+def _create_retargeter(side: str, hand: str, method: str, filter_alpha: float):
+    """Build one side's retargeter from the hardware it drives and the method.
+
+    Every (hand, method) pair is supported. The method changes which algorithm
+    runs and nothing the bridge can observe: both emit the same joint names in
+    the same packet layout for a given hand.
+    """
+    if method not in METHODS:
+        raise ValueError(
+            f"method must be one of {list(METHODS)}, got {method!r}")
+    if method == "sharpa":
+        from .casadi_retarget import CasadiHandRetargeter
+
+        if hand == "g20":
+            return CasadiHandRetargeter(side, SHARPA_PROFILES[side])
+        # The O30i packet follows the URDF joint order exactly as
+        # O30IRetargeter derives it (pinocchio idx_q order), so both right-hand
+        # methods emit interchangeable packets; a name mismatch fails at
+        # construction, not per frame.
+        import pinocchio as pin  # noqa: PLC0415
+
+        urdf = (REPO_ROOT / "assets" / "linkerhand_o30i" / side
+                / f"linkerhand_o30i_{side}.urdf")
+        pin_model = pin.buildModelFromUrdf(str(urdf))
+        packet_joint_names = tuple(
+            name for _, name in sorted(
+                (pin_model.joints[j].idx_q, pin_model.names[j])
+                for j in range(1, pin_model.njoints)))
+        return CasadiHandRetargeter(
+            side, SHARPA_PROFILES[side], hand=f"o30i_{side}",
+            packet_joint_names=packet_joint_names)
+    if hand == "o30i":
         from .o30i_retarget import O30IRetargeter
 
         return O30IRetargeter(
@@ -274,6 +419,7 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
     # solve: yaw, roll, pitch, and the coupled MCP/IP actuator are optimized
     # from every MANUS frame. A fallback right-G20 profile retains the
     # established fixed opposition.
+    from pico_bimanual_franka_teleop.hand_profiles import g20_urdf_path
     from pico_bimanual_franka_teleop.hand_retarget import (
         L20Retargeter,
         THUMB_OPPOSITION_YAW_ROLL,
@@ -281,11 +427,7 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
 
     calibrated_left = side == "left"
     return L20Retargeter(
-        REPO_ROOT
-        / "assets"
-        / "linkerhand_l20"
-        / side
-        / f"linkerhand_l20_{side}.urdf",
+        g20_urdf_path(REPO_ROOT / "assets", side),
         side,
         filter_alpha=filter_alpha,
         thumb_opposition_fixed=(
@@ -315,14 +457,14 @@ def _create_retargeter(side: str, model: str, filter_alpha: float):
 
 
 def _default_joint_names(side: str) -> tuple[str, ...]:
-    urdf = (
-        REPO_ROOT
-        / "assets"
-        / "linkerhand_l20"
-        / side
-        / f"linkerhand_l20_{side}.urdf"
+    from pico_bimanual_franka_teleop.hand_profiles import g20_urdf_path
+    from pico_bimanual_franka_teleop.hand_retarget import (
+        LEFT_G20_PACKET_JOINT_NAMES,
     )
-    root = ElementTree.parse(urdf).getroot()
+
+    if side == "left":
+        return LEFT_G20_PACKET_JOINT_NAMES
+    root = ElementTree.parse(g20_urdf_path(REPO_ROOT / "assets", side)).getroot()
     return tuple(
         element.attrib["name"]
         for element in root.findall("joint")
@@ -347,7 +489,8 @@ class ManusHandPipeline:
         library: Path | None = None,
         calibration_dir: Path | None = None,
         debug_log: str | Path | None = None,
-        models: dict[str, str] | None = None,
+        hands: dict[str, str] | None = None,
+        methods: dict[str, str] | None = None,
         dynamic_sides: tuple[str, ...] = ("left", "right"),
         bridge_factory=ManusBridge,
     ) -> None:
@@ -358,21 +501,17 @@ class ManusHandPipeline:
         self.dynamic_sides = tuple(
             side for side in self.sides if side in dynamic_sides
         )
-        if models is not None and set(models) != set(self.sides):
-            raise ValueError("models must define exactly left and right")
-        models = (
-            {side: "g20" for side in self.sides}
-            if models is None
-            else {
-                side: str(models[side]).strip().lower() for side in self.sides
-            }
+        # Hardware identity and method choice are configured separately because
+        # they are different kinds of thing: see DEFAULT_HANDS/DEFAULT_METHODS.
+        # Only the hardware reaches the wire.
+        hands = _resolve_side_map(
+            hands, DEFAULT_HANDS, "hands", HARDWARE_MODELS, self.sides
         )
-        if models["left"] != "g20" or models["right"] not in {"g20", "o30i"}:
-            raise ValueError(
-                "MANUS supports left=g20 and right in {g20, o30i}"
-            )
-
-        self.models = dict(models)
+        methods = _resolve_side_map(
+            methods, DEFAULT_METHODS, "methods", METHODS, self.sides
+        )
+        self.hands = dict(hands)
+        self.methods = dict(methods)
         self.filter_alpha = float(filter_alpha)
         self.stale_timeout = float(stale_timeout)
         self.status = HandStatus()
@@ -381,14 +520,14 @@ class ManusHandPipeline:
             port=port,
             rate=rate,
             sides=self.sides,
-            models=models,
+            models=hands,
             status=self.status,
         )
         self.retargeters = {}
         try:
             for side in self.dynamic_sides:
                 self.retargeters[side] = _create_retargeter(
-                    side, models[side], filter_alpha
+                    side, hands[side], methods[side], filter_alpha
                 )
         except BaseException:
             for retargeter in self.retargeters.values():
@@ -470,10 +609,24 @@ class ManusHandPipeline:
                 debug_log,
                 metadata={
                     "source": "manus",
-                    "models": self.models,
+                    # Recorded separately since they are separate facts. Logs
+                    # written before this split carry a single combined
+                    # "models" key; readers decode those with
+                    # pipeline.split_legacy_model.
+                    "hands": self.hands,
+                    "methods": self.methods,
                     "dynamic_sides": list(self.dynamic_sides),
                     "filter_alpha": self.filter_alpha,
-                    "left_thumb_policy": "o30i_style_full_l20_ik",
+                    # Derived, never hardcoded: a log whose metadata describes a
+                    # retargeter that did not produce it is worse than no
+                    # metadata, because it reads as evidence.
+                    "left_thumb_policy": (
+                        "sharpa_12_term" if self.methods.get("left") == "sharpa"
+                        else "o30i_style_full_l20_ik"
+                    ),
+                    "left_retargeter": type(
+                        self.retargeters["left"]).__name__
+                    if "left" in self.retargeters else None,
                     "right_hand_calibration": (
                         {
                             "contact_deadzone_m": MANUS_RIGHT_CONTACT_DEADZONE,
@@ -519,9 +672,11 @@ class ManusHandPipeline:
                         else None
                     ),
                     "left_hand_calibration": (
-                        {
+                        dict(getattr(self.retargeters.get("left"), "profile", {}) or {})
+                        if self.methods.get("left") == "sharpa"
+                        else {
                             "thumb_mode": "o30i_style_full_l20_ik",
-                            "thumb_model": "assets/linkerhand_l20/left/linkerhand_l20_left.urdf",
+                            "thumb_model": "assets/linkerhand_l20_v101/linkerhand_L20_V10.1_left.urdf/linkerhand_L20v10.1_left.urdf",
                             "thumb_contact_deadzone_m": MANUS_LEFT_CONTACT_DEADZONE,
                             "thumb_trust_region_rad_per_tick": 0.35,
                             "solve_thumb_flex": True,
@@ -688,7 +843,14 @@ class ManusHandPipeline:
                 started = time.monotonic()
                 landmarks = canonical_landmarks(self.last_frame[side])
                 retargeter = self.retargeters[side]
-                qpos, stats = retargeter.retarget(landmarks)
+                # The canonical array stays the logged one either way, so
+                # recordings and the replay tooling keep one schema.
+                method_input = (
+                    raw_keypoints(self.last_frame[side])
+                    if getattr(retargeter, "wants_raw_keypoints", False)
+                    else landmarks
+                )
+                qpos, stats = retargeter.retarget(method_input)
                 elapsed = time.monotonic() - started
                 raw_qpos = qpos
                 if hasattr(retargeter, "last_qpos"):
@@ -707,7 +869,11 @@ class ManusHandPipeline:
                         ):
                             canonical_targets[target.landmark_index] = point
                         targets = canonical_targets
-                    if self.models[side] == "o30i":
+                    # Only O30IRetargeter takes the pose; L20Retargeter leaves
+                    # its FK state at the emitted pose. CasADi retargeters
+                    # expose neither and never reach this branch.
+                    if (self.hands[side] == "o30i"
+                            and self.methods[side] == "landmark"):
                         robot_points = retargeter.robot_landmarks(qpos)
                     else:
                         # L20 leaves its FK state at the filtered/emitted pose.
@@ -726,7 +892,11 @@ class ManusHandPipeline:
                 status.sending = False
                 status.fault = str(error)
                 return
-            stream_id = f"manus-{side}-{self.sender.models[side]}"
+            # Free-form: the bridge uses stream_id only to notice that the
+            # sequence counter restarted, so it can carry the method as
+            # provenance. Bridge logs quote it as "{stream_id}:{sequence}",
+            # which is then enough to tell which method drove the hand.
+            stream_id = f"manus-{side}-{self.hands[side]}-{self.methods[side]}"
             packet_sequence = self.sender.next_sequence(side)
             sent = self.sender.emit(
                 stream_id,

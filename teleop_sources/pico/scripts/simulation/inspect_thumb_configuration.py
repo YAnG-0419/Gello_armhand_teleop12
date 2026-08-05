@@ -29,6 +29,7 @@ from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noq
 
 ensure_ros_free_process()
 
+from pico_bimanual_franka_teleop.hand_profiles import g20_urdf_path  # noqa: E402
 from pico_bimanual_franka_teleop.hand_retarget import L20Retargeter  # noqa: E402
 from pico_bimanual_franka_teleop.hand_stream import build_hand_packet  # noqa: E402
 
@@ -193,13 +194,7 @@ def show_pybullet(configurations: list[tuple[str, str, list[str], np.ndarray]]) 
     side_y = {"left": 0.16, "right": -0.16}
     try:
         for side, preset, names, qpos in configurations:
-            urdf = (
-                REPO_ROOT
-                / "assets"
-                / "linkerhand_l20"
-                / side
-                / f"linkerhand_l20_{side}.urdf"
-            )
+            urdf = g20_urdf_path(REPO_ROOT / "assets", side)
             base = [preset_x[preset], side_y[side], 0.0]
             body = pb.loadURDF(
                 str(urdf),
@@ -209,6 +204,8 @@ def show_pybullet(configurations: list[tuple[str, str, list[str], np.ndarray]]) 
                 physicsClientId=client,
             )
             by_name = dict(zip(names, qpos))
+            if side == "left" and "thumb_ip" in by_name:
+                by_name["thumb_dip"] = by_name["thumb_ip"]
             for joint_index in range(
                 pb.getNumJoints(body, physicsClientId=client)
             ):
@@ -281,13 +278,7 @@ def main() -> int:
     command_names = tuple(bridge_core.G20_JOINT_NAMES)
     configurations = []
     for side in selected_sides:
-        urdf = (
-            REPO_ROOT
-            / "assets"
-            / "linkerhand_l20"
-            / side
-            / f"linkerhand_l20_{side}.urdf"
-        )
+        urdf = g20_urdf_path(REPO_ROOT / "assets", side)
         with L20Retargeter(urdf, side) as retargeter:
             for preset in selected_presets:
                 names, qpos = configuration(retargeter, preset)

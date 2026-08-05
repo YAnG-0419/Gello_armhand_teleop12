@@ -54,8 +54,9 @@ services:
 
   hand-control:
     <<: *runtime
-    # Privileged host networking exposes can0 and the O30i USB-CANFD adapter.
-    # Defaults match the physical pair: left G20 and right O30i; the bridge listens on host UDP 5570.
+    # Privileged host networking exposes the two O30i USB-CANFD adapters.
+    # Defaults match the physical pair: O30i on BOTH sides (left swapped from
+    # G20 to O30i, 2026-08-04); the bridge listens on host UDP 5570.
     privileged: true
     command:
       - ros2
@@ -63,8 +64,17 @@ services:
       - linker_hand_bridge
       - hands.launch.py
       - sides:=both
-      - left_model:=g20
+      - left_model:=o30i
       - right_model:=o30i
+      # Two adapters, selected by integer index = USB enumeration order.
+      # Measured 2026-08-04: index 1 is the RIGHT O30i
+      # (uid LHO30i-01.1-012-R-Z-3-A); the left is therefore expected on
+      # index 0 but has NOT yet answered an identity read -- confirm with
+      # identify_canfd_devices.py before relying on a dual launch. A wrong
+      # index fails cleanly at the driver's identity check
+      # ("connected O30i reports ..., expected LEFT").
+      - o30_canfd_device_left:=0
+      - o30_canfd_device_right:=1
       # The validated default maps each O30i URDF joint range to ticks 0..255.
       - o30_calibration_verified:=true
       # abduction_invert stays at its default (false). The unified MANUS mode

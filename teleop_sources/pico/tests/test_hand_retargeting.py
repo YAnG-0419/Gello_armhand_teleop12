@@ -19,11 +19,18 @@ from pico_bimanual_franka_teleop.hand_stream import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ASSETS = REPO_ROOT / "assets" / "linkerhand_l20"
+ASSETS = REPO_ROOT / "assets"
 
 
 def urdf_for(side: str) -> Path:
-    return ASSETS / side / f"linkerhand_l20_{side}.urdf"
+    if side == "left":
+        return (
+            ASSETS
+            / "linkerhand_l20_v101"
+            / "linkerhand_L20_V10.1_left.urdf"
+            / "linkerhand_L20v10.1_left.urdf"
+        )
+    return ASSETS / "linkerhand_l20" / side / f"linkerhand_l20_{side}.urdf"
 
 
 from hand_fixtures import synthetic_skeleton  # noqa: E402
@@ -202,7 +209,7 @@ def test_thumb_retargeting_enforces_the_urdf_mimic_joint(side):
         assert stats["loss"] < 1e-8
         assert values["thumb_mcp"] == pytest.approx(0.8, abs=2e-4)
         assert values[distal] == pytest.approx(
-            1.1619 * values["thumb_mcp"], abs=1e-9
+            retargeter._thumb_mimic_multiplier * values["thumb_mcp"], abs=1e-9
         )
         assert stats["thumb_flex_target"] == pytest.approx(0.8, abs=2e-4)
         assert stats["thumb_flex_emitted"] == pytest.approx(0.8, abs=2e-4)
@@ -325,12 +332,10 @@ def test_normalization_preserves_curl_shape(side):
             assert cosine == pytest.approx(1.0, abs=1e-9)
 
 
-def test_mirrored_gesture_gives_mirror_consistent_joints():
-    # The same gesture on both hands must produce the same robot posture. All 16
-    # finger joints have identical axes and limits across the two URDFs, so
-    # flexion should match and abduction should negate. This guards the
-    # normalization fix: without it the two sides disagreed by up to 166 of 255
-    # vendor units.
+def test_mirrored_gesture_gives_consistent_flexion():
+    # Left now uses the verified V10.1 mechanism while the unverified right G20
+    # fallback retains the old model. Their flexion chains remain comparable,
+    # but root locations, roll axes, and roll limits are intentionally different.
     right_marks = hl.to_canonical_landmarks(synthetic_skeleton(flex=0.7))
     mirrored = synthetic_skeleton(flex=0.7)
     mirrored[:, 0] *= -1.0
@@ -345,8 +350,6 @@ def test_mirrored_gesture_gives_mirror_consistent_joints():
         for suffix in ("mcp_pitch", "pip", "dip"):
             name = f"{finger}_{suffix}"
             assert qr[name] == pytest.approx(ql[name], abs=0.12), name
-        roll = f"{finger}_mcp_roll"
-        assert qr[roll] == pytest.approx(-ql[roll], abs=0.12), roll
 
 
 def test_hand_packet_round_trip_is_lossless():

@@ -42,19 +42,20 @@ O30I_JOINT_NAMES = (
     "pinky_pip",
     "pinky_dip",
 )
+# 0803 vendor URDF limits (corrected from 0706; see o30i_contract.py)
 O30I_RIGHT_LOWER = (
     0.0, 0.0, 0.0, 0.0,
-    -0.4, 0.0, 0.0, 0.0,
-    -0.38, 0.0, 0.0, 0.0,
-    -0.28, 0.0, 0.0, 0.0,
-    -0.28, 0.0, 0.0, 0.0,
+    -0.3741, 0.0, 0.0, 0.0,
+    -0.4906, 0.0, 0.0, 0.0,
+    -0.1371, 0.0, 0.0, 0.0,
+    -0.1835, 0.0, 0.0, 0.0,
 )
 O30I_RIGHT_UPPER = (
-    0.6108, 2.094, 1.7134, 1.733,
-    0.03711, 1.72918, 1.63, 1.66112,
-    0.05418, 1.884, 1.7071, 1.5863,
-    0.18823, 1.9626, 1.6621, 1.6749,
-    0.28103, 1.8497, 1.7026, 1.7331,
+    0.5731, 1.9268, 1.5194, 1.5910,
+    0.03711, 1.5050, 1.5765, 1.5016,
+    0.05418, 1.6159, 1.5783, 1.5207,
+    0.18823, 1.6596, 1.5009, 1.4986,
+    0.2810, 1.6152, 1.4858, 1.5549,
 )
 
 
@@ -171,8 +172,8 @@ class O30IMapper:
         return values
 
     def home(self, side: str) -> tuple[float, ...]:
-        if side != "right":
-            raise ValueError("the checked-in O30i profile currently supports right only")
+        if side not in ("left", "right"):
+            raise ValueError(f"unknown side {side!r}")
         return (0.0,) * len(O30I_JOINT_NAMES)
 
 
@@ -191,8 +192,12 @@ def create_hand_profile(
             f"unsupported hand model {model!r}; registered models: ['g20', 'o30i']"
         )
     if normalized == "o30i":
-        if side != "right":
-            raise ValueError("the checked-in O30i profile currently supports right only")
+        # Both sides share one contract: the vendor's left and right 0803
+        # URDFs carry IDENTICAL joint names and limits (mirroring lives in
+        # the link geometry), verified 2026-08-04 when the left mount became
+        # an O30i.
+        if side not in ("left", "right"):
+            raise ValueError(f"unknown side {side!r}")
         return HandDeviceProfile(
             model="o30i",
             command_joint_names=O30I_JOINT_NAMES,
