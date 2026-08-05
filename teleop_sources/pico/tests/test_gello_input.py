@@ -29,8 +29,8 @@ def test_checked_in_config_preserves_verified_identities_and_directions():
     assert config.joint_ids == (1, 2, 3, 4, 5, 6, 7)
     assert config.left.direction_correction == (1, 1, 1, -1, 1, -1, 1)
     assert config.right.direction_correction == (1, 1, 1, -1, 1, -1, 1)
-    assert config.left.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0)
-    assert config.right.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0)
+    assert config.left.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5)
+    assert config.right.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5)
     assert config.max_relative_delta == 1.5
     assert config.max_target_velocity == 0.5
 

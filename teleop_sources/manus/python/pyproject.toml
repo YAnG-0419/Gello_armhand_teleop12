@@ -10,6 +10,7 @@ requires-python = ">=3.10,<3.14"
 # pico-bimanual-franka-teleop is a local editable install, not on PyPI;
 # setup_pico_env.sh installs it first.
 dependencies = [
+    "casadi",
     "numpy>=2.0,<2.4",
     "pico-bimanual-franka-teleop",
 ]

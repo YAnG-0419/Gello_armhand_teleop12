@@ -236,7 +236,7 @@ def main() -> None:
                     "right": split_legacy_model(
                         args.right_hand_model or "o30i")[0],
                 },
-                solvers={
+                methods={
                     "left": split_legacy_model(
                         args.left_hand_model or "o30i")[1],
                     "right": split_legacy_model(
