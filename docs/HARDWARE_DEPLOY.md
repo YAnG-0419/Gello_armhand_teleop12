@@ -1,6 +1,8 @@
 # Hardware runbook
 
-This is the short operational path for the dual FR3, left G20, right O30i, PICO/MANUS input, and Orbbec camera.
+This is the short operational path for dual GELLO, dual FR3, left G20,
+right O30i, MANUS input, and the Orbbec camera. See
+[GELLO_TELEOP.md](GELLO_TELEOP.md) for GELLO-specific preflight and anchoring.
 
 ## Safety
 
@@ -15,21 +17,21 @@ This is the short operational path for the dual FR3, left G20, right O30i, PICO/
 Terminal 1:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
-docker compose up franka-control teleop-control vive-bridge hand-control
+cd /home/descfly/llx/gello_upper_body_teleop/docker
+docker compose up franka-control teleop-control gello-bridge hand-control
 ```
 
 Terminal 2:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
+cd /home/descfly/llx/gello_upper_body_teleop
 scripts/run_teleop.sh
 ```
 
 Terminal 3:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
+cd /home/descfly/llx/gello_upper_body_teleop
 conda activate base
 python teleop_sources/gui/operator_gui.py
 ```
@@ -47,7 +49,7 @@ Tracker availability is per-side. A missing tracker refuses that side; loss or a
 Before connecting any robot process, the default VIVE read-only connectivity check is:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico \
+conda run --no-capture-output -n gello-upper-body-teleop \
   python teleop_sources/vive/scripts/inspect_vive_trackers.py \
   --config config/vive.yaml --watch
 ```
@@ -68,8 +70,8 @@ scripts/run_pico_teleop.sh
 With teleoperation stopped, PICO trackers can be inspected or assigned with:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico python teleop_sources/pico/scripts/hardware/inspect_motion_trackers.py
-conda run --no-capture-output -n franka-teleop-pico python teleop_sources/pico/scripts/hardware/calibrate_tracker_sides.py --write
+conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/pico/scripts/hardware/inspect_motion_trackers.py
+conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/pico/scripts/hardware/calibrate_tracker_sides.py --write
 ```
 
 PICO diagnostics use `follow-debug.v6`: `seq` is accepted Motion callbacks,
@@ -87,7 +89,7 @@ scripts/run_teleop.sh --hand-source pico
 Use controllers for arms:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py --config config/pico.yaml --arm-source controllers
+conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py --config config/pico.yaml --arm-source controllers
 ```
 
 Test MANUS hands without arms:
@@ -99,7 +101,7 @@ docker compose up hand-control
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
-conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/scripts/teleop_manus_hands.py --sides both
+conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/manus/scripts/teleop_manus_hands.py --sides both
 ```
 
 The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. The left G20 uses full L20-URDF retargeting. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `teleop_sources/manus/config`.
@@ -164,6 +166,6 @@ Disengage teleop, inspect the preposition path, and keep the emergency stop reac
 
 ```bash
 cd /home/descfly/hsc/franka_upper_body_teleop
-conda run -n franka-teleop-pico pytest -q teleop_sources/pico/tests
+conda run -n gello-upper-body-teleop pytest -q teleop_sources/pico/tests
 PYTHONPATH=ros_ws/src/teleop_core python3 -m pytest -q ros_ws/src/teleop_core/test/
 ```

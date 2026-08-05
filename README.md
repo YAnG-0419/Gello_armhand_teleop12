@@ -1,65 +1,105 @@
-# Franka Upper Body Teleop
+# GELLO Upper Body Teleop
 
-Monorepo for dual-FR3 teleoperation, recording, conversion, and replay.
-
-```text
-arm pose source -> mapping/IK -> UDP -> ROS gateway -> FR3 controllers
-operator engage --------^
-operator engage -> hand worker -> retargeting -> hand bridge
-```
-
-Arm inputs are selected explicitly on the CLI:
+双 GELLO 增量遥操双 Franka FR3，手部保持 MANUS 手套输入：左 G20、右
+O30i。方案继承 `franka_upper_body_teleop` 的机器人、安全网关、灵巧手和
+GUI，只把手臂输入从 tracker 换成 GELLO。目前不启动相机或数据记录。
 
 ```text
---arm-source controllers
---arm-source motion-trackers
---arm-source vive-trackers --vive-config config/vive.yaml
+GELLO -> 增量关节映射 -> UDP -> ROS 安全网关 -> 双 FR3
+MANUS -> 手部重定向 --------------------------> G20 / O30i
 ```
 
-The choice is not stored in YAML. VIVE Trackers are the operational default; PICO remains optional. All arm inputs share the same mapping, IK, UDP, ROS, and robot-control pipeline.
-
-## Input boundaries
-
-`DualFr3HardwareTeleop` receives an arm pose source, operator state, and optional hand controller; it does not construct or import a device adapter. A new arm device such as VIVE implements the small `ArmPoseSource` protocol and is assembled by an entrypoint.
-
-PICO adapters share one explicitly owned `PicoSession`. Hand retargeting runs in a local worker, so hand SDK reads and solves cannot delay the 100 Hz arm loop. Arm and hand command paths are independent; the only intentional runtime coupling is the shared per-side engagement and the policy that an arm-input safety fault disengages its hand.
-
-## Setup
+## 首次安装
 
 ```bash
+cd /home/descfly/llx/gello_upper_body_teleop
 cp docker/.env.example docker/.env
 ./scripts/build.sh
 ./scripts/setup_pico_env.sh
+teleop_sources/manus/scripts/build.sh
+GELLO_SOFTWARE_ROOT=/home/descfly/llx/gello_software \
+  ./scripts/setup_gello_driver.sh
 ```
 
-The only public scripts are:
+当前机器已经创建 Conda 环境 `gello-upper-body-teleop`。GELLO 的串口、
+舵机 ID、符号和方向修正复用 `/home/descfly/llx/gello_franka` 的标定；
+硬件与装配不变时无需重新标定。
 
-- `build.sh`: build the Docker image and ROS workspace
-- `setup_pico_env.sh`: create/update the host teleoperation Conda environment
-- `start_orbbec_viewer.sh`: open the compatible SDK v2 Viewer when ROS is stopped
-- `run_teleop.sh`: start the default VIVE-arm/MANUS-hand host operator
-- `run_pico_teleop.sh`: start the optional PICO-arm/MANUS-hand host operator
-- `export_lerobot.sh`: export complete arm, hand, and RGB-D bags to LeRobot
+## 启动前
 
-Docker services use ordinary Compose commands from `docker/`; Compose reads `docker/.env` automatically.
-
-Mock simulation:
+确保双臂工作区无人、急停可触及、Franka FCI 已解锁，MANUS Core 和两只
+手套已就绪。执行：
 
 ```bash
-conda run --no-capture-output --name franka-teleop-pico \
-  python teleop_sources/pico/scripts/simulation/teleop_dual_fr3_mujoco.py \
-  --config config/pico.yaml --arm-source mock --headless --duration 2
+./scripts/preflight.sh
 ```
 
-See [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md) for hardware operation, recording, export, and replay. VIVE setup and its read-only connectivity tool are documented in [teleop_sources/vive/README.md](teleop_sources/vive/README.md). See [docs/HANDOVER.md](docs/HANDOVER.md) for current state and next work. MANUS implementation notes are in [teleop_sources/manus/README.md](teleop_sources/manus/README.md).
+该检查不发送机器人、灵巧手或 GELLO 目标命令。
 
-## Configuration ownership
+## 一条命令启动
 
-- `docker/.env`: host paths, ROS domain, CPU allocation, workcell selection
-- `config/current_workcell.yaml`: FR3 addresses and namespaces
-- `config/pico.yaml`: controller and motion-tracker settings, mapping, IK, and UDP
-- `config/teleop_control.yaml`: ROS command gateway
-- `ros_ws/src/teleop_data/config/recording.yaml`: data pipeline and per-side recorded hand models
-- `ros_ws/src/franka_fr3_arm_controllers/config/initial_pose.yaml`: reset pose
+```bash
+cd /home/descfly/llx/gello_upper_body_teleop
+./scripts/start_teleop.sh
+```
 
-Missing or unknown YAML fields are errors.
+脚本依次启动双臂控制、安全网关、GELLO bridge、灵巧手 bridge、遥操后端
+和 GUI。系统始终以双侧未 Engage 状态启动；关闭 GUI、后端退出或按
+`Ctrl-C` 后，脚本会停止机器人侧服务。
+
+## 只启动 GELLO 双臂
+
+不启动 MANUS、G20 或 O30i 手部遥操时，使用：
+
+```bash
+cd /home/descfly/llx/gello_upper_body_teleop
+./scripts/run_gello_arms_only.sh
+```
+
+该入口只启动 `franka-control`、`teleop-control` 和 `gello-bridge`，并以
+`--hand-source none` 启动后端和 GUI。为避免旧会话继续控制手部，它还会
+停止已有的 `hand-control` 服务。退出时只停止上述双臂服务。
+
+## 推荐：两个终端启动
+
+需要持续观察 ROS/Franka 日志时使用此方式。
+
+终端 1：
+
+```bash
+cd /home/descfly/llx/gello_upper_body_teleop
+./scripts/run_robot_stack.sh
+```
+
+终端 2：
+
+```bash
+cd /home/descfly/llx/gello_upper_body_teleop
+./scripts/run_operator.sh
+```
+
+确认 `franka-control` 接受碰撞阈值、`teleop-control` 显示 contact torque
+gating active，GUI 状态正常后，先只 Engage 一侧并做小幅运动，再测试双侧。
+
+## 停止
+
+先在 GUI 中 `DISENGAGE ALL`，再关闭 GUI 或按 `Ctrl-C`。两个终端模式下，
+两个终端都按 `Ctrl-C`，最后关闭 Franka FCI。
+
+发生 reflex 或异常时，停止 Compose 前保存日志：
+
+```bash
+cd docker
+docker compose logs franka-control teleop-control > /tmp/franka_teleop_fault.log
+```
+
+## 关键配置
+
+- `config/gello.yaml`：左右 GELLO 身份、方向、`1.5 rad` 增量范围和
+  `0.5 rad/s` GELLO 专用限速。
+- `config/current_workcell.yaml`：双 FR3 地址与命名空间。
+- `config/teleop_control.yaml`：ROS 安全网关。
+- `config/pico.yaml`：共享 UDP 和控制周期配置；tracker 兼容入口仍保留。
+
+详细安全与故障流程见 [docs/HARDWARE_DEPLOY.md](docs/HARDWARE_DEPLOY.md)，
+GELLO 控制语义见 [docs/GELLO_TELEOP.md](docs/GELLO_TELEOP.md)。

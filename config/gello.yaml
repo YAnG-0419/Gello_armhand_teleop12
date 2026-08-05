@@ -1,0 +1,26 @@
+# Historical identities from the verified dual-GELLO deployment. Always run
+# scripts/check_gello_ports.py after reconnecting hardware; never infer sides
+# from ttyUSB enumeration order.
+left:
+  port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTATCZ4W-if00-port0
+  expected_serial: FTATCZ4W
+  # Correction measured after applying the standard Franka GELLO signs.
+  direction_correction: [1, 1, 1, -1, 1, -1, 1]
+  # FR3 joint displacement per radian of calibrated GELLO displacement.
+  joint_sensitivity: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]
+right:
+  port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTALZ24C-if00-port0
+  expected_serial: FTALZ24C
+  # 2026-08-01 hardware trial: reverse right J2/J4 from the historical mapping.
+  direction_correction: [1, 1, 1, -1, 1, -1, 1]
+  joint_sensitivity: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]
+
+baudrate: 57600
+joint_ids: [1, 2, 3, 4, 5, 6, 7]
+standard_signs: [1, -1, 1, -1, 1, 1, 1]
+ready_timeout: 5.0
+stale_timeout: 0.25
+max_joint_jump: 0.35
+# Full operational range; FR3 joint limits and the ROS safety gateway remain active.
+max_relative_delta: 1.5
+max_target_velocity: 0.5

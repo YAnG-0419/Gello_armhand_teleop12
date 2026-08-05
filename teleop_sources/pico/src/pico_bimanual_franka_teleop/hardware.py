@@ -1,13 +1,16 @@
 import threading
 import time
+from dataclasses import replace
 
 import numpy as np
+from teleop_core.safety import LOWER_LIMITS, UPPER_LIMITS
 
 from .ik import BimanualPinkIK, IKError, classify_step
 from .interfaces import ArmPoseSource, HandController, OperatorState
+from .joint_mapping import RelativeJointMapper
 from .pose_mapping import RelativePoseMapper
 from .robot_udp import UdpRobotBackend
-from .types import SIDES, TeleopSample
+from .types import ArmSample, SIDES, TeleopSample
 
 
 def reseed_inactive_joints(held, measured, activations, mapper_active):
@@ -20,15 +23,13 @@ def reseed_inactive_joints(held, measured, activations, mapper_active):
     return result
 
 
-def disengage_sample_sides(
-    sample: TeleopSample | None, sides
-) -> TeleopSample | None:
+def disengage_sample_sides(sample: ArmSample | None, sides) -> ArmSample | None:
     if sample is None:
         return None
     activations = dict(sample.activations)
     for side in sides:
         activations[side] = False
-    return TeleopSample(sample.poses, activations, sample.timestamp)
+    return replace(sample, activations=activations)
 
 
 class DualFr3HardwareTeleop:
@@ -69,13 +70,34 @@ class DualFr3HardwareTeleop:
             arm_source.close()
             raise
         self.ik = BimanualPinkIK(dt=self.dt, max_joint_speed=max_joint_speed)
-        self.mappers = {
-            side: RelativePoseMapper(
-                translation_scale=translation_scale,
-                rotation_scale=rotation_scale,
+        self.joint_input = getattr(arm_source, "output_kind", "pose") == "joint"
+        if self.joint_input:
+            max_delta = float(getattr(arm_source, "max_relative_delta", 0.25))
+            max_target_velocity = getattr(
+                arm_source, "max_target_velocity", None
             )
-            for side in SIDES
-        }
+            sensitivity_by_side = getattr(arm_source, "joint_sensitivity", {})
+            self.mappers = {
+                side: RelativeJointMapper(
+                    LOWER_LIMITS[index : index + 7],
+                    UPPER_LIMITS[index : index + 7],
+                    max_delta,
+                    joint_sensitivity=sensitivity_by_side.get(
+                        side, np.ones(7, dtype=float)
+                    ),
+                    max_target_velocity=max_target_velocity,
+                    nominal_dt=self.dt,
+                )
+                for side, index in (("left", 0), ("right", 7))
+            }
+        else:
+            self.mappers = {
+                side: RelativePoseMapper(
+                    translation_scale=translation_scale,
+                    rotation_scale=rotation_scale,
+                )
+                for side in SIDES
+            }
         self.hold_q: np.ndarray | None = None
 
         self.hands = hands
@@ -260,32 +282,49 @@ class DualFr3HardwareTeleop:
                         },
                     )
                 targets = {}
-                current_poses = self.ik.frame_poses(self.hold_q)
-                for side in SIDES:
-                    current = current_poses[side]
-                    if sample is None:
-                        self.mappers[side].update(current, False, current)
-                        continue
-                    target = self.mappers[side].update(
-                        sample.poses[side],
-                        sample.activations[side],
-                        current,
-                    )
-                    if target is not None:
-                        targets[side] = target
-                try:
-                    if targets:
-                        self.hold_q = self.ik.step(self.hold_q, targets)
-                except IKError:
-                    self.robot.send_command(q, ())
-                    raise
-                for side, diagnostics in self.ik.last_diagnostics.items():
-                    worst = ik_worst.get(side)
-                    if (
-                        worst is None
-                        or diagnostics["position_error"] > worst["position_error"]
+                if self.joint_input:
+                    for side, joints in (
+                        ("left", slice(0, 7)),
+                        ("right", slice(7, 14)),
                     ):
-                        ik_worst[side] = diagnostics
+                        leader = (
+                            np.zeros(7)
+                            if sample is None
+                            else sample.positions[side]
+                        )
+                        target = self.mappers[side].update(
+                            leader,
+                            sample is not None and sample.activations[side],
+                            q[joints],
+                        )
+                        if target is not None:
+                            self.hold_q[joints] = target
+                            targets[side] = target
+                    self.ik.last_diagnostics = {}
+                else:
+                    current_poses = self.ik.frame_poses(self.hold_q)
+                    for side in SIDES:
+                        current = current_poses[side]
+                        if sample is None:
+                            self.mappers[side].update(current, False, current)
+                            continue
+                        target = self.mappers[side].update(
+                            sample.poses[side], sample.activations[side], current
+                        )
+                        if target is not None:
+                            targets[side] = target
+                    try:
+                        if targets:
+                            self.hold_q = self.ik.step(self.hold_q, targets)
+                    except IKError:
+                        self.robot.send_command(q, ())
+                        raise
+                    for side, diagnostics in self.ik.last_diagnostics.items():
+                        worst = ik_worst.get(side)
+                        if worst is None or diagnostics["position_error"] > worst[
+                            "position_error"
+                        ]:
+                            ik_worst[side] = diagnostics
                 active_sides = tuple(side for side in SIDES if side in targets)
                 self.robot.send_command(self.hold_q, active_sides)
                 if self.debug_logger is not None:
@@ -298,13 +337,15 @@ class DualFr3HardwareTeleop:
                     feed_reader = getattr(
                         self.arm_source, "debug_feed_state", None
                     )
+                    pose_sample = sample if isinstance(sample, TeleopSample) else None
+                    pose_targets = {} if self.joint_input else targets
                     self.debug_logger.record(
                         time.monotonic(),
                         q,
                         self.hold_q,
-                        {} if sample is None else sample.poses,
+                        {} if pose_sample is None else pose_sample.poses,
                         {} if sample is None else sample.activations,
-                        targets,
+                        pose_targets,
                         self.ik.frame_poses(self.hold_q),
                         raw_tracker_poses=raw_poses,
                         measured_ee_poses=self.ik.frame_poses(q),
@@ -328,7 +369,10 @@ class DualFr3HardwareTeleop:
                     input_summary = (
                         status_summary() if status_summary is not None else ""
                     )
-                    parts = [f"trackers: {input_summary}"] if input_summary else []
+                    source_name = getattr(self.arm_source, "source_name", "trackers")
+                    parts = (
+                        [f"{source_name}: {input_summary}"] if input_summary else []
+                    )
                     ik_summary = self._ik_status(ik_worst)
                     if ik_summary:
                         parts.append(f"ik: {ik_summary}")

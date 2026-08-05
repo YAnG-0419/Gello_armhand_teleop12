@@ -92,7 +92,7 @@ services:
 
   pico-bridge:
     <<: *runtime
-    # Optional legacy arm input; mutually exclusive with the default vive-bridge.
+    # Optional legacy arm input; mutually exclusive with the other UDP bridges.
     profiles: [pico]
     command:
       - ros2
@@ -102,10 +102,21 @@ services:
       - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
       - source_id:=pico
 
+  gello-bridge:
+    <<: *runtime
+    # Default joint-input adapter. The host operator owns both GELLO serial
+    # ports and sends canonical 14-joint targets over the existing UDP link.
+    command:
+      - ros2
+      - launch
+      - pico_teleop_bridge
+      - pico.launch.py
+      - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
+      - source_id:=gello
+
   vive-bridge:
     <<: *runtime
-    # Default arm input. Mutually exclusive with pico-bridge: both use the
-    # same host UDP ports.
+    profiles: [vive]
     command:
       - ros2
       - launch

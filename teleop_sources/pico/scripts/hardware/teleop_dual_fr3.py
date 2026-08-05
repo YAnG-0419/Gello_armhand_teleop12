@@ -45,16 +45,27 @@ def invoke_reset(side: str | None = None) -> tuple[bool, str]:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Unified FR3 and LinkerHand teleoperation. PICO or VIVE Trackers "
-            "supply arm poses; PICO optical tracking or MANUS may supply hand "
-            "poses in this same operator process."
+            "Unified FR3 and LinkerHand teleoperation. GELLO supplies incremental "
+            "arm joints by default; legacy pose sources remain available. PICO "
+            "optical tracking or MANUS may supply hand poses independently."
         )
     )
     parser.add_argument("--config", required=True)
     parser.add_argument(
         "--arm-source",
         required=True,
-        choices=("controllers", "motion-trackers", "hand-roots", "vive-trackers"),
+        choices=(
+            "gello",
+            "controllers",
+            "motion-trackers",
+            "hand-roots",
+            "vive-trackers",
+        ),
+    )
+    parser.add_argument(
+        "--gello-config",
+        default=str(REPO_ROOT / "config" / "gello.yaml"),
+        help="dual GELLO identities, directions, and incremental-control limits",
     )
     parser.add_argument(
         "--vive-config",
@@ -154,7 +165,17 @@ def main() -> None:
     arm_source = None
     hands = None
     try:
-        if args.arm_source == "vive-trackers":
+        if args.arm_source == "gello":
+            from pico_bimanual_franka_teleop.gello_input import (
+                DualGelloJointInput,
+                load_gello_config,
+            )
+
+            arm_source = DualGelloJointInput(
+                load_gello_config(args.gello_config),
+                ui,
+            )
+        elif args.arm_source == "vive-trackers":
             from vive_tracker_teleop import ViveTrackerInput, load_vive_config
 
             arm_source = ViveTrackerInput(

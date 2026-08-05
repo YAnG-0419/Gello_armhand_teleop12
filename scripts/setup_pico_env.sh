@@ -2,13 +2,14 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-environment=franka-teleop-pico
+environment=${TELEOP_CONDA_ENV:-gello-upper-body-teleop}
 
 if conda env list | awk '{print $1}' | grep -Fxq "${environment}"; then
   conda env update --name "${environment}" \
     --file "${repo}/teleop_sources/pico/environment.yml" --prune
 else
-  conda env create --file "${repo}/teleop_sources/pico/environment.yml"
+  conda env create --name "${environment}" \
+    --file "${repo}/teleop_sources/pico/environment.yml"
 fi
 
 conda run --name "${environment}" python -m pip install \

@@ -16,8 +16,8 @@ import json
 import sys
 import time
 
-from PySide6.QtCore import QSettings, QTimer
-from PySide6.QtGui import QAction, QFontDatabase
+from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtGui import QAction, QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
     QApplication,
@@ -118,6 +118,7 @@ class OperatorWindow(QMainWindow):
         self.health_timer.timeout.connect(self._check_connection_health)
 
         self._build_ui()
+        self._install_shortcuts()
         self._set_connection_state("disconnected", "backend is not connected")
         self._connect()
 
@@ -151,9 +152,11 @@ class OperatorWindow(QMainWindow):
         for side in SIDES:
             box = QGroupBox(side.capitalize())
             grid = QGridLayout(box)
-            engage = QPushButton("Engage")
+            key_hint = "L" if side == "left" else "R"
+            engage = QPushButton(f"Engage ({key_hint})")
             engage.setCheckable(True)
             engage.setMinimumHeight(56)
+            engage.setToolTip(f"Shortcut: {key_hint} toggles engage/disengage")
             engage.clicked.connect(
                 lambda checked, side=side: self._send(
                     "engage" if checked else "disengage", {"side": side}
@@ -180,10 +183,18 @@ class OperatorWindow(QMainWindow):
         actions.addWidget(
             self._button("Open both hands", "open_hand", {"side": "both"})
         )
-        actions.addWidget(
-            self._button("Home both arms", "home_arm", {"side": "both"})
+        home_both = self._button(
+            "Home both arms (Space)", "home_arm", {"side": "both"}
         )
+        home_both.setToolTip("Shortcut: Space")
+        actions.addWidget(home_both)
         layout.addLayout(actions)
+
+        shortcut_hint = QLabel(
+            "Shortcuts: L/R toggle left/right engage · Space home both arms"
+        )
+        shortcut_hint.setStyleSheet("color: #666;")
+        layout.addWidget(shortcut_hint)
 
         layout.addWidget(QLabel("Event log"))
         self.feedback = QPlainTextEdit()
@@ -206,6 +217,31 @@ class OperatorWindow(QMainWindow):
         self.action_buttons = getattr(self, "action_buttons", [])
         self.action_buttons.append(button)
         return button
+
+    def _install_shortcuts(self) -> None:
+        # L/R toggle that side's follow state; Space homes both arms.
+        bindings = (
+            ("L", lambda: self._shortcut_toggle_engage("left")),
+            ("R", lambda: self._shortcut_toggle_engage("right")),
+            ("Space", self._shortcut_home_both),
+        )
+        for key, slot in bindings:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(slot)
+
+    def _shortcut_toggle_engage(self, side: str) -> None:
+        if self.connection_state != "connected":
+            return
+        button = self.engage_buttons[side]
+        if button.isChecked():
+            self._send("disengage", {"side": side})
+        else:
+            self._send("engage", {"side": side})
+
+    def _shortcut_home_both(self) -> None:
+        self._send("home_arm", {"side": "both"})
 
     # -------------------------------------------------------------- socket
     def _connect(self) -> None:
@@ -282,12 +318,13 @@ class OperatorWindow(QMainWindow):
         ready = state == "connected"
         for button in getattr(self, "action_buttons", []):
             button.setEnabled(ready)
-        for button in self.engage_buttons.values():
+        for side, button in self.engage_buttons.items():
             button.setEnabled(ready)
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
-                button.setText("Engage")
+                key_hint = "L" if side == "left" else "R"
+                button.setText(f"Engage ({key_hint})")
                 button.blockSignals(False)
         self.connect_action.setEnabled(state != "connected")
         if state == "disconnected":
@@ -386,7 +423,10 @@ class OperatorWindow(QMainWindow):
             engaged = bool(active.get(side))
             button.blockSignals(True)
             button.setChecked(engaged)
-            button.setText("Engaged" if engaged else "Engage")
+            key_hint = "L" if side == "left" else "R"
+            button.setText(
+                f"Engaged ({key_hint})" if engaged else f"Engage ({key_hint})"
+            )
             button.blockSignals(False)
         feedback = status.get("feedback", [])
         # Re-render the ring wholesale: the server caps it at 50 lines, so

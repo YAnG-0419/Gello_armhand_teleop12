@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import TypeAlias
 
 import numpy as np
 
@@ -37,3 +38,30 @@ class TeleopSample:
             raise ValueError("Teleop timestamp is not finite")
         if any(not isinstance(active, bool) for active in self.activations.values()):
             raise ValueError("Teleop activations must be booleans")
+
+
+@dataclass(frozen=True)
+class JointTeleopSample:
+    """One calibrated joint sample from a bimanual leader device."""
+
+    positions: dict[str, np.ndarray]
+    activations: dict[str, bool]
+    timestamp: float
+
+    def __post_init__(self) -> None:
+        if set(self.positions) != set(SIDES) or set(self.activations) != set(SIDES):
+            raise ValueError("Joint sample must contain left and right inputs")
+        if not np.isfinite(self.timestamp):
+            raise ValueError("Joint sample timestamp is not finite")
+        if any(not isinstance(active, bool) for active in self.activations.values()):
+            raise ValueError("Joint sample activations must be booleans")
+        copied = {}
+        for side in SIDES:
+            values = np.asarray(self.positions[side], dtype=float)
+            if values.shape != (7,) or not np.all(np.isfinite(values)):
+                raise ValueError(f"{side} joint sample must contain 7 finite values")
+            copied[side] = values.copy()
+        object.__setattr__(self, "positions", copied)
+
+
+ArmSample: TypeAlias = TeleopSample | JointTeleopSample

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONTROL_HOST="${TELEOP_CONTROL_HOST:-127.0.0.1}"
+CONTROL_PORT="${TELEOP_CONTROL_PORT:-5590}"
+CONDA_BASE="$(conda info --base)"
+backend_pid=""
+gui_pid=""
+
+group_alive() {
+  kill -0 -- "-$1" 2>/dev/null
+}
+
+wait_for_group() {
+  local pid=$1
+  local attempts=$2
+  local attempt
+  for ((attempt = 0; attempt < attempts; attempt++)); do
+    group_alive "$pid" || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$backend_pid" ]]; then
+    kill -INT -- "-$backend_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$gui_pid" ]]; then
+    kill -TERM -- "-$gui_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$backend_pid" ]] && ! wait_for_group "$backend_pid" 30; then
+    echo "Backend did not stop after SIGINT; sending SIGTERM..." >&2
+    kill -TERM -- "-$backend_pid" 2>/dev/null || true
+    wait_for_group "$backend_pid" 30 || {
+      echo "Backend did not stop after SIGTERM; sending SIGKILL..." >&2
+      kill -KILL -- "-$backend_pid" 2>/dev/null || true
+    }
+  fi
+  [[ -z "$backend_pid" ]] || wait "$backend_pid" 2>/dev/null || true
+  [[ -z "$gui_pid" ]] || wait "$gui_pid" 2>/dev/null || true
+  exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+occupied="$(lsof -t -iTCP:"$CONTROL_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+if [[ -n "$occupied" ]]; then
+  echo "Control port $CONTROL_PORT is already used by PID(s): $occupied" >&2
+  echo "Stop the previous operator before starting another one." >&2
+  exit 1
+fi
+
+backend_command=(
+  "$REPO_ROOT/scripts/run_teleop.sh"
+  --control-host "$CONTROL_HOST"
+  --control-port "$CONTROL_PORT"
+  "$@"
+)
+if [[ " $(id -nG) " != *" dialout "* ]]; then
+  printf -v backend_shell '%q ' "${backend_command[@]}"
+  backend_command=(sg dialout -c "exec $backend_shell")
+fi
+
+setsid "${backend_command[@]}" &
+backend_pid=$!
+
+setsid "$CONDA_BASE/bin/python" "$REPO_ROOT/teleop_sources/gui/operator_gui.py" \
+  --host "$CONTROL_HOST" --port "$CONTROL_PORT" &
+gui_pid=$!
+
+set +e
+wait -n "$backend_pid" "$gui_pid"
+status=$?
+set -e
+exit "$status"

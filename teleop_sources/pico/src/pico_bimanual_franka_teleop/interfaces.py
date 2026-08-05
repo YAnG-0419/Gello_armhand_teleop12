@@ -1,12 +1,12 @@
 from typing import Protocol
 
-from .types import TeleopSample
+from .types import ArmSample
 
 
 class ArmPoseSource(Protocol):
     """Device adapter consumed by the arm coordinator."""
 
-    def sample(self) -> TeleopSample | None: ...
+    def sample(self) -> ArmSample | None: ...
 
     def close(self) -> None: ...
 

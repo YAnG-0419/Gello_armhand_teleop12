@@ -1,6 +1,7 @@
 teleop_safety_gateway:
   ros__parameters:
     allowed_sources:
+      - gello
       - pico
       - vive
       - replay
