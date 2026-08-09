@@ -120,15 +120,26 @@ def main() -> None:
         "--left-hand-model",
         default=None,
         help=(
-            "left hand model; defaults to g20 for PICO and o30i for MANUS "
-            "(both mounts are O30i since 2026-08-04)"
+            "legacy combined hand/method name; defaults to g20 for PICO and "
+            "o30i+sharpa for MANUS. For MANUS use o30i_casadi (or omit) for "
+            "dual O30i; plain o30i selects the right-only landmark path"
         ),
     )
     parser.add_argument(
         "--right-hand-model",
         default=None,
         help=(
-            "right hand model; defaults to g20 for PICO and o30i for MANUS"
+            "legacy combined hand/method name; defaults to g20 for PICO and "
+            "o30i+sharpa for MANUS"
+        ),
+    )
+    parser.add_argument(
+        "--right-hand-strategy-config",
+        type=Path,
+        default=None,
+        help=(
+            "enable the powderweighing right-hand MANUS strategy using this "
+            "pose/trigger JSON; the left hand remains on its configured method"
         ),
     )
     args = parser.parse_args()
@@ -138,6 +149,10 @@ def main() -> None:
         parser.error("--arm-source vive-trackers requires --vive-config")
     if args.arm_source != "vive-trackers" and args.vive_config:
         parser.error("--vive-config is only valid with --arm-source vive-trackers")
+    if args.right_hand_strategy_config and args.hand_source != "manus":
+        parser.error(
+            "--right-hand-strategy-config requires --hand-source manus"
+        )
 
     if args.hand_source == "pico" and args.arm_source == "controllers":
         parser.error(
@@ -220,7 +235,40 @@ def main() -> None:
             )
         elif args.hand_source == "manus":
             from manus_teleop import ManusHandPipeline
-            from manus_teleop.pipeline import split_legacy_model
+            from manus_teleop.pipeline import (
+                DEFAULT_HANDS,
+                DEFAULT_METHODS,
+                split_legacy_model,
+            )
+
+            task_config = None
+            if args.right_hand_strategy_config is not None:
+                import sys
+
+                # Task packages live at the repository root and are optional,
+                # so they are not part of the editable core-source installs.
+                sys.path.insert(0, str(REPO_ROOT))
+                from powderweighing.strategy import load_config as load_task_config
+
+                try:
+                    task_config = load_task_config(
+                        args.right_hand_strategy_config
+                    )
+                except (OSError, KeyError, TypeError, ValueError) as error:
+                    parser.error(
+                        f"invalid right-hand strategy config: {error}"
+                    )
+
+            # Dual O30i + sharpa is the MANUS default. Plain "o30i" still means
+            # the right-only landmark retargeter, so only decode CLI overrides.
+            hands = dict(DEFAULT_HANDS)
+            methods = dict(DEFAULT_METHODS)
+            for side, legacy in (
+                ("left", args.left_hand_model),
+                ("right", args.right_hand_model),
+            ):
+                if legacy is not None:
+                    hands[side], methods[side] = split_legacy_model(legacy)
 
             hand_pipeline = ManusHandPipeline(
                 host=args.hand_host,
@@ -228,21 +276,21 @@ def main() -> None:
                 rate=args.hand_rate,
                 debug_log=args.hand_debug_log,
                 dynamic_sides=("left", "right"),
-                # These flags predate the hardware/solver split and still carry
-                # combined names; decode them into the two facts they mean.
-                hands={
-                    "left": split_legacy_model(
-                        args.left_hand_model or "o30i")[0],
-                    "right": split_legacy_model(
-                        args.right_hand_model or "o30i")[0],
-                },
-                methods={
-                    "left": split_legacy_model(
-                        args.left_hand_model or "o30i")[1],
-                    "right": split_legacy_model(
-                        args.right_hand_model or "o30i")[1],
-                },
+                hands=hands,
+                methods=methods,
             )
+            if task_config is not None:
+                from powderweighing.strategy import install_on_manus_pipeline
+
+                try:
+                    install_on_manus_pipeline(hand_pipeline, task_config)
+                except (TypeError, ValueError):
+                    hand_pipeline.close()
+                    raise
+                print(
+                    "right hand strategy -> powderweighing "
+                    f"({args.right_hand_strategy_config})"
+                )
         if hand_pipeline is not None:
             hands = HandWorker(
                 hand_pipeline, tick_rate=config.host.control_rate
