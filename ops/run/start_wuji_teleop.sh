@@ -3,7 +3,16 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-SERVICES=(franka-control teleop-control gello-bridge)
+FRANKA_SERVICE=franka-control
+OPERATOR_ARGS=()
+for argument in "$@"; do
+  if [[ "$argument" == "--fake-franka" ]]; then
+    FRANKA_SERVICE=fake-franka-control
+  else
+    OPERATOR_ARGS+=("$argument")
+  fi
+done
+SERVICES=("$FRANKA_SERVICE" teleop-control gello-bridge)
 stack_started=false
 
 cleanup() {
@@ -27,8 +36,19 @@ if grep -Eq '^(moveit-fake|moveit-real)$' <<<"$running"; then
   echo "Stop MoveIt first so only one controller stack owns the FR3 arms." >&2
   exit 1
 fi
+if [[ "$FRANKA_SERVICE" == fake-franka-control ]] && grep -qx franka-control <<<"$running"; then
+  echo "Refusing fake-FR3 mode while real franka-control is running." >&2
+  exit 1
+fi
+if [[ "$FRANKA_SERVICE" == franka-control ]] && grep -qx fake-franka-control <<<"$running"; then
+  echo "Refusing real-FR3 mode while fake-franka-control is running." >&2
+  exit 1
+fi
 
 "$REPO_ROOT/ops/run/preflight.sh"
+if [[ "$FRANKA_SERVICE" == fake-franka-control ]]; then
+  echo "Using fake FR3 hardware; no physical Franka connection is required."
+fi
 cd "$REPO_ROOT/docker"
 docker compose up -d "${SERVICES[@]}"
 stack_started=true
@@ -37,4 +57,4 @@ docker compose ps "${SERVICES[@]}"
 cd "$REPO_ROOT"
 "$REPO_ROOT/ops/run/run_operator.sh" \
   --hand-source wuji \
-  "$@"
+  "${OPERATOR_ARGS[@]}"

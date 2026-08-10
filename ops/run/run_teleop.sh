@@ -16,7 +16,16 @@ set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 TELEOP_CONDA_ENV="${TELEOP_CONDA_ENV:-gello-upper-body-teleop}"
-RUN_PARENT="/home/descfly/franka_teleop_data/diagnostics"
+DATA_ROOT="${TELEOP_DATA_ROOT:-}"
+if [[ -z "$DATA_ROOT" && -f "$REPO_ROOT/docker/.env" ]]; then
+  DATA_ROOT="$(awk -F= '$1 == "TELEOP_DATA_ROOT" {sub(/^[^=]*=/, ""); print; exit}' \
+    "$REPO_ROOT/docker/.env")"
+fi
+if [[ -z "$DATA_ROOT" ]]; then
+  echo "TELEOP_DATA_ROOT is not set and is missing from docker/.env" >&2
+  exit 1
+fi
+RUN_PARENT="${TELEOP_DIAGNOSTICS_ROOT:-$DATA_ROOT/diagnostics}"
 if [[ -n "${TELEOP_RUN_DIR:-}" ]]; then
   RUN_DIR="$TELEOP_RUN_DIR"
   if [[ -e "$RUN_DIR" ]]; then

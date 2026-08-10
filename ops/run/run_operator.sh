@@ -32,10 +32,13 @@ cleanup() {
   if [[ -n "$gui_pid" ]]; then
     kill -TERM -- "-$gui_pid" 2>/dev/null || true
   fi
-  if [[ -n "$backend_pid" ]] && ! wait_for_group "$backend_pid" 30; then
+  # Native MANUS/Wuji shutdown can take several seconds while subscriptions,
+  # the device connection, and Core Integrated stop.  Let that cleanup finish
+  # so WujiHand2Backend.close() can disable the hand before escalating.
+  if [[ -n "$backend_pid" ]] && ! wait_for_group "$backend_pid" 100; then
     echo "Backend did not stop after SIGINT; sending SIGTERM..." >&2
     kill -TERM -- "-$backend_pid" 2>/dev/null || true
-    wait_for_group "$backend_pid" 30 || {
+    wait_for_group "$backend_pid" 50 || {
       echo "Backend did not stop after SIGTERM; sending SIGKILL..." >&2
       kill -KILL -- "-$backend_pid" 2>/dev/null || true
     }

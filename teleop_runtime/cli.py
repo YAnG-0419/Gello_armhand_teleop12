@@ -194,6 +194,24 @@ def main() -> None:
         )
     ):
         parser.error("--wuji-*-address/serial requires --hand-source wuji")
+    if args.hand_source == "wuji":
+        selected_wuji_sides = (
+            ("left", "right")
+            if args.wuji_sides == "both"
+            else (args.wuji_sides,)
+        )
+        for side in selected_wuji_sides:
+            model = getattr(args, f"wuji_{side}_model")
+            address = getattr(args, f"wuji_{side}_address")
+            if model == "wuji_hand_2" and not address:
+                parser.error(
+                    f"--wuji-{side}-address IP:PORT is required for "
+                    "wuji_hand_2"
+                )
+        if args.wuji_kp < 0.0 or args.wuji_kd < 0.0:
+            parser.error("--wuji-kp and --wuji-kd must not be negative")
+        if args.wuji_current_limit <= 0.0:
+            parser.error("--wuji-current-limit must be positive")
 
     if args.hand_source == "pico" and args.arm_source == "controllers":
         parser.error(
@@ -228,13 +246,22 @@ def main() -> None:
     arm_source = None
     hands = None
     try:
+        # Wuji SDK connection can hold the Python interpreter for multiple
+        # seconds while it negotiates the network device.  Start its pipeline
+        # before the deadline-monitored GELLO reader; otherwise healthy GELLO
+        # buses can trip their fail-closed heartbeat during Wuji startup and
+        # remain terminally stale for the entire session.
+        defer_gello_until_hands = (
+            args.arm_source == "gello" and args.hand_source == "wuji"
+        )
         if args.arm_source == "gello":
-            from adapters.gello import DualGelloJointInput, load_gello_config
+            if not defer_gello_until_hands:
+                from adapters.gello import DualGelloJointInput, load_gello_config
 
-            arm_source = DualGelloJointInput(
-                load_gello_config(args.gello_config),
-                ui,
-            )
+                arm_source = DualGelloJointInput(
+                    load_gello_config(args.gello_config),
+                    ui,
+                )
         elif args.arm_source == "vive-trackers":
             from vive_tracker_teleop import ViveTrackerInput, load_vive_config
 
@@ -281,8 +308,6 @@ def main() -> None:
 
             task_config = None
             if args.right_hand_strategy_config is not None:
-                import sys
-
                 # Task packages are optional and live outside the editable
                 # source adapters, so expose only the repository package root.
                 sys.path.insert(0, str(REPO_ROOT))
@@ -337,11 +362,7 @@ def main() -> None:
             sys.path.insert(0, str(REPO_ROOT))
             from adapters.wuji import WujiHandPipeline
 
-            sides = (
-                ("left", "right")
-                if args.wuji_sides == "both"
-                else (args.wuji_sides,)
-            )
+            sides = selected_wuji_sides
             models = {
                 side: getattr(args, f"wuji_{side}_model") for side in sides
             }
@@ -361,6 +382,13 @@ def main() -> None:
                 kd=args.wuji_kd,
                 current_limit=args.wuji_current_limit,
                 debug_log=args.hand_debug_log,
+            )
+        if defer_gello_until_hands:
+            from adapters.gello import DualGelloJointInput, load_gello_config
+
+            arm_source = DualGelloJointInput(
+                load_gello_config(args.gello_config),
+                ui,
             )
         if hand_pipeline is not None:
             hands = HandWorker(

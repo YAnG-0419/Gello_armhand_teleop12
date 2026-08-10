@@ -122,6 +122,15 @@ GELLO_SOFTWARE_ROOT=/home/descfly/llx/gello_software \
 ./ops/setup/setup_wuji_env.sh
 ```
 
+新工控机完成安装后，运行不会连接或 enable 硬件的一键环境验收：
+
+```bash
+./ops/diagnostics/check_wuji_gello_environment.sh
+```
+
+迁移顺序、硬件存在性和左右 Wuji 网络检查参数见
+[docs/NEW_COMPUTER_SETUP.md](docs/NEW_COMPUTER_SETUP.md)。
+
 ## 启动前检查
 
 标准模式、Wuji 模式和 MoveIt 真机模式会自动运行 preflight，也可以单独执行：
@@ -210,6 +219,34 @@ Wuji Hand 2 的左右地址，防止网络发现选错手：
 
 Wuji 模式继续使用双 GELLO 控制 FR3，使用现有 MANUS bridge 和 Operator GUI
 控制 Wuji 手。退出时会停止机械臂侧服务并尝试 disable、断开 Wuji 设备。
+
+如果只测试 MANUS 到 Wuji 右手，不启动 Docker、GELLO 或 FR3，使用：
+
+```bash
+./ops/run/start_wuji_hand_only.sh \
+  --wuji-sides right \
+  --wuji-right-model wuji_hand_2 \
+  --wuji-right-address 192.168.2.111:7447 \
+  --wuji-kp 1.0 \
+  --wuji-kd 0.1 \
+  --wuji-current-limit 0.5
+```
+
+该入口默认右手且以 `DISENGAGED` 开始。按 `R` 或空格开始/暂停跟随，按 `X`
+停止发送，按 `Q` 或 `Ctrl-C` 退出并 disable、断开手。它不会检查 GELLO 串口。
+
+没有连接 FR3、但需要检查完整的 GELLO + Operator + MANUS + Wuji 集成链时，
+在整体入口增加 `--fake-franka`。该模式以虚拟双 FR3 替代真机，其余路径不变：
+
+```bash
+./ops/run/start_wuji_teleop.sh --fake-franka \
+  --wuji-sides right \
+  --wuji-right-model wuji_hand_2 \
+  --wuji-right-address 192.168.2.111:7447 \
+  --wuji-kp 1.0 \
+  --wuji-kd 0.1 \
+  --wuji-current-limit 0.5
+```
 
 无需连接硬件即可测试正确的 `hand2_beta` 模型：
 

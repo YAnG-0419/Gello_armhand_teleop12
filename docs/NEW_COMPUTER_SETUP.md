@@ -111,10 +111,10 @@ FRANKA_ROBOT_CONFIG=/workspace/franka_upper_body_teleop/config/workcell/current.
   `16-23`。用 `lscpu -e` 查看后再设置。
 - `FRANKA_ROBOT_CONFIG` 是容器内路径。Compose 会把当前仓库挂载为
   `/workspace/franka_upper_body_teleop`，这里不需要改成主机仓库名。
-- `ops/run/run_teleop.sh` 当前默认把诊断写到
-  `/home/descfly/franka_teleop_data/diagnostics`。新电脑应在启动前设置
-  `TELEOP_RUN_DIR` 为一个尚不存在的可写目录，或者先按新电脑用户名调整
-  脚本中的默认路径。
+- `ops/run/run_teleop.sh` 默认把诊断写到
+  `TELEOP_DATA_ROOT/diagnostics`，会自动读取 `docker/.env`。也可以用
+  `TELEOP_DIAGNOSTICS_ROOT` 改写父目录，或用 `TELEOP_RUN_DIR` 指定一次运行的
+  尚不存在目录。
 
 例如：
 
@@ -175,6 +175,26 @@ conda run --no-capture-output -n gello-upper-body-teleop \
 目录权限和足够磁盘空间。不要把大型数据或设备凭据直接提交到 Git。
 
 ## 9. 安装后验证
+
+优先运行仓库提供的一键只读验收。它检查 Conda/Python、MANUS 动态库及当前
+仓库 RUNPATH、标定、ROS 构建、Docker/Compose/CPU 配置、左右 Wuji 离线模型，
+但不会启动 MANUS Core、连接或 enable Wuji、打开 GELLO 总线或启动容器：
+
+```bash
+./ops/diagnostics/check_wuji_gello_environment.sh
+```
+
+硬件接好后可增加存在性和网络检查；该模式仍不发送硬件命令：
+
+```bash
+./ops/diagnostics/check_wuji_gello_environment.sh --hardware \
+  --left-address 192.168.1.110:7447 \
+  --right-address 192.168.2.111:7447
+```
+
+脚本以非零状态退出表示存在必须修复的问题，并在每项失败后给出对应安装或
+检查命令。MANUS bridge 必须在新仓库路径重新构建，不能复制旧电脑的 build
+目录；检查器会验证其动态库 RUNPATH 是否仍指向旧路径。
 
 先运行不连接机器人命令输出的 Python 测试：
 

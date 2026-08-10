@@ -65,6 +65,41 @@ left/right cannot be selected by network discovery incorrectly:
   --wuji-right-address 192.168.1.112:50001
 ```
 
+## Hand-only real-hardware entry
+
+To drive MANUS to Wuji without starting Docker, GELLO, FR3, or any arm
+controller, use the hand-only entry. It defaults to the right side and requires
+an explicit Wuji Hand 2 address:
+
+```bash
+./ops/run/start_wuji_hand_only.sh \
+  --wuji-sides right \
+  --wuji-right-model wuji_hand_2 \
+  --wuji-right-address 192.168.2.111:7447 \
+  --wuji-kp 1.0 \
+  --wuji-kd 0.1 \
+  --wuji-current-limit 0.5
+```
+
+The hardware connects and enables during startup but command streaming begins
+disengaged. Press `R` (or `Space`) to toggle right-hand following, `X` to stop,
+`O` to request the open pose while disengaged, and `Q` or `Ctrl-C` to disable,
+disconnect, and exit. Use `L` for the left side. The same `--wuji-*` device and
+gain flags are accepted by both the full and hand-only entries.
+
+To test the integrated GELLO + Operator + MANUS + Wuji path without physical
+FR3 arms, add `--fake-franka` to the full entry:
+
+```bash
+./ops/run/start_wuji_teleop.sh --fake-franka \
+  --wuji-sides right \
+  --wuji-right-address 192.168.2.111:7447 \
+  --wuji-kp 1.0 --wuji-kd 0.1 --wuji-current-limit 0.5
+```
+
+This substitutes the Compose fake-FR3 controller only. GELLO serial input,
+the Operator, MANUS, and the real Wuji hand all use their production paths.
+
 One original USB Wuji Hand is also supported:
 
 ```bash

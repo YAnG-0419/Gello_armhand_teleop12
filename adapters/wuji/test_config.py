@@ -3,6 +3,7 @@ from xml.etree import ElementTree
 
 import mujoco
 import numpy as np
+import pytest
 import yaml
 
 import adapters.wuji.pipeline as pipeline_module
@@ -62,8 +63,8 @@ def test_real_hand2_entry_uses_beta_model_and_device_joint_order():
         assert permutation.tolist() == HAND2_DEVICE_PERMUTATION
 
 
-def test_real_hand2_tick_sends_reordered_command(monkeypatch):
-    side = "right"
+@pytest.mark.parametrize("side", ("left", "right"))
+def test_real_hand2_tick_sends_reordered_command(monkeypatch, side):
     config_path = _config_path(side, "wuji_hand_2")
     real_retargeter = Retargeter.from_yaml(str(config_path), side)
     source_qpos = np.arange(20, dtype=np.float64)
