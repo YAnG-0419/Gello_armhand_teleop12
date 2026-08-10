@@ -18,8 +18,9 @@ import time
 import tty
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SDK = ROOT / "ros_ws" / "src" / "linker_hand_ros2_sdk"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SDK))
 
 from linker_hand_ros2_sdk.LinkerHand import o30i_control  # noqa: E402
@@ -33,7 +34,6 @@ from linker_hand_ros2_sdk.o30i_transport import (  # noqa: E402
     bundled_libcanbus_path,
     make_libcanbus_communication,
 )
-
 o30i_control.CANFDCommunication = make_libcanbus_communication(
     o30i_control, bundled_libcanbus_path()
 )
@@ -102,7 +102,9 @@ def main() -> int:
     parser.add_argument("--device", type=int, default=1)
     parser.add_argument("--channel", type=int, default=0)
     parser.add_argument(
-        "--output", type=Path, default=Path(__file__).with_name("poses.json")
+        "--output",
+        type=Path,
+        default=Path(__file__).with_name("config") / "poses.json",
     )
     parser.add_argument(
         "--seed-ticks",
@@ -122,7 +124,6 @@ def main() -> int:
             parser.error(str(error))
     if not args.output.is_file():
         parser.error(f"configuration template does not exist: {args.output}")
-
     hand = o30i_control.LinkerHandO30IController(
         hand_type="right",
         canfd_device=args.device,

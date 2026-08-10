@@ -5,7 +5,7 @@ activation/request/status object the input sources and the control loop
 share; `OperatorControlServer` exposes it over line-delimited JSON
 ({"id", "command", "arguments"} answered by {"id", "ok",
 "result"|"error"}, gluon's demonstration-server protocol). The PySide6
-GUI in teleop_sources/gui is a shell over this protocol and is the
+GUI in apps/operator_gui is a shell over this protocol and is the
 operator frontend; the process itself is headless.
 
 The server thread never touches robot state directly. Commands mutate the

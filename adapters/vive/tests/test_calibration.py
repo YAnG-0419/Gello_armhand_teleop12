@@ -36,7 +36,7 @@ def test_horizontal_calibration_rejects_short_or_inconsistent_motion():
 
 
 def test_rotation_writer_preserves_the_rest_of_the_vive_config(tmp_path: Path):
-    source = Path("config/vive.yaml")
+    source = Path("config/modes/vive.yaml")
     destination = tmp_path / "vive.yaml"
     destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     expected = np.array(

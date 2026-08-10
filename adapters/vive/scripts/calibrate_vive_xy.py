@@ -58,7 +58,7 @@ def main() -> int:
             "to either robot"
         )
     )
-    parser.add_argument("--config", default="config/vive.yaml")
+    parser.add_argument("--config", default="config/modes/vive.yaml")
     parser.add_argument("--side", choices=("left", "right"), default="right")
     parser.add_argument("--capture-seconds", type=float, default=0.5)
     parser.add_argument("--minimum-movement", type=float, default=0.08)

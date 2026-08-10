@@ -7,13 +7,13 @@ Run inside the hand-control container while the O30i driver is NOT
 holding the adapter:
 
     docker compose run --rm hand-control python3 \
-        /workspace/franka_upper_body_teleop/scripts/probe_o30i_identity.py
+        /workspace/franka_upper_body_teleop/ops/diagnostics/probe_o30i_identity.py
 """
 
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ros_ws" / "src" / "linker_hand_ros2_sdk"))
 
 from linker_hand_ros2_sdk.LinkerHand import o30i_control  # noqa: E402

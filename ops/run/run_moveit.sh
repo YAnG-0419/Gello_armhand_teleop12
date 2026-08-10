@@ -2,7 +2,7 @@
 # Start the imported dual-FR3 MoveIt stack in an isolated operating mode.
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 usage() {
   echo "Usage: $0 --fake|--real" >&2
 }
@@ -23,7 +23,7 @@ for service in franka-control fake-franka-control teleop-control gello-bridge pi
 done
 
 if [[ "$1" == "--real" ]]; then
-  "$REPO_ROOT/scripts/preflight.sh"
+  "$REPO_ROOT/ops/run/preflight.sh"
   service=moveit-real
 else
   service=moveit-fake

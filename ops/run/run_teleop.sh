@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command teleop backend: fresh RUN_DIR and both debug logs.
-# The operator GUI is a separate process (teleop_sources/gui/operator_gui.py).
+# The operator GUI is a separate process (apps/operator_gui/operator_gui.py).
 #
 # Exists because the equivalent multi-line paste has now buried three
 # recordings: a clipboard missing its final newline leaves the command
@@ -9,12 +9,12 @@
 #
 # GELLO is the default arm source and MANUS is the default hand source.
 # Passing an explicit --arm-source or --hand-source suppresses that default;
-# scripts/run_pico_teleop.sh is the convenience path for PICO. Other extra
-# arguments pass through to teleop_dual_fr3.py. TELEOP_RUN_DIR overrides the
+# ops/run/run_pico_teleop.sh is the convenience path for PICO. Other extra
+# arguments pass through to teleop_runtime.cli. TELEOP_RUN_DIR overrides the
 # run directory.
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 TELEOP_CONDA_ENV="${TELEOP_CONDA_ENV:-gello-upper-body-teleop}"
 RUN_PARENT="/home/descfly/franka_teleop_data/diagnostics"
 if [[ -n "${TELEOP_RUN_DIR:-}" ]]; then
@@ -33,7 +33,7 @@ else
 fi
 echo "RUN_DIR=$RUN_DIR"
 
-ARM_ARGS=(--arm-source gello --gello-config "$REPO_ROOT/config/gello.yaml")
+ARM_ARGS=(--arm-source gello --gello-config "$REPO_ROOT/config/modes/gello.yaml")
 HAND_ARGS=(--hand-source manus --hand-debug-log "$RUN_DIR/hand_fidelity.jsonl")
 for argument in "$@"; do
   if [[ "$argument" == "--arm-source" || "$argument" == --arm-source=* ]]; then
@@ -53,8 +53,8 @@ CONDA_BASE="$(conda info --base)"
 # shellcheck disable=SC1091
 source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$TELEOP_CONDA_ENV"
-exec python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py \
-  --config config/pico.yaml "${ARM_ARGS[@]}" \
+exec python -m teleop_runtime.cli \
+  --config config/modes/pico.yaml "${ARM_ARGS[@]}" \
   "${HAND_ARGS[@]}" \
   --debug-log "$RUN_DIR/ee_jitter.jsonl" \
   "$@"

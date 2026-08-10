@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTROL_HOST="${TELEOP_CONTROL_HOST:-127.0.0.1}"
 CONTROL_PORT="${TELEOP_CONTROL_PORT:-5590}"
 CONDA_BASE="$(conda info --base)"
@@ -54,7 +54,7 @@ if [[ -n "$occupied" ]]; then
 fi
 
 backend_command=(
-  "$REPO_ROOT/scripts/run_teleop.sh"
+  "$REPO_ROOT/ops/run/run_teleop.sh"
   --control-host "$CONTROL_HOST"
   --control-port "$CONTROL_PORT"
   "$@"
@@ -67,7 +67,7 @@ fi
 setsid "${backend_command[@]}" &
 backend_pid=$!
 
-setsid "$CONDA_BASE/bin/python" "$REPO_ROOT/teleop_sources/gui/operator_gui.py" \
+setsid "$CONDA_BASE/bin/python" "$REPO_ROOT/apps/operator_gui/operator_gui.py" \
   --host "$CONTROL_HOST" --port "$CONTROL_PORT" &
 gui_pid=$!
 

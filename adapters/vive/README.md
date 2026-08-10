@@ -20,7 +20,7 @@ OpenVR must be configured for `TrackingUniverseStanding`. The Python client uses
 Install/update the managed environment:
 
 ```bash
-./scripts/setup_pico_env.sh
+./ops/setup/setup_teleop_env.sh
 ```
 
 ## Read-only connectivity check
@@ -28,17 +28,17 @@ Install/update the managed environment:
 This command initializes OpenVR but does not start ROS or connect to a robot:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico \
-  python teleop_sources/vive/scripts/inspect_vive_trackers.py \
-  --config config/vive.yaml
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python adapters/vive/scripts/inspect_vive_trackers.py \
+  --config config/modes/vive.yaml
 ```
 
 Continuously watch pose and connectivity:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico \
-  python teleop_sources/vive/scripts/inspect_vive_trackers.py \
-  --config config/vive.yaml --watch
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python adapters/vive/scripts/inspect_vive_trackers.py \
+  --config config/modes/vive.yaml --watch
 ```
 
 A successful snapshot ends with `configured Trackers: READY`. The adapter also
@@ -53,9 +53,9 @@ run the read-only guided calibration. Prefer a Tracker that remains continuously
 valid:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico \
-  python teleop_sources/vive/scripts/calibrate_vive_xy.py \
-  --config config/vive.yaml --side right
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python adapters/vive/scripts/calibrate_vive_xy.py \
+  --config config/modes/vive.yaml --side right
 ```
 
 The default is a dry run. Review the fitted matrix, repeat the captures if they
@@ -76,11 +76,11 @@ docker compose up franka-control teleop-control vive-bridge hand-control
 Then start the host operator (VIVE arms and MANUS hands):
 
 ```bash
-scripts/run_teleop.sh
+ops/run/run_teleop.sh
 ```
 
 `run_vive_teleop.sh` remains as an explicit alias. PICO is optional through
-`pico-bridge` and `scripts/run_pico_teleop.sh`.
+`pico-bridge` and `ops/run/run_pico_teleop.sh`.
 
 Start the ordinary operator GUI separately. Tracking begins only after explicit
 GUI engagement. A missing disengaged Tracker denies only that side; loss or an
@@ -89,7 +89,7 @@ PICO motion-tracker policy.
 
 ## Coordinates
 
-`config/vive.yaml` contains the workcell-calibrated axis mapping: OpenVR `+X`
+`config/modes/vive.yaml` contains the workcell-calibrated axis mapping: OpenVR `+X`
 to control `+X`, OpenVR `-Z` to control `+Y`, and OpenVR `+Y` to control `+Z`.
 The existing relative mapper anchors each Tracker to the measured end-effector pose
 at engagement, so the SteamVR world origin is not an absolute robot target.

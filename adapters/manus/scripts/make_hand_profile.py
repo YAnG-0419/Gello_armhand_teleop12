@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Derive a CasADi-retargeter operator profile from an existing MANUS recording.
 
-    python teleop_sources/manus/scripts/make_hand_profile.py \
+    python adapters/manus/scripts/make_hand_profile.py \
         /home/descfly/franka_teleop_data/manus_accuracy/manus_six_pose_bimanual_20260730_215752.jsonl \
-        --operator descfly --out config/hand_profiles/left_manus.json
+        --operator descfly --out config/calibration/hand_profiles/left_manus.json
 
 The CasADi retargeter needs two operator poses -- hand flat and open, and a
 tight fist -- before it will run. It has no defaults: a term whose calibration
@@ -34,7 +34,7 @@ REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir,
                  os.pardir)
 )
-sys.path.insert(0, os.path.join(REPO_ROOT, "teleop_sources", "manus", "python"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "adapters", "manus", "python"))
 
 from manus_teleop.casadi_hand.hands import (  # noqa: E402
     FINGERS, HUMAN_CHAINS, get, human_bend_angle,

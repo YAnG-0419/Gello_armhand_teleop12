@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Report which MANUS gloves are connected and delivering frames.
 
-    conda run --no-capture-output --name franka-teleop-pico \
-      python teleop_sources/manus/scripts/inspect_manus_gloves.py
+    conda run --no-capture-output --name gello-upper-body-teleop \
+      python adapters/manus/scripts/inspect_manus_gloves.py
 
 Owns an in-process MANUS SDK client; stop any MANUS teleop first. A glove
 that is connected but uncalibrated shows frames=0 - the bridge drops its
-frames until Calibration_<side>.mcal exists in teleop_sources/manus/config.
+frames until Calibration_<side>.mcal exists in adapters/manus/config.
 """
 
 import argparse
@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "manus" / "python"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "manus" / "python"))
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
 
@@ -32,14 +32,14 @@ def main() -> int:
 
     bridge = ManusBridge(
         REPO_ROOT
-        / "teleop_sources"
+        / "adapters"
         / "manus"
         / "build"
         / "libmanus_skeleton_bridge.so"
     )
     try:
         print("Connecting to MANUS Core ...", flush=True)
-        bridge.connect(REPO_ROOT / "teleop_sources" / "manus" / "config")
+        bridge.connect(REPO_ROOT / "adapters" / "manus" / "config")
         counts = {side: 0 for side in SIDE_CODES}
         sequences: dict[str, set] = {side: set() for side in SIDE_CODES}
         deadline = time.monotonic() + args.duration
@@ -63,7 +63,7 @@ def main() -> int:
                     state += (
                         "   <- connected but no frames: is "
                         f"Calibration_{side}.mcal present in "
-                        "teleop_sources/manus/config?"
+                        "adapters/manus/config?"
                     )
                 else:
                     state += "   <- glove not connected to MANUS Core"

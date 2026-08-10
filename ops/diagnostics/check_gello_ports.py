@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
 
 from pico_bimanual_franka_teleop.gello_input import load_gello_config  # noqa: E402
 
@@ -22,7 +22,7 @@ def main() -> int:
         description="Validate GELLO by-id identity and access without opening motors."
     )
     parser.add_argument(
-        "--config", default=str(REPO_ROOT / "config" / "gello.yaml")
+        "--config", default=str(REPO_ROOT / "config" / "modes" / "gello.yaml")
     )
     args = parser.parse_args()
     config = load_gello_config(args.config)

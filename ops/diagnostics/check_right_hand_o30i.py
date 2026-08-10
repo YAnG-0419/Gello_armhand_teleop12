@@ -10,7 +10,7 @@ run beside a live hand-control stack. If hand-control is down, the USB check
 still runs and the ROS step reports that no state publisher is available.
 
     cd /home/descfly/llx/gello_upper_body_teleop
-    python scripts/check_right_hand_o30i.py
+    python ops/diagnostics/check_right_hand_o30i.py
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKER_DIR = REPO_ROOT / "docker"
 EXPECTED_USB = ("a8fa", "8598")
 STATE_TOPIC = "/cb_right_hand_state"

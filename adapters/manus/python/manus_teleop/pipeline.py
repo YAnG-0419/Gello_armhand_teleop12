@@ -283,8 +283,20 @@ def raw_keypoints(frame: ManusFrame) -> np.ndarray:
 # the capture of the side being driven; mirroring is the fallback for when one
 # does not exist, not the arrangement.
 SHARPA_PROFILES = {
-    "left": REPO_ROOT / "config" / "hand_profiles" / "left_manus_gui.json",
-    "right": REPO_ROOT / "config" / "hand_profiles" / "right_manus_gui.json",
+    "left": (
+        REPO_ROOT
+        / "config"
+        / "calibration"
+        / "hand_profiles"
+        / "left_manus_gui.json"
+    ),
+    "right": (
+        REPO_ROOT
+        / "config"
+        / "calibration"
+        / "hand_profiles"
+        / "right_manus_gui.json"
+    ),
 }
 
 # Which physical hand is on each side. A FACT about the robot -- it changes only
@@ -538,7 +550,7 @@ class ManusHandPipeline:
             Path(library)
             if library is not None
             else REPO_ROOT
-            / "teleop_sources"
+            / "adapters"
             / "manus"
             / "build"
             / "libmanus_skeleton_bridge.so"
@@ -546,7 +558,7 @@ class ManusHandPipeline:
         calibration_path = (
             Path(calibration_dir)
             if calibration_dir is not None
-            else REPO_ROOT / "teleop_sources" / "manus" / "config"
+            else REPO_ROOT / "adapters" / "manus" / "config"
         )
         try:
             self.bridge = bridge_factory(library_path.resolve())

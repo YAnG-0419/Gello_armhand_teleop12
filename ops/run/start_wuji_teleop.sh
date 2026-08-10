@@ -2,7 +2,7 @@
 # Gello arms plus optional MANUS-to-Wuji hands. O30i remains untouched/default.
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SERVICES=(franka-control teleop-control gello-bridge)
 stack_started=false
 
@@ -28,13 +28,13 @@ if grep -Eq '^(moveit-fake|moveit-real)$' <<<"$running"; then
   exit 1
 fi
 
-"$REPO_ROOT/scripts/preflight.sh"
+"$REPO_ROOT/ops/run/preflight.sh"
 cd "$REPO_ROOT/docker"
 docker compose up -d "${SERVICES[@]}"
 stack_started=true
 docker compose ps "${SERVICES[@]}"
 
 cd "$REPO_ROOT"
-"$REPO_ROOT/scripts/run_operator.sh" \
+"$REPO_ROOT/ops/run/run_operator.sh" \
   --hand-source wuji \
   "$@"

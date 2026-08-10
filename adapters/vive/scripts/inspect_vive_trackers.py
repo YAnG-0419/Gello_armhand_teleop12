@@ -82,7 +82,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Inspect SteamVR devices without starting ROS or robot control"
     )
-    parser.add_argument("--config", default="config/vive.yaml")
+    parser.add_argument("--config", default="config/modes/vive.yaml")
     parser.add_argument(
         "--watch",
         action="store_true",

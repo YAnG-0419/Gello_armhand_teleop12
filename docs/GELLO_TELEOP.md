@@ -23,7 +23,7 @@ target = robot_at_engage + clip(scaled_delta, -max_relative_delta, max_relative_
 
 Disengaging and re-engaging captures fresh anchors, so an absolute GELLO/FR3
 pose match is unnecessary and the first command equals measured robot state.
-Each side has seven positive `joint_sensitivity` values in `config/gello.yaml`,
+Each side has seven positive `joint_sensitivity` values in `config/modes/gello.yaml`,
 ordered by GELLO motor IDs 1-7. A value of `2.0` maps one degree of calibrated
 GELLO displacement to two degrees of FR3 target displacement; `0.5` provides
 half-scale fine control. Direction remains exclusively controlled by
@@ -39,7 +39,7 @@ GELLO motor 8 is never opened. MANUS exclusively owns both dexterous hands.
 
 ## Verified historical identities
 
-`config/gello.yaml` contains the previous hardware mapping:
+`config/modes/gello.yaml` contains the previous hardware mapping:
 
 - left: `FTATCZ4W`
 - right: `FTALZ24C`
@@ -53,7 +53,7 @@ Run the read-only check after reconnecting both units:
 
 ```bash
 conda run --no-capture-output -n gello-upper-body-teleop \
-  python scripts/check_gello_ports.py --config config/gello.yaml
+  python ops/diagnostics/check_gello_ports.py --config config/modes/gello.yaml
 ```
 
 If permission fails, add the operator to `dialout`, log out completely, and
@@ -68,7 +68,7 @@ external driver installation, create or reuse a `gello_software` checkout:
 ```bash
 git clone https://github.com/wuphilipp/gello_software.git /path/to/gello_software
 git -C /path/to/gello_software submodule update --init third_party/DynamixelSDK
-GELLO_SOFTWARE_ROOT=/path/to/gello_software scripts/setup_gello_driver.sh
+GELLO_SOFTWARE_ROOT=/path/to/gello_software ops/setup/setup_gello_driver.sh
 ```
 
 The runtime uses `gello.dynamixel.driver.DynamixelDriver` directly with IDs
@@ -78,7 +78,7 @@ Before starting either Franka, hold both GELLOs still and inspect their live
 joint streams:
 
 ```bash
-sg dialout -c 'conda run --no-capture-output -n gello-upper-body-teleop python scripts/inspect_gello_joints.py --duration 5'
+sg dialout -c 'conda run --no-capture-output -n gello-upper-body-teleop python ops/diagnostics/inspect_gello_joints.py --duration 5'
 ```
 
 The upstream driver writes torque-disable once during initialization, then
@@ -100,7 +100,7 @@ docker compose up franka-control teleop-control gello-bridge hand-control
 In another terminal:
 
 ```bash
-scripts/run_teleop.sh
+ops/run/run_teleop.sh
 ```
 
 Then start the existing operator GUI. The backend starts disengaged.

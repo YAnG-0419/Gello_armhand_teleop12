@@ -6,7 +6,7 @@ backend (pico_bimanual_franka_teleop.control_server) is the single
 authority, and this window can disconnect and reconnect at any time
 without affecting the session.
 
-    conda activate base && python teleop_sources/gui/operator_gui.py
+    conda activate base && python apps/operator_gui/operator_gui.py
 """
 
 from __future__ import annotations

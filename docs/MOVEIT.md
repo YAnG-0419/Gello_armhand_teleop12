@@ -8,21 +8,21 @@ Gello safety gateway must never own the arms at the same time.
 Rebuild the image/workspace after the first checkout:
 
 ```bash
-./scripts/build.sh
+./ops/setup/build.sh
 ```
 
 Validate planning with fake hardware:
 
 ```bash
-./scripts/run_moveit.sh --fake
+./ops/run/run_moveit.sh --fake
 ```
 
 After the usual workcell checks, use both physical FR3 arms:
 
 ```bash
-./scripts/run_moveit.sh --real
+./ops/run/run_moveit.sh --real
 ```
 
 The launcher refuses to run while any Gello/PICO/VIVE arm-control service is
-active.  Real mode runs `scripts/preflight.sh` and uses the workcell's FR3
+active.  Real mode runs `ops/run/preflight.sh` and uses the workcell's FR3
 addresses (`172.16.0.3`, `172.16.0.2`).

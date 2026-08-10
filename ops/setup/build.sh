@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 docker build --tag franka-upper-body-teleop:latest "${repo}/docker"
 docker run --rm \
   --volume "${repo}:/workspace/franka_upper_body_teleop" \

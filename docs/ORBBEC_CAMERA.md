@@ -33,7 +33,7 @@ Never bounce or reconfigure `enp6s0` during an active FCI session.
 ## ROS
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
+cd /home/descfly/llx/gello_upper_body_teleop/docker
 docker compose up -d orbbec
 docker compose logs -f orbbec
 docker compose exec orbbec timeout 15 ros2 topic hz /camera/color/image_raw
@@ -49,8 +49,8 @@ The image pins the SDK v2 ROS wrapper and applies `docker/patches/orbbec_ros2_sk
 Stop the ROS camera service first, then run:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-./scripts/start_orbbec_viewer.sh
+cd /home/descfly/llx/gello_upper_body_teleop
+./ops/run/start_orbbec_viewer.sh
 ```
 
 Use the SDK v2 viewer selected by the script, not the old SDK v1 download. Only one Viewer or ROS client may own the camera.

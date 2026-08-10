@@ -262,7 +262,7 @@ def _lerobot_dataset():
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
     except ImportError as exc:
         raise RuntimeError(
-            "LeRobot 0.6 is unavailable; use scripts/export_lerobot.sh."
+            "LeRobot 0.6 is unavailable; use ops/diagnostics/export_lerobot.sh."
         ) from exc
     return LeRobotDataset
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 viewer=/opt/OrbbecSDK_v2.9.3/tools/OrbbecViewer
 viewer_dir=$(dirname "${viewer}")
 

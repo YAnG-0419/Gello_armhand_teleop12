@@ -33,12 +33,12 @@ conda activate gello-upper-body-teleop
 安装仓库内的 Python 包：
 
 ```bash
-python -m pip install ./third_party/xrobotoolkit_sdk
+python -m pip install ./vendor/xrobotoolkit_sdk
 python -m pip install \
   -e ./ros_ws/src/teleop_core \
-  -e ./teleop_sources/pico \
-  -e ./teleop_sources/vive \
-  -e ./teleop_sources/manus/python
+  -e ./adapters/pico \
+  -e ./adapters/vive \
+  -e ./adapters/manus/python
 ```
 
 环境文件只声明可从 Conda 获取的基础包。上述本地包必须在克隆仓库后安装，
@@ -51,9 +51,8 @@ python -m pip install \
 conda install -n base -c conda-forge pyside6
 ```
 
-不要在创建此新环境后再运行 `scripts/setup_pico_env.sh`。该旧脚本读取
-`teleop_sources/pico/environment.yml`，其中仍保留旧环境名和较少的依赖，
-更新时使用 `--prune`，可能删除本文件新增的测试依赖。
+也可以直接运行 `./ops/setup/setup_teleop_env.sh` 完成上述 Conda 环境和三个
+editable 包的创建或更新；它读取同一个根目录环境文件。
 
 ## 4. 单独准备 GELLO 驱动
 
@@ -66,7 +65,7 @@ git -C /path/to/gello_software submodule update --init \
   third_party/DynamixelSDK
 
 GELLO_SOFTWARE_ROOT=/path/to/gello_software \
-  ./scripts/setup_gello_driver.sh
+  ./ops/setup/setup_gello_driver.sh
 ```
 
 验证：
@@ -82,15 +81,15 @@ conda run -n gello-upper-body-teleop python -c \
 
 ```bash
 cp docker/.env.example docker/.env
-./scripts/build.sh
-./teleop_sources/manus/scripts/build.sh
+./ops/setup/build.sh
+./adapters/manus/scripts/build.sh
 ```
 
 - `docker/.env` 被 Git 忽略，必须手动创建。
 - `ros_ws/build`、`ros_ws/install`、`ros_ws/log` 和 MANUS `build/` 产物被
   Git 忽略，不能依赖旧电脑上传。
-- Docker 镜像和容器也不在 Git 中，`scripts/build.sh` 会在新电脑重新构建。
-- `teleop_sources/manus/config/Calibration_left.mcal` 和
+- Docker 镜像和容器也不在 Git 中，`ops/setup/build.sh` 会在新电脑重新构建。
+- `adapters/manus/config/Calibration_left.mcal` 和
   `Calibration_right.mcal` 已随 Git 管理；仍应确认它们与实际手套和操作员
   标定相匹配。
 
@@ -102,7 +101,7 @@ cp docker/.env.example docker/.env
 TELEOP_DATA_ROOT=/path/to/franka_teleop_data
 TELEOP_ROS_DOMAIN_ID=0
 FRANKA_CPUSET=16-23
-FRANKA_ROBOT_CONFIG=/workspace/franka_upper_body_teleop/config/current_workcell.yaml
+FRANKA_ROBOT_CONFIG=/workspace/franka_upper_body_teleop/config/workcell/current.yaml
 ```
 
 注意：
@@ -112,7 +111,7 @@ FRANKA_ROBOT_CONFIG=/workspace/franka_upper_body_teleop/config/current_workcell.
   `16-23`。用 `lscpu -e` 查看后再设置。
 - `FRANKA_ROBOT_CONFIG` 是容器内路径。Compose 会把当前仓库挂载为
   `/workspace/franka_upper_body_teleop`，这里不需要改成主机仓库名。
-- `scripts/run_teleop.sh` 当前默认把诊断写到
+- `ops/run/run_teleop.sh` 当前默认把诊断写到
   `/home/descfly/franka_teleop_data/diagnostics`。新电脑应在启动前设置
   `TELEOP_RUN_DIR` 为一个尚不存在的可写目录，或者先按新电脑用户名调整
   脚本中的默认路径。
@@ -138,12 +137,12 @@ export TELEOP_RUN_DIR="$HOME/franka_teleop_data/diagnostics/$(date +%Y%m%d_%H%M%
 sudo usermod -aG dialout "$USER"
 ```
 
-完整注销并重新登录后再检查权限。`config/gello.yaml` 使用稳定的
+完整注销并重新登录后再检查权限。`config/modes/gello.yaml` 使用稳定的
 `/dev/serial/by-id/...` 和设备序列号。连接硬件后执行：
 
 ```bash
 conda run --no-capture-output -n gello-upper-body-teleop \
-  python scripts/check_gello_ports.py --config config/gello.yaml
+  python ops/diagnostics/check_gello_ports.py --config config/modes/gello.yaml
 ```
 
 如果使用的是同一对 USB 转换器，序列号通常不变。如果更换了转换器，应按
@@ -153,7 +152,7 @@ conda run --no-capture-output -n gello-upper-body-teleop \
 
 ### Franka FR3
 
-- 配置新电脑到机器人网段，核对 `config/current_workcell.yaml` 中的机器人
+- 配置新电脑到机器人网段，核对 `config/workcell/current.yaml` 中的机器人
   IP 与实际设备一致。
 - 确保 Franka FCI 已授权并解锁，主机到两台机器人网络可达。
 - 实时性能、CPU 隔离和网卡设置属于新电脑系统配置，不会由 Git 或 Conda
@@ -181,7 +180,7 @@ conda run --no-capture-output -n gello-upper-body-teleop \
 
 ```bash
 conda run -n gello-upper-body-teleop \
-  pytest -q teleop_sources/pico/tests teleop_sources/vive/tests
+  pytest -q adapters/pico/tests adapters/vive/tests
 
 conda run -n gello-upper-body-teleop \
   pytest -q ros_ws/src/teleop_core/test
@@ -200,7 +199,7 @@ conda run -n base python -c \
 硬件接好但保持机器人未 Engage 时执行：
 
 ```bash
-./scripts/preflight.sh
+./ops/run/preflight.sh
 ```
 
 `preflight.sh` 不发送机器人、灵巧手或 GELLO 目标命令，但会检查 Docker、

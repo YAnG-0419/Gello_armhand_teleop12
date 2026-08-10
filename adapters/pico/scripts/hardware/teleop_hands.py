@@ -3,7 +3,7 @@
 
 The same HandPipeline that unified teleop runs in a local hand worker is ticked
 here from a plain loop instead. This process owns the single XRoboToolkit SDK
-client, so it must not run at the same time as `teleop_dual_fr3.py`.
+client, so it must not run at the same time as `teleop_runtime.cli`.
 
 Sends hand commands to `linker_hand_bridge`. Nothing reaches the hands unless
 that bridge was launched enabled, so this is safe to run against a dry-run
@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
 

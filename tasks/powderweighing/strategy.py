@@ -53,7 +53,8 @@ class PowderWeighingConfig:
 def _pose_ticks(value, label: str, count: int) -> np.ndarray:
     if value is None:
         raise ValueError(
-            f"{label} is not calibrated; run powderweighing/calibrate_poses.py"
+            f"{label} is not calibrated; run "
+            "tasks/powderweighing/calibrate_poses.py"
         )
     array = np.asarray(value, dtype=np.float64)
     if array.shape != (count,) or not np.isfinite(array).all():

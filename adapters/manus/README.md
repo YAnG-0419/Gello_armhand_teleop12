@@ -5,19 +5,19 @@ MANUS supplies calibrated hand skeletons to the unified operator. Each dynamic s
 ## Requirements
 
 - Only one MANUS CoreSDK client may run at a time.
-- Each glove needs `teleop_sources/manus/config/Calibration_left.mcal` or `Calibration_right.mcal`.
+- Each glove needs `adapters/manus/config/Calibration_left.mcal` or `Calibration_right.mcal`.
 - The standard models are the full L20-URDF retargeter for the left G20 and the right O30i solver.
 
 Build the native bridge:
 
 ```bash
-teleop_sources/manus/scripts/build.sh
+adapters/manus/scripts/build.sh
 ```
 
 Inspect connected gloves with teleop stopped:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/scripts/inspect_manus_gloves.py
+conda run --no-capture-output -n gello-upper-body-teleop python adapters/manus/scripts/inspect_manus_gloves.py
 ```
 
 ## Standard operator
@@ -25,7 +25,7 @@ conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/
 Use the repository wrapper:
 
 ```bash
-scripts/run_teleop.sh
+ops/run/run_teleop.sh
 ```
 
 It starts the unified PICO motion-tracker and bimanual MANUS backend. Use the PySide6 operator GUI to engage or disengage each side, home arms, and open hands as independent per-side actions.
@@ -42,8 +42,8 @@ docker compose up hand-control
 Then start MANUS:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-conda run --no-capture-output -n franka-teleop-pico python teleop_sources/manus/scripts/teleop_manus_hands.py --sides both
+cd /home/descfly/llx/gello_upper_body_teleop
+conda run --no-capture-output -n gello-upper-body-teleop python adapters/manus/scripts/teleop_manus_hands.py --sides both
 ```
 
 Controls are `L`/`R`, `Space`, `X`, `O`, and `Q`.
@@ -86,18 +86,18 @@ is still required before calling those anchors final. Stop the normal operator
 first, then record without hardware:
 
 ```bash
-conda run --no-capture-output -n franka-teleop-pico \
-  python teleop_sources/manus/scripts/record_manus_accuracy.py \
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python adapters/manus/scripts/record_manus_accuracy.py \
   --output /home/descfly/franka_teleop_data/manus_accuracy/run1.jsonl \
   --sides both
 
-conda run --no-capture-output -n franka-teleop-pico \
-  python teleop_sources/manus/scripts/analyze_manus_accuracy.py \
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python adapters/manus/scripts/analyze_manus_accuracy.py \
   /home/descfly/franka_teleop_data/manus_accuracy/run1.jsonl
 
 # Evaluate new solver code against the exact same recorded landmarks:
-conda run --no-capture-output -n franka-teleop-pico \
-  python teleop_sources/manus/scripts/analyze_manus_accuracy.py \
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python adapters/manus/scripts/analyze_manus_accuracy.py \
   --replay-current /home/descfly/franka_teleop_data/manus_accuracy/run1.jsonl
 ```
 

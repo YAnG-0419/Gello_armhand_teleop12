@@ -2,7 +2,7 @@
 # Manual dual-hand control through the safety bridge and NiceGUI.
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTROL_PORT="${TELEOP_CONTROL_PORT:-5590}"
 
 occupied="$(lsof -t -iTCP:"$CONTROL_PORT" -sTCP:LISTEN 2>/dev/null || true)"

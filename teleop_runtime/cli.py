@@ -14,7 +14,7 @@ from pico_bimanual_franka_teleop.hand_worker import HandWorker
 from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def invoke_reset(side: str | None = None) -> tuple[bool, str]:
@@ -65,7 +65,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--gello-config",
-        default=str(REPO_ROOT / "config" / "gello.yaml"),
+        default=str(REPO_ROOT / "config" / "modes" / "gello.yaml"),
         help="dual GELLO identities, directions, and incremental-control limits",
     )
     parser.add_argument(
@@ -79,7 +79,7 @@ def main() -> None:
         type=int,
         default=5590,
         help="JSON-TCP operator control port; the PySide6 GUI "
-        "(teleop_sources/gui) connects here (default: 5590)",
+        "(apps/operator_gui) connects here (default: 5590)",
     )
     # Hand options are CLI arguments rather than YAML, matching how --arm-source is
     # handled: what is being driven is an explicit choice per run, and this keeps
@@ -221,7 +221,7 @@ def main() -> None:
     server.start()
     print(
         f"operator control server on {args.control_host}:{args.control_port} "
-        "- connect the GUI (teleop_sources/gui) to engage"
+        "- connect the GUI (apps/operator_gui) to engage"
     )
 
     pico_session = None
@@ -229,10 +229,7 @@ def main() -> None:
     hands = None
     try:
         if args.arm_source == "gello":
-            from pico_bimanual_franka_teleop.gello_input import (
-                DualGelloJointInput,
-                load_gello_config,
-            )
+            from adapters.gello import DualGelloJointInput, load_gello_config
 
             arm_source = DualGelloJointInput(
                 load_gello_config(args.gello_config),
@@ -286,10 +283,12 @@ def main() -> None:
             if args.right_hand_strategy_config is not None:
                 import sys
 
-                # Task packages live at the repository root and are optional,
-                # so they are not part of the editable core-source installs.
+                # Task packages are optional and live outside the editable
+                # source adapters, so expose only the repository package root.
                 sys.path.insert(0, str(REPO_ROOT))
-                from powderweighing.strategy import load_config as load_task_config
+                from tasks.powderweighing.strategy import (
+                    load_config as load_task_config,
+                )
 
                 try:
                     task_config = load_task_config(
@@ -321,7 +320,9 @@ def main() -> None:
                 methods=methods,
             )
             if task_config is not None:
-                from powderweighing.strategy import install_on_manus_pipeline
+                from tasks.powderweighing.strategy import (
+                    install_on_manus_pipeline,
+                )
 
                 try:
                     install_on_manus_pipeline(hand_pipeline, task_config)
@@ -333,8 +334,8 @@ def main() -> None:
                     f"({args.right_hand_strategy_config})"
                 )
         elif args.hand_source == "wuji":
-            sys.path.insert(0, str(REPO_ROOT / "integrations" / "wuji"))
-            from pipeline import WujiHandPipeline
+            sys.path.insert(0, str(REPO_ROOT))
+            from adapters.wuji import WujiHandPipeline
 
             sides = (
                 ("left", "right")

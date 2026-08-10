@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(
-    0, str(REPO_ROOT / "teleop_sources" / "pico" / "src")
+    0, str(REPO_ROOT / "adapters" / "pico" / "src")
 )
 
 from PySide6.QtCore import QSettings
@@ -19,7 +19,7 @@ from pico_bimanual_franka_teleop.control_server import (
     OperatorConsole,
     OperatorControlServer,
 )
-from teleop_sources.gui.operator_gui import OperatorWindow
+from apps.operator_gui.operator_gui import OperatorWindow
 
 
 def _unused_port() -> int:

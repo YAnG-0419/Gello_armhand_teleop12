@@ -25,7 +25,7 @@ Terminal 2:
 
 ```bash
 cd /home/descfly/llx/gello_upper_body_teleop
-scripts/run_teleop.sh
+ops/run/run_teleop.sh
 ```
 
 Terminal 3:
@@ -33,7 +33,7 @@ Terminal 3:
 ```bash
 cd /home/descfly/llx/gello_upper_body_teleop
 conda activate base
-python teleop_sources/gui/operator_gui.py
+python apps/operator_gui/operator_gui.py
 ```
 
 The backend starts disengaged and writes a fresh diagnostics directory. GUI loss disengages all sides. Engage gates each arm and its hand together. `Home arm` moves only the selected arm; `Open hand` first stops that side following and then opens only the selected hand. Each action supports left, right, or both.
@@ -50,28 +50,28 @@ Before connecting any robot process, the default VIVE read-only connectivity che
 
 ```bash
 conda run --no-capture-output -n gello-upper-body-teleop \
-  python teleop_sources/vive/scripts/inspect_vive_trackers.py \
-  --config config/vive.yaml --watch
+  python adapters/vive/scripts/inspect_vive_trackers.py \
+  --config config/modes/vive.yaml --watch
 ```
 
 For optional PICO motion-tracker arms, replace `vive-bridge` with
 `pico-bridge`; never run both because they own the same host UDP ports:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
+cd /home/descfly/llx/gello_upper_body_teleop/docker
 docker compose --profile pico up franka-control teleop-control pico-bridge hand-control
 ```
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-scripts/run_pico_teleop.sh
+cd /home/descfly/llx/gello_upper_body_teleop
+ops/run/run_pico_teleop.sh
 ```
 
 With teleoperation stopped, PICO trackers can be inspected or assigned with:
 
 ```bash
-conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/pico/scripts/hardware/inspect_motion_trackers.py
-conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/pico/scripts/hardware/calibrate_tracker_sides.py --write
+conda run --no-capture-output -n gello-upper-body-teleop python adapters/pico/scripts/hardware/inspect_motion_trackers.py
+conda run --no-capture-output -n gello-upper-body-teleop python adapters/pico/scripts/hardware/calibrate_tracker_sides.py --write
 ```
 
 PICO diagnostics use `follow-debug.v6`: `seq` is accepted Motion callbacks,
@@ -83,35 +83,35 @@ the last parsed frame, and `age` is time since `seq` advanced.
 Use PICO optical hands:
 
 ```bash
-scripts/run_teleop.sh --hand-source pico
+ops/run/run_teleop.sh --hand-source pico
 ```
 
 Use controllers for arms:
 
 ```bash
-conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/pico/scripts/hardware/teleop_dual_fr3.py --config config/pico.yaml --arm-source controllers
+conda run --no-capture-output -n gello-upper-body-teleop python -m teleop_runtime.cli --config config/modes/pico.yaml --arm-source controllers
 ```
 
 Test MANUS hands without arms:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
+cd /home/descfly/llx/gello_upper_body_teleop/docker
 docker compose up hand-control
 ```
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-conda run --no-capture-output -n gello-upper-body-teleop python teleop_sources/manus/scripts/teleop_manus_hands.py --sides both
+cd /home/descfly/llx/gello_upper_body_teleop
+conda run --no-capture-output -n gello-upper-body-teleop python adapters/manus/scripts/teleop_manus_hands.py --sides both
 ```
 
-The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. The left G20 uses full L20-URDF retargeting. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `teleop_sources/manus/config`.
+The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. The left G20 uses full L20-URDF retargeting. MANUS gloves require `Calibration_left.mcal` and `Calibration_right.mcal` in `adapters/manus/config`.
 
 ## Arm home and hand open
 
 Use the GUI for independent per-side `Home arm` and `Open hand` actions. There is deliberately no combined arm-and-hand home action; request both actions explicitly when both are wanted. The arm service equivalent is:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
+cd /home/descfly/llx/gello_upper_body_teleop/docker
 docker compose run --rm tools ros2 service call /reset_to_initial_pose std_srvs/srv/Trigger '{}'
 ```
 
@@ -122,7 +122,7 @@ Per-side services are `/reset_to_initial_pose/left` and `/reset_to_initial_pose/
 The default Compose stack includes Orbbec. For camera-only diagnosis:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
+cd /home/descfly/llx/gello_upper_body_teleop/docker
 docker compose up -d orbbec
 docker compose logs -f orbbec
 docker compose run --rm tools ros2 topic list | grep '^/camera/'
@@ -133,7 +133,7 @@ Expected images are `/camera/color/image_raw` and `/camera/depth/image_raw`. Do 
 ## Record
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
+cd /home/descfly/llx/gello_upper_body_teleop/docker
 docker compose run --rm tools ros2 run teleop_data operator \
   --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml \
   --qos /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording_qos.yaml
@@ -144,7 +144,7 @@ Record only after `/status` reports `arms=2/2 | record_topics=12/12 | reset=read
 ## Export and replay
 
 ```bash
-./scripts/export_lerobot.sh /data/episodes/episode0 \
+./ops/diagnostics/export_lerobot.sh /data/episodes/episode0 \
   --output /data/lerobot/my_dataset \
   --task "describe the demonstrated task" \
   --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml \
@@ -154,7 +154,7 @@ Record only after `/status` reports `arms=2/2 | record_topics=12/12 | reset=read
 Replay moves both arms and hands:
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop/docker
+cd /home/descfly/llx/gello_upper_body_teleop/docker
 docker compose run --rm tools ros2 run teleop_data replay /data/lerobot/my_dataset \
   --episode-index 0 \
   --config /workspace/franka_upper_body_teleop/ros_ws/src/teleop_data/config/recording.yaml
@@ -165,7 +165,7 @@ Disengage teleop, inspect the preposition path, and keep the emergency stop reac
 ## Verification
 
 ```bash
-cd /home/descfly/hsc/franka_upper_body_teleop
-conda run -n gello-upper-body-teleop pytest -q teleop_sources/pico/tests
+cd /home/descfly/llx/gello_upper_body_teleop
+conda run -n gello-upper-body-teleop pytest -q adapters/pico/tests
 PYTHONPATH=ros_ws/src/teleop_core python3 -m pytest -q ros_ws/src/teleop_core/test/
 ```

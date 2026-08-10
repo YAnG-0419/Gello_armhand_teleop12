@@ -1,7 +1,7 @@
 # MANUS CoreSDK 3.1.1
 
 This directory vendors the x86-64 Linux MANUS CoreSDK needed by
-`teleop_sources/manus`. It was copied from the locally supplied
+`adapters/manus`. It was copied from the locally supplied
 `ManusSDK_v3.1.1/SDKMinimalClient_Linux/ManusSDK` bundle so the teleop adapter
 does not depend on a sibling checkout or a path under `Downloads`.
 

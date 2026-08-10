@@ -1173,7 +1173,7 @@ def create_pico_input(
         ):
             raise ValueError(
                 "Motion tracker serials are not configured; set "
-                "input.motion_trackers.serials in config/pico.yaml."
+                "input.motion_trackers.serials in config/modes/pico.yaml."
             )
         return MotionTrackerInput(
             serials=trackers.serials,

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-"$REPO_ROOT/scripts/preflight.sh"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+"$REPO_ROOT/ops/run/preflight.sh"
 
 cd "$REPO_ROOT/docker"
 exec docker compose up \

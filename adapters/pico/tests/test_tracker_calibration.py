@@ -10,7 +10,7 @@ from pico_bimanual_franka_teleop.tracker_calibration import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PICO_YAML = REPO_ROOT / "config" / "pico.yaml"
+PICO_YAML = REPO_ROOT / "config" / "modes" / "pico.yaml"
 
 SERIAL_A = "PC0000000000000A"
 SERIAL_B = "PC0000000000000B"

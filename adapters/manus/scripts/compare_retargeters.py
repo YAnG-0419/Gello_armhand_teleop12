@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Replay one recording through both retargeters and diff the joint angles.
 
-    python teleop_sources/manus/scripts/compare_retargeters.py \
+    python adapters/manus/scripts/compare_retargeters.py \
         /home/descfly/franka_teleop_data/manus_accuracy/v101_retargeted/left_full_01_v101.jsonl \
-        --profile config/hand_profiles/left_manus.json
+        --profile config/calibration/hand_profiles/left_manus.json
 
 The recorded ``qpos`` already is the deployed landmark retargeter's answer for
 these frames, and ``source.keypoints`` is the raw MANUS skeleton both solvers
@@ -31,8 +31,8 @@ REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir,
                  os.pardir)
 )
-sys.path.insert(0, os.path.join(REPO_ROOT, "teleop_sources", "manus", "python"))
-sys.path.insert(0, os.path.join(REPO_ROOT, "teleop_sources", "pico", "src"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "adapters", "manus", "python"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "adapters", "pico", "src"))
 
 from manus_teleop.casadi_hand.hands import human_bend_angle  # noqa: E402
 from manus_teleop.casadi_retarget import CasadiHandRetargeter  # noqa: E402

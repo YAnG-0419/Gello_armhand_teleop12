@@ -2,7 +2,7 @@
 # One-command dual GELLO + dual FR3 arm-only teleoperation.
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 SERVICES=(franka-control teleop-control gello-bridge)
 stack_started=false
 
@@ -27,7 +27,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"$REPO_ROOT/scripts/preflight.sh" --arms-only
+"$REPO_ROOT/ops/run/preflight.sh" --arms-only
 cd "$REPO_ROOT/docker"
 # Ensure a hand service left by an earlier session cannot command either hand.
 docker compose stop --timeout 10 hand-control
@@ -36,4 +36,4 @@ stack_started=true
 docker compose ps "${SERVICES[@]}"
 
 cd "$REPO_ROOT"
-"$REPO_ROOT/scripts/run_operator.sh" --hand-source none "$@"
+"$REPO_ROOT/ops/run/run_operator.sh" --hand-source none "$@"

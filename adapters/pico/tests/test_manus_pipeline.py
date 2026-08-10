@@ -7,7 +7,7 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # linker_hand_bridge is a ROS package, not pip-installed in this env;
-# manus_teleop is an editable install (see scripts/setup_pico_env.sh).
+# manus_teleop is an editable install (see ops/setup/setup_teleop_env.sh).
 sys.path.insert(0, str(REPO_ROOT / "ros_ws" / "src" / "linker_hand_bridge"))
 
 from linker_hand_bridge.core import G20Mapper

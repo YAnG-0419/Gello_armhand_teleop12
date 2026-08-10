@@ -1,9 +1,8 @@
 import json
-
 import numpy as np
 import pytest
 
-from strategy import (
+from tasks.powderweighing.strategy import (
     HardcodedPitchRetargeter,
     PitchPhase,
     PitchTrigger,

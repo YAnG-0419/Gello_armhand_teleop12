@@ -50,7 +50,7 @@ services:
       - launch
       - franka_fr3_arm_controllers
       - robot_control.launch.py
-      - robot_config:=/workspace/franka_upper_body_teleop/config/fake_workcell.yaml
+      - robot_config:=/workspace/franka_upper_body_teleop/config/workcell/fake.yaml
 
   hand-control:
     <<: *runtime
@@ -97,7 +97,7 @@ services:
     environment:
       - ROS_LOCALHOST_ONLY=0
       - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
-      - PYTHONPATH=/workspace/franka_upper_body_teleop/integrations/hand_ui
+      - PYTHONPATH=/workspace/franka_upper_body_teleop/apps/hand_ui
     command:
       - python3
       - -m
@@ -120,7 +120,7 @@ services:
       - launch
       - teleop_core
       - control.launch.py
-      - config:=/workspace/franka_upper_body_teleop/config/teleop_control.yaml
+      - config:=/workspace/franka_upper_body_teleop/config/modes/teleop_control.yaml
 
   moveit-fake:
     <<: *runtime
@@ -184,7 +184,7 @@ services:
       - launch
       - pico_teleop_bridge
       - pico.launch.py
-      - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
+      - config:=/workspace/franka_upper_body_teleop/config/modes/pico.yaml
       - source_id:=pico
 
   gello-bridge:
@@ -196,7 +196,7 @@ services:
       - launch
       - pico_teleop_bridge
       - pico.launch.py
-      - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
+      - config:=/workspace/franka_upper_body_teleop/config/modes/pico.yaml
       - source_id:=gello
 
   vive-bridge:
@@ -207,7 +207,7 @@ services:
       - launch
       - pico_teleop_bridge
       - pico.launch.py
-      - config:=/workspace/franka_upper_body_teleop/config/pico.yaml
+      - config:=/workspace/franka_upper_body_teleop/config/modes/pico.yaml
       - source_id:=vive
 
   orbbec:

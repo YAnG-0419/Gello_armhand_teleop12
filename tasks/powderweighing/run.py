@@ -8,14 +8,17 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "teleop_sources" / "pico" / "src"))
-sys.path.insert(0, str(ROOT / "teleop_sources" / "manus" / "python"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "adapters" / "pico" / "src"))
+sys.path.insert(0, str(ROOT / "adapters" / "manus" / "python"))
 
 from manus_teleop import ManusHandPipeline  # noqa: E402
 from pico_bimanual_franka_teleop.xr_input import KeyboardActivation  # noqa: E402
-from strategy import HardcodedPitchRetargeter, load_config  # noqa: E402
+from tasks.powderweighing.strategy import (  # noqa: E402
+    HardcodedPitchRetargeter,
+    load_config,
+)
 
 
 def main() -> int:
@@ -23,7 +26,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(__file__).with_name("poses.json"),
+        default=Path(__file__).with_name("config") / "poses.json",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5570)

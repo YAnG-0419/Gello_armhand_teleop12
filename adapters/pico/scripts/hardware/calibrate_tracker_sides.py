@@ -3,12 +3,12 @@
 
 Wear or hold the trackers as usual, then:
 
-    conda run --no-capture-output --name franka-teleop-pico \
-      python teleop_sources/pico/scripts/hardware/calibrate_tracker_sides.py
+    conda run --no-capture-output --name gello-upper-body-teleop \
+      python adapters/pico/scripts/hardware/calibrate_tracker_sides.py
 
 Follow the prompts: move only the LEFT hand, then only the RIGHT hand.
 The script prints the detected mapping; add --write to store it in
-config/pico.yaml (comments preserved, file re-validated afterwards).
+config/modes/pico.yaml (comments preserved, file re-validated afterwards).
 
 Owns the single PICO SDK client - stop teleop and close RobotLinuxDemo
 first, exactly like inspect_motion_trackers.py.
@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
 
@@ -34,7 +34,7 @@ from pico_bimanual_franka_teleop.tracker_calibration import (  # noqa: E402
     replace_serials,
 )
 
-DEFAULT_CONFIG = REPO_ROOT / "config" / "pico.yaml"
+DEFAULT_CONFIG = REPO_ROOT / "config" / "modes" / "pico.yaml"
 
 
 def _desktop_gui_pids() -> list[int]:

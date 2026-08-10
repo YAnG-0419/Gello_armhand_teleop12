@@ -5,16 +5,16 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from xml.etree import ElementTree
 
+import mujoco
 import numpy as np
 import yaml
 
 from manus_teleop.pipeline import ManusBridge, canonical_landmarks
 from pico_bimanual_franka_teleop.hand_sender import HandStatus
-from wuji_retargeting import Retargeter
+from .wuji_retargeting import Retargeter
 
-from backend import WujiHand2Backend, WujiHandBackend
+from .backend import WujiHand2Backend, WujiHandBackend
 
 
 ROOT = Path(__file__).resolve().parent
@@ -27,17 +27,23 @@ def _config_path(side: str, model: str) -> Path:
 
 
 def _device_permutation(retargeter: Retargeter, config_path: Path) -> np.ndarray:
+    """Map optimizer qpos order to the MJCF/device joint order.
+
+    The real Wuji Hand 2 path uses the MJCF joint order as the firmware command
+    order, matching ``wuji-retargeting/example/teleop_real.py``.  Loading the
+    model through MuJoCo is intentional: XML traversal order is not guaranteed
+    to equal the compiled model's qpos order.
+    """
     config = yaml.safe_load(config_path.read_text()) or {}
     relative = (config.get("optimizer") or {}).get("mjcf_path")
     source_names = list(retargeter.optimizer.robot.dof_joint_names)
     if not relative:
         return np.arange(len(source_names), dtype=int)
     mjcf = (config_path.parent / relative).resolve()
-    root = ElementTree.parse(mjcf).getroot()
+    model = mujoco.MjModel.from_xml_path(str(mjcf))
     destination_names = [
-        joint.attrib["name"]
-        for joint in root.findall(".//joint")
-        if joint.attrib.get("name")
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, index)
+        for index in range(model.njnt)
     ]
     by_name = {name: index for index, name in enumerate(source_names)}
     try:
@@ -105,13 +111,17 @@ class WujiHandPipeline:
                 retargeter = Retargeter.from_yaml(str(path), side)
                 self.retargeters[side] = retargeter
                 self.permutations[side] = _device_permutation(retargeter, path)
+                print(
+                    f"{side} Wuji qpos mapping ({path.name}): "
+                    f"URDF -> device {self.permutations[side].tolist()}"
+                )
 
             repo = ROOT.parents[1]
             bridge_library = library or (
-                repo / "teleop_sources/manus/build/libmanus_skeleton_bridge.so"
+                repo / "adapters/manus/build/libmanus_skeleton_bridge.so"
             )
             calibrations = calibration_dir or (
-                repo / "teleop_sources/manus/config"
+                repo / "adapters/manus/config"
             )
             self.bridge = ManusBridge(Path(bridge_library).resolve())
             self.bridge.connect(Path(calibrations).resolve())

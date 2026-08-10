@@ -1,5 +1,5 @@
 # Historical identities from the verified dual-GELLO deployment. Always run
-# scripts/check_gello_ports.py after reconnecting hardware; never infer sides
+# ops/diagnostics/check_gello_ports.py after reconnecting hardware; never infer sides
 # from ttyUSB enumeration order.
 left:
   port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTATCZ4W-if00-port0

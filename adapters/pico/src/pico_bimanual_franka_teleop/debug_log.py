@@ -38,7 +38,7 @@ def _existing_log_path(path: str | Path) -> Path:
     Creating parents silently has buried recordings twice: a mangled
     multi-line paste glued the next command onto the log argument, and
     mkdir(parents=True) happily materialized the garbage path. The runbook
-    (and scripts/run_teleop.sh) create RUN_DIR first, so a missing parent
+    (and ops/run/run_teleop.sh) create RUN_DIR first, so a missing parent
     means the argument itself is wrong - refuse at startup.
     """
     resolved = Path(path)

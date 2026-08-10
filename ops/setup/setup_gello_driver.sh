@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 environment=${TELEOP_CONDA_ENV:-gello-upper-body-teleop}
 gello_root=${GELLO_SOFTWARE_ROOT:-}
 

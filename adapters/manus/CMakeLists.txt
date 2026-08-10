@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 get_filename_component(REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-set(MANUS_SDK_ROOT "${REPOSITORY_ROOT}/third_party/manus_sdk")
+set(MANUS_SDK_ROOT "${REPOSITORY_ROOT}/vendor/manus_sdk")
 
 add_library(manus_skeleton_bridge SHARED native/manus_skeleton_bridge.cpp)
 target_include_directories(

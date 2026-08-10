@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
 

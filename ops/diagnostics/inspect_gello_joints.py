@@ -16,8 +16,8 @@ from pathlib import Path
 import numpy as np
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
 
 from pico_bimanual_franka_teleop.gello_input import (  # noqa: E402
     DualGelloJointInput,
@@ -46,7 +46,7 @@ def main() -> int:
         )
     )
     parser.add_argument(
-        "--config", default=str(REPO_ROOT / "config" / "gello.yaml")
+        "--config", default=str(REPO_ROOT / "config" / "modes" / "gello.yaml")
     )
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--interval", type=float, default=0.02)

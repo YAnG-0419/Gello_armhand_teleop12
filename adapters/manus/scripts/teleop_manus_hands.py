@@ -16,8 +16,8 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "manus" / "python"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "manus" / "python"))
 
 from manus_teleop import ManusHandPipeline  # noqa: E402
 from manus_teleop.pipeline import (  # noqa: E402

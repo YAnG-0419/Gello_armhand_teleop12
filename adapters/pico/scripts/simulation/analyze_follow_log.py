@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
 
@@ -32,7 +32,7 @@ import json  # noqa: E402
 import numpy as np  # noqa: E402
 
 SIDES = ("left", "right")
-CLAMP_DEFAULT = 0.5  # keep in sync with host.max_joint_speed in config/pico.yaml
+CLAMP_DEFAULT = 0.5  # keep in sync with host.max_joint_speed in config/modes/pico.yaml
 
 # FR3 position limits in command order (left j1-7 then right j1-7); keep in
 # sync with teleop_core/safety.py. The analyzer stays ROS- and URDF-free.

@@ -11,12 +11,12 @@ left FR3    172.16.0.3          right FR3  172.16.0.2
 host        enp6s0: 172.16.0.6/24, 192.168.1.53/24
 Orbbec      192.168.1.10:8090
 left hand   G20  can0 0x28      right hand O30i libcanbus USB a8fa:8598
-VIVE hand tracker ids: config/vive.yaml    PICO fallback ids: config/pico.yaml
+VIVE hand tracker ids: config/modes/vive.yaml    PICO fallback ids: config/modes/pico.yaml
 ```
 
 ## Current status
 
-- Standard startup is `docker compose up franka-control teleop-control gello-bridge hand-control`, then `scripts/run_teleop.sh`, then `python teleop_sources/gui/operator_gui.py`. VIVE and PICO remain optional fallbacks; never run multiple UDP bridges.
+- Standard startup is `docker compose up franka-control teleop-control gello-bridge hand-control`, then `ops/run/run_teleop.sh`, then `python apps/operator_gui/operator_gui.py`. VIVE and PICO remain optional fallbacks; never run multiple UDP bridges.
 - Arms are settled; contact torque gating and collision thresholds are hardware-validated. Do not retune without reading the relevant git history.
 - The false-stale PICO regression is resolved and hardware-verified. Motion is parsed first, published atomically, and considered fresh only when the local callback sequence advances; no native parsing exception may cross the vendor callback boundary.
 - Do not restore the former multi-getter consistency loop or cached-snapshot engagement grace. An invalid atomic snapshot disengages immediately.
@@ -40,7 +40,7 @@ VIVE hand tracker ids: config/vive.yaml    PICO fallback ids: config/pico.yaml
 
 ## Verification
 
-PICO: `conda run -n gello-upper-body-teleop pytest -q teleop_sources/pico/tests`.
+PICO: `conda run -n gello-upper-body-teleop pytest -q adapters/pico/tests`.
 
 Gateway: `PYTHONPATH=ros_ws/src/teleop_core python3 -m pytest -q ros_ws/src/teleop_core/test/`.
 

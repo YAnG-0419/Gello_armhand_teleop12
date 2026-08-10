@@ -21,7 +21,7 @@ host clock, and both run as children of this process for the same interval.
 Merging is then a nearest-timestamp join with a stated tolerance, and the join
 reports its own coverage rather than assuming it worked.
 
-WHY TWO INTERPRETERS. The teleop stack runs in the `franka-teleop-pico` conda
+WHY TWO INTERPRETERS. The teleop stack runs in the `gello-upper-body-teleop` conda
 env, which has casadi and pinocchio but no rclpy; rclpy lives in the system ROS
 install. Rather than force one environment to hold both, the recorder is a
 child process under `/opt/ros/*/setup.bash` and the two meet at the wall clock.
@@ -68,7 +68,7 @@ def _ros_python(setup: str) -> str | None:
     """The system interpreter the ROS install was actually built against.
 
     Sourcing setup.bash is not enough. This wrapper runs under `conda run -n
-    franka-teleop-pico`, so the child inherits a PATH whose `python3` is the
+    gello-upper-body-teleop`, so the child inherits a PATH whose `python3` is the
     conda 3.10; rclpy's compiled extension is built for the ROS distro's
     version (3.12 on jazzy) and the import dies with a bare
     ModuleNotFoundError for `rclpy._rclpy_pybind11`. Pin the interpreter to the

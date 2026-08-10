@@ -4,8 +4,8 @@
 
 optimizer:
   type: "AdaptiveOptimizerAnalytical"
-  urdf_path: "../hand2/urdf/left.urdf"
-  mjcf_path: "../hand2/mjcf/left.xml"
+  urdf_path: "../models/hand2_beta/urdf/left.urdf"
+  mjcf_path: "../models/hand2_beta/mjcf/left.xml"
   link_naming:
     prefix: "l_"
     palm: "wrist"

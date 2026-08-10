@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_checked_in_config_preserves_verified_identities_and_directions():
-    config = load_gello_config(REPO_ROOT / "config" / "gello.yaml")
+    config = load_gello_config(REPO_ROOT / "config" / "modes" / "gello.yaml")
 
     assert config.left.expected_serial == "FTATCZ4W"
     assert config.right.expected_serial == "FTALZ24C"

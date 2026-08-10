@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(REPO_ROOT / "teleop_sources" / "pico" / "src"))
+sys.path.insert(0, str(REPO_ROOT / "adapters" / "pico" / "src"))
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process  # noqa: E402
 
@@ -104,7 +104,7 @@ def _teleop_processes() -> list[str]:
             command = (process / "cmdline").read_bytes().replace(b"\0", b" ")
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
-        if b"teleop_dual_fr3.py" in command or b"teleop_hands.py" in command:
+        if b"teleop_runtime.cli" in command or b"teleop_hands.py" in command:
             matches.append(command.decode(errors="replace").strip())
     return matches
 
