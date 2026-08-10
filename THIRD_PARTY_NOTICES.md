@@ -15,3 +15,17 @@ The hand retargeting assets under `assets/linkerhand_l20` are LinkerHand L20 URD
 The hand retargeting optimizer in `teleop_sources/pico/src/pico_bimanual_franka_teleop/hand_retarget.py` and the G20 projection and slew limiter in `ros_ws/src/linker_hand_bridge/linker_hand_bridge/core.py` are adapted from the sibling WiLoR repository, which drove the same hand from monocular MANO reconstructions. They were copied rather than imported because sibling repositories are read-only references.
 
 The container downloads pinned upstream releases of libfranka, franka_ros2, and franka_description during the build. Those components remain under their respective upstream licenses.
+
+The optional dual-FR3 MoveIt packages and NiceGUI hand-control source under
+`ros_ws/src/lychee_fr3_*` and `integrations/hand_ui/barmate` were imported from
+the local `lychee_barmate` repository at revision
+`0b8722134d07b872130b40e8642789a35c515424`. The ROS package manifests declare
+Apache-2.0 for the MoveIt packages. The source repository did not contain a
+top-level license covering the Barmate application, so that code should be
+treated as internal-source code unless its owner supplies different terms.
+
+The optional Wuji retargeting implementation and robot assets under
+`integrations/wuji` were imported from the local `wuji-retargeting` repository
+at revision `7ef81ad71746ffc4593952577f42346a6f697820`. Its upstream license and
+the separate Wuji description license are retained as
+`integrations/wuji/LICENSE` and `integrations/wuji/WUJI_DESCRIPTION_LICENSE`.

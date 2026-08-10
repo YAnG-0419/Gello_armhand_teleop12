@@ -18,3 +18,8 @@ dependencies:
   - pyyaml
   - scipy
   - pytest
+  - nlopt
+  - pinocchio>=3.8
+  - pip:
+      - wuji-sdk>=0.10.0
+      - wujihandpy>=1.8.0

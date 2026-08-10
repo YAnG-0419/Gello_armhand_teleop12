@@ -168,6 +168,21 @@ class LinkerHandBridge(Node):
             )
             for side in self.sides
         ]
+        # Manual tools use a separate ingress topic instead of publishing to the
+        # vendor command bus.  This keeps the bridge as the only writer to the
+        # hardware driver and preserves the same range, slew and freshness
+        # checks used by retargeted UDP commands.
+        self.manual_subscriptions = [
+            self.create_subscription(
+                JointState,
+                f"/linker_hand_bridge/{side}/manual_command",
+                lambda message, selected_side=side: self._manual_callback(
+                    selected_side, message
+                ),
+                10,
+            )
+            for side in self.sides
+        ]
 
         # The vendor driver never initializes speed or torque for G20, because
         # its startup-pose code has no G20 branch. Without this the hand would
@@ -272,6 +287,40 @@ class LinkerHandBridge(Node):
                 )
             return
         self.state[side].feedback = validated
+
+    def _manual_callback(self, side: str, message: JointState) -> None:
+        """Accept a complete manual target through the normal safety limiter."""
+        profile = self.profiles[side]
+        if len(message.name) != profile.command_slots or len(message.position) != profile.command_slots:
+            self.get_logger().warning(
+                f"rejecting incomplete {side} manual command: expected "
+                f"{profile.command_slots} named positions"
+            )
+            return
+        if len(set(message.name)) != profile.command_slots:
+            self.get_logger().warning(
+                f"rejecting {side} manual command with duplicate joint names"
+            )
+            return
+        by_name = dict(zip(message.name, message.position, strict=True))
+        expected = set(profile.command_joint_names)
+        if set(by_name) != expected:
+            self.get_logger().warning(
+                f"rejecting {side} manual command with a different joint contract"
+            )
+            return
+        target = tuple(float(by_name[name]) for name in profile.command_joint_names)
+        if profile.validate_state(target) is None:
+            self.get_logger().warning(
+                f"rejecting out-of-range {side} manual command"
+            )
+            return
+        side_state = self.state[side]
+        side_state.target = target
+        side_state.received_at = time.monotonic()
+        side_state.stream_id = "manual-ui"
+        side_state.sequence += 1
+        side_state.received_count += 1
 
     def _receive_available(self, now: float) -> None:
         while True:

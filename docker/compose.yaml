@@ -91,6 +91,28 @@ services:
       - initial_torque:=200
       - initial_thumb_torque:=250
 
+  hand-ui:
+    <<: *runtime
+    profiles: [hand-ui]
+    environment:
+      - ROS_LOCALHOST_ONLY=0
+      - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
+      - PYTHONPATH=/workspace/franka_upper_body_teleop/integrations/hand_ui
+    command:
+      - python3
+      - -m
+      - barmate.apps.linker_hand_control
+      - --backend
+      - ros
+      - --left-model
+      - O30I
+      - --right-model
+      - O30I
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+
   teleop-control:
     <<: *runtime
     command:
@@ -99,6 +121,59 @@ services:
       - teleop_core
       - control.launch.py
       - config:=/workspace/franka_upper_body_teleop/config/teleop_control.yaml
+
+  moveit-fake:
+    <<: *runtime
+    profiles: [moveit]
+    environment:
+      - ROS_LOCALHOST_ONLY=0
+      - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
+      - DISPLAY=${DISPLAY:-}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - ..:/workspace/franka_upper_body_teleop
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command:
+      - ros2
+      - launch
+      - lychee_fr3_moveit_config
+      - moveit.launch.py
+      - robot_types:=['fr3','fr3']
+      - robot_ips:=['172.16.0.3','172.16.0.2']
+      - use_fake_hardware:=true
+      - fake_sensor_commands:=true
+      - use_rviz:=true
+
+  moveit-real:
+    <<: *runtime
+    profiles: [moveit]
+    privileged: true
+    cpuset: ${FRANKA_CPUSET:?Missing FRANKA_CPUSET in docker/.env}
+    ulimits:
+      rtprio: 99
+      rttime: -1
+      memlock: -1
+    volumes:
+      - ..:/workspace/franka_upper_body_teleop
+      - /dev:/dev
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - ROS_LOCALHOST_ONLY=0
+      - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
+      - DISPLAY=${DISPLAY:-}
+      - QT_X11_NO_MITSHM=1
+    command:
+      - ros2
+      - launch
+      - lychee_fr3_moveit_config
+      - moveit.launch.py
+      - robot_types:=['fr3','fr3']
+      - robot_ips:=['172.16.0.3','172.16.0.2']
+      - use_fake_hardware:=false
+      - fake_sensor_commands:=false
+      - separate_controller_managers:=true
+      - use_rviz:=true
+      - configure_collision_behavior:=true
 
   pico-bridge:
     <<: *runtime

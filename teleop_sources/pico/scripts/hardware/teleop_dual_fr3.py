@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import sys
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process
 
@@ -93,7 +94,7 @@ def main() -> None:
     parser.add_argument(
         "--hand-source",
         default="none",
-        choices=("none", "pico", "manus"),
+        choices=("none", "pico", "manus", "wuji"),
         help="hand source integrated into this operator process (default: none)",
     )
     parser.add_argument(
@@ -142,6 +143,37 @@ def main() -> None:
             "pose/trigger JSON; the left hand remains on its configured method"
         ),
     )
+    parser.add_argument(
+        "--wuji-sides",
+        choices=("left", "right", "both"),
+        default="both",
+        help="Wuji hardware sides to drive (only with --hand-source wuji)",
+    )
+    for side in ("left", "right"):
+        parser.add_argument(
+            f"--wuji-{side}-model",
+            choices=("wuji_hand", "wuji_hand_2"),
+            default="wuji_hand_2",
+            help=f"physical {side} Wuji hand model",
+        )
+        parser.add_argument(
+            f"--wuji-{side}-address",
+            default="",
+            help=f"{side} Wuji Hand 2 SDK address (IP:PORT)",
+        )
+        parser.add_argument(
+            f"--wuji-{side}-serial",
+            default="",
+            help=f"{side} original Wuji Hand USB serial",
+        )
+    parser.add_argument("--wuji-kp", type=float, default=3.0)
+    parser.add_argument("--wuji-kd", type=float, default=0.1)
+    parser.add_argument(
+        "--wuji-current-limit",
+        type=float,
+        default=1.5,
+        help="Wuji Hand 2 per-joint current limit in amps",
+    )
     args = parser.parse_args()
     if args.hand_debug_log and args.hand_source == "none":
         parser.error("--hand-debug-log requires a hand source")
@@ -153,6 +185,15 @@ def main() -> None:
         parser.error(
             "--right-hand-strategy-config requires --hand-source manus"
         )
+    if args.hand_source != "wuji" and any(
+        (
+            args.wuji_left_address,
+            args.wuji_right_address,
+            args.wuji_left_serial,
+            args.wuji_right_serial,
+        )
+    ):
+        parser.error("--wuji-*-address/serial requires --hand-source wuji")
 
     if args.hand_source == "pico" and args.arm_source == "controllers":
         parser.error(
@@ -291,6 +332,35 @@ def main() -> None:
                     "right hand strategy -> powderweighing "
                     f"({args.right_hand_strategy_config})"
                 )
+        elif args.hand_source == "wuji":
+            sys.path.insert(0, str(REPO_ROOT / "integrations" / "wuji"))
+            from pipeline import WujiHandPipeline
+
+            sides = (
+                ("left", "right")
+                if args.wuji_sides == "both"
+                else (args.wuji_sides,)
+            )
+            models = {
+                side: getattr(args, f"wuji_{side}_model") for side in sides
+            }
+            addresses = {
+                side: getattr(args, f"wuji_{side}_address") for side in sides
+            }
+            serials = {
+                side: getattr(args, f"wuji_{side}_serial") for side in sides
+            }
+            hand_pipeline = WujiHandPipeline(
+                sides=sides,
+                models=models,
+                addresses=addresses,
+                serials=serials,
+                rate=args.hand_rate,
+                kp=args.wuji_kp,
+                kd=args.wuji_kd,
+                current_limit=args.wuji_current_limit,
+                debug_log=args.hand_debug_log,
+            )
         if hand_pipeline is not None:
             hands = HandWorker(
                 hand_pipeline, tick_rate=config.host.control_rate

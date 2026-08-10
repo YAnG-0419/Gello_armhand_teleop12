@@ -111,6 +111,21 @@ RUN git -C src/franka_ros2 apply /tmp/franka_ros2_restore_thread_scheduler.patch
         --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
     && rm -rf build log /tmp/franka_ros2_restore_thread_scheduler.patch
 
+# Optional local integrations are installed late so changes to them do not
+# invalidate the expensive libfranka/vendor/LeRobot layers above.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-humble-moveit-kinematics \
+        ros-humble-moveit-planners-ompl \
+        ros-humble-moveit-ros-move-group \
+        ros-humble-moveit-ros-visualization \
+        ros-humble-moveit-simple-controller-manager \
+        ros-humble-pilz-industrial-motion-planner \
+        ros-humble-joint-trajectory-controller \
+        ros-humble-joint-state-publisher \
+        ros-humble-rviz2 \
+    && python3 -m pip install --no-cache-dir 'nicegui>=2.24,<3' \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
