@@ -380,6 +380,11 @@ def generate_robot_nodes(context):
             trajectory_execution,
             moveit_controllers,
             planning_scene_monitor_parameters,
+            {
+                'capabilities': (
+                    'pilz_industrial_motion_planner/MoveGroupSequenceAction'
+                )
+            },
         ],
     )
 

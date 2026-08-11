@@ -59,6 +59,11 @@ def _device_permutation(retargeter: Retargeter, config_path: Path) -> np.ndarray
     return permutation
 
 
+def _device_joint_names(retargeter: Retargeter, permutation: np.ndarray) -> tuple[str, ...]:
+    source = tuple(retargeter.optimizer.robot.dof_joint_names)
+    return tuple(source[index] for index in permutation)
+
+
 class WujiHandPipeline:
     """Drive optional Wuji hands while Gello continues to own only the arms."""
 
@@ -77,6 +82,7 @@ class WujiHandPipeline:
         library: Path | None = None,
         calibration_dir: Path | None = None,
         debug_log: Path | None = None,
+        auto_enable: bool = True,
     ) -> None:
         self.sides = tuple(sides)
         if not self.sides or set(self.sides).difference({"left", "right"}):
@@ -97,6 +103,8 @@ class WujiHandPipeline:
         self.status = HandStatus()
         self.retargeters = {}
         self.permutations = {}
+        self.joint_names = {}
+        self.joint_limits = {}
         self.backends = {}
         self.last_frames = {side: None for side in self.sides}
         self.last_frame_at = {side: None for side in self.sides}
@@ -111,6 +119,21 @@ class WujiHandPipeline:
                 retargeter = Retargeter.from_yaml(str(path), side)
                 self.retargeters[side] = retargeter
                 self.permutations[side] = _device_permutation(retargeter, path)
+                self.joint_names[side] = _device_joint_names(
+                    retargeter, self.permutations[side]
+                )
+                lower = np.asarray(
+                    retargeter.optimizer.robot.model.lowerPositionLimit,
+                    dtype=np.float64,
+                )[self.permutations[side]]
+                upper = np.asarray(
+                    retargeter.optimizer.robot.model.upperPositionLimit,
+                    dtype=np.float64,
+                )[self.permutations[side]]
+                self.joint_limits[side] = tuple(
+                    (float(low), float(high))
+                    for low, high in zip(lower, upper, strict=True)
+                )
                 print(
                     f"{side} Wuji qpos mapping ({path.name}): "
                     f"URDF -> device {self.permutations[side].tolist()}"
@@ -134,6 +157,7 @@ class WujiHandPipeline:
                         kp=kp,
                         kd=kd,
                         current_limit=current_limit,
+                        auto_enable=auto_enable,
                     )
                 else:
                     self.backends[side] = WujiHandBackend(
@@ -146,6 +170,27 @@ class WujiHandPipeline:
         except BaseException:
             self.close()
             raise
+
+    def set_enabled(self, side: str, enabled: bool) -> None:
+        if side not in self.sides:
+            raise ValueError(f"Wuji side is not configured: {side}")
+        backend = self.backends[side]
+        operation = getattr(backend, "enable" if enabled else "disable", None)
+        if operation is None:
+            raise RuntimeError(
+                f"runtime enable switching is unavailable for {self.models[side]}"
+            )
+        operation()
+
+    def feedback_position(self, side: str) -> np.ndarray | None:
+        if side not in self.sides:
+            raise ValueError(f"Wuji side is not configured: {side}")
+        reader = getattr(self.backends[side], "read_position", None)
+        if reader is None:
+            raise RuntimeError(
+                f"position feedback is unavailable for {self.models[side]}"
+            )
+        return reader()
 
     def request_open(
         self,

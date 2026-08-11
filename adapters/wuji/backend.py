@@ -59,6 +59,30 @@ def _set_with_retry(description: str, operation, attempts: int = 3) -> None:
             time.sleep(0.6)
 
 
+def _hand2_feedback_positions(frame: Any) -> np.ndarray:
+    """Return a complete Hand 2 feedback frame in firmware command order."""
+    entries = tuple(frame.joints)
+    if int(frame.num_joints) != len(entries):
+        raise ValueError("Wuji Hand 2 feedback count does not match its entries")
+    positions: dict[int, float] = {}
+    for entry in entries:
+        node_id = int(entry.nid)
+        finger, joint = divmod(node_id - 1, 5)
+        if node_id <= 0 or finger >= 5 or joint >= 4:
+            raise ValueError(f"Wuji Hand 2 reported invalid joint id {node_id}")
+        index = finger * 4 + joint
+        if index in positions:
+            raise ValueError(f"Wuji Hand 2 reported duplicate joint id {node_id}")
+        positions[index] = float(entry.position)
+    if set(positions) != set(range(20)):
+        missing = sorted(set(range(20)).difference(positions))
+        raise RuntimeError(f"Wuji Hand 2 feedback is missing joints {missing}")
+    values = np.asarray([positions[index] for index in range(20)], dtype=np.float64)
+    if not np.isfinite(values).all():
+        raise ValueError("Wuji Hand 2 feedback contains non-finite positions")
+    return values
+
+
 class WujiHand2Backend:
     """Network Wuji Hand 2 backend using the vendor SDK."""
 
@@ -70,6 +94,7 @@ class WujiHand2Backend:
         kp: float,
         kd: float,
         current_limit: float,
+        auto_enable: bool = True,
     ) -> None:
         try:
             import wuji_sdk
@@ -91,6 +116,11 @@ class WujiHand2Backend:
             address=address, device_name=f"wuji_hand_2_{side}"
         )
         self._publisher: Any = None
+        self._state_subscription: Any = None
+        self._enabled = False
+        self._kp = float(kp)
+        self._kd = float(kd)
+        self._current_limit = float(current_limit)
         try:
             reported_side = str(self._hand.handedness().get()).lower()
             if reported_side != side:
@@ -98,26 +128,51 @@ class WujiHand2Backend:
                     f"Wuji hand at {address} reports {reported_side}, expected {side}"
                 )
             online = int(self._hand.online_joints_count().get())
-            if online == 0:
-                raise RuntimeError(f"{side} Wuji Hand 2 has no online joints")
+            if online != 20:
+                raise RuntimeError(
+                    f"{side} Wuji Hand 2 has {online}/20 online joints"
+                )
             time.sleep(0.5)
-            _set_with_retry(
-                "effort_limit", lambda: self._hand.effort_limit().set(current_limit)
-            )
-            _set_with_retry(
-                "mit_params", lambda: self._hand.mit_params().set((kp, kd))
-            )
-            self._hand.enable()
-            self._wait_until_enabled()
-            self._publisher = self._hand.joint_command().publish()
             self._JointCommand = wuji_sdk.JointCommand
-            print(
-                f"{side} Wuji Hand 2 enabled at {address}: "
-                f"kp={kp:g}, kd={kd:g}, current_limit={current_limit:g}A"
-            )
+            self._state_subscription = self._hand.joint_states().subscribe()
+            if auto_enable:
+                self.enable()
+            else:
+                self._hand.disable()
+                print(f"{side} Wuji Hand 2 connected at {address} (motors disabled)")
         except BaseException:
             self.close()
             raise
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def enable(self) -> None:
+        if self._enabled:
+            return
+        _set_with_retry(
+            "effort_limit",
+            lambda: self._hand.effort_limit().set(self._current_limit),
+        )
+        _set_with_retry(
+            "mit_params", lambda: self._hand.mit_params().set((self._kp, self._kd))
+        )
+        self._hand.enable()
+        self._wait_until_enabled()
+        if self._publisher is None:
+            self._publisher = self._hand.joint_command().publish()
+        self._enabled = True
+        print(
+            "Wuji Hand 2 enabled: "
+            f"kp={self._kp:g}, kd={self._kd:g}, "
+            f"current_limit={self._current_limit:g}A"
+        )
+
+    def disable(self) -> None:
+        if getattr(self, "_hand", None) is not None:
+            self._hand.disable()
+        self._enabled = False
 
     def _wait_until_enabled(self) -> None:
         deadline = time.monotonic() + 5.0
@@ -140,13 +195,32 @@ class WujiHand2Backend:
         values = np.asarray(qpos, dtype=np.float64)
         if values.shape != (20,) or not np.isfinite(values).all():
             raise ValueError("Wuji Hand 2 command must be 20 finite positions")
+        if not self._enabled or self._publisher is None:
+            raise RuntimeError("Wuji Hand 2 motors are disabled")
         commands = [
             self._JointCommand(float(position), 0.0, 0.0)
             for position in values
         ]
         self._publisher.send(commands)
 
+    def read_position(self) -> np.ndarray | None:
+        """Drain feedback and return the newest complete actual-position frame."""
+        subscription = self._state_subscription
+        if subscription is None:
+            return None
+        latest = None
+        while (frame := subscription.recv()) is not None:
+            latest = _hand2_feedback_positions(frame)
+        return latest
+
     def close(self) -> None:
+        subscription = getattr(self, "_state_subscription", None)
+        if subscription is not None:
+            try:
+                subscription.close()
+            except Exception:
+                pass
+            self._state_subscription = None
         publisher = getattr(self, "_publisher", None)
         if publisher is not None:
             try:
@@ -157,7 +231,7 @@ class WujiHand2Backend:
         hand = getattr(self, "_hand", None)
         if hand is not None:
             try:
-                hand.disable()
+                self.disable()
             except Exception:
                 pass
             try:

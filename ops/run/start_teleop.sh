@@ -22,6 +22,11 @@ trap cleanup EXIT INT TERM
 
 "$REPO_ROOT/ops/run/preflight.sh"
 cd "$REPO_ROOT/docker"
+running="$(docker compose ps --services --status running)"
+if grep -Eq '^(moveit-fake|moveit-real|arm-ui)$' <<<"$running"; then
+  echo "Refusing to start teleoperation while MoveIt/arm-ui is running." >&2
+  exit 1
+fi
 docker compose up -d "${SERVICES[@]}"
 stack_started=true
 docker compose ps "${SERVICES[@]}"

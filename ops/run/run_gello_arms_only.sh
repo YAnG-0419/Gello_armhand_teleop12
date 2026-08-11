@@ -29,6 +29,11 @@ trap cleanup EXIT INT TERM
 
 "$REPO_ROOT/ops/run/preflight.sh" --arms-only
 cd "$REPO_ROOT/docker"
+running="$(docker compose ps --services --status running)"
+if grep -Eq '^(moveit-fake|moveit-real|arm-ui)$' <<<"$running"; then
+  echo "Refusing arm-only teleoperation while MoveIt/arm-ui is running." >&2
+  exit 1
+fi
 # Ensure a hand service left by an earlier session cannot command either hand.
 docker compose stop --timeout 10 hand-control
 docker compose up -d "${SERVICES[@]}"
