@@ -166,12 +166,12 @@ def main() -> None:
             default="",
             help=f"{side} original Wuji Hand USB serial",
         )
-    parser.add_argument("--wuji-kp", type=float, default=3.0)
+    parser.add_argument("--wuji-kp", type=float, default=4.0)
     parser.add_argument("--wuji-kd", type=float, default=0.1)
     parser.add_argument(
         "--wuji-current-limit",
         type=float,
-        default=1.5,
+        default=1.0,
         help="Wuji Hand 2 per-joint current limit in amps",
     )
     args = parser.parse_args()

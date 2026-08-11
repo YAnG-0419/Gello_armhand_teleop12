@@ -54,6 +54,22 @@ class AdaptiveOptimizerAnalytical(BaseOptimizer):
                 )
             self.pinch_tip_scaling[i] = value
 
+        # During a thumb-index pinch, move the thumb target slightly from the
+        # thumb-facing edge of the index pad toward its center (the direction
+        # from the index tip toward the middle-finger tip).  The value is in cm
+        # because the optimization targets below use cm.  Zero preserves the
+        # original behavior for every profile that does not opt in.
+        self.index_pinch_thumb_shift_cm = float(
+            retarget_config.get('index_pinch_thumb_shift_cm', 0.0)
+        )
+        if (
+            not np.isfinite(self.index_pinch_thumb_shift_cm)
+            or self.index_pinch_thumb_shift_cm < 0.0
+        ):
+            raise ValueError(
+                "index_pinch_thumb_shift_cm must be finite and non-negative"
+            )
+
         # FullHandVec parameters
         self.w_full_hand = retarget_config.get('w_full_hand', 1.0)
         segment_scaling_config = retarget_config.get('segment_scaling', {})
@@ -159,6 +175,37 @@ class AdaptiveOptimizerAnalytical(BaseOptimizer):
         alpha_thumb = np.max(alphas_4)
         return np.concatenate([[alpha_thumb], alphas_4])
 
+    def _apply_index_pinch_thumb_shift(
+        self,
+        target_tip_vectors: np.ndarray,
+        mediapipe_keypoints: np.ndarray,
+        alphas: np.ndarray,
+    ) -> None:
+        """Shift the thumb target toward the center of the index fingertip."""
+        if self.index_pinch_thumb_shift_cm == 0.0:
+            return
+
+        # alphas = [thumb, index, middle, ring, pinky].  Subtracting the
+        # strongest competing pinch keeps this correction out of middle/ring/
+        # pinky pinches and makes gesture transitions continuous.
+        index_dominance = max(float(alphas[1] - np.max(alphas[2:])), 0.0)
+        activation = min(index_dominance / 0.7, 1.0)
+        if activation == 0.0:
+            return
+
+        index_tip = mediapipe_keypoints[self.MP_TIP_INDICES[1]]
+        middle_tip = mediapipe_keypoints[self.MP_TIP_INDICES[2]]
+        toward_middle = middle_tip - index_tip
+        norm = float(np.linalg.norm(toward_middle))
+        if norm <= 1e-8:
+            return
+        target_tip_vectors[0] += (
+            self.index_pinch_thumb_shift_cm
+            * activation
+            * toward_middle
+            / norm
+        )
+
     def solve(
         self,
         mediapipe_keypoints: np.ndarray,
@@ -181,6 +228,9 @@ class AdaptiveOptimizerAnalytical(BaseOptimizer):
         target_tip_vectors = self._compute_tip_vectors(
             mediapipe_keypoints, self.scaling
         ) * self.pinch_tip_scaling[:, None]
+        self._apply_index_pinch_thumb_shift(
+            target_tip_vectors, mediapipe_keypoints, alphas
+        )
         target_tip_dirs = self._compute_tip_dirs(mediapipe_keypoints)
         target_full_hand_vectors = self._compute_full_hand_vectors(
             mediapipe_keypoints, self.segment_scaling
@@ -213,6 +263,9 @@ class AdaptiveOptimizerAnalytical(BaseOptimizer):
         target_tip_vectors = self._compute_tip_vectors(
             mediapipe_keypoints, self.scaling
         ) * self.pinch_tip_scaling[:, None]
+        self._apply_index_pinch_thumb_shift(
+            target_tip_vectors, mediapipe_keypoints, alphas
+        )
         target_tip_dirs = self._compute_tip_dirs(mediapipe_keypoints)
         target_full_hand_vectors = self._compute_full_hand_vectors(
             mediapipe_keypoints, self.segment_scaling

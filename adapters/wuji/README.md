@@ -19,10 +19,13 @@ is reordered from the URDF/Pinocchio order into the compiled MJCF/device order
 by joint name before it is sent to the SDK. The resolved permutation is printed
 at startup so the active mapping can be checked before engaging either hand.
 
-The right MANUS profile has a localized `pinch_tip_scaling.index` correction.
-It changes only the right index fingertip target while thumb-index pinch mode is
-active; the left profile, open-hand mapping, thumb, and other fingers retain the
-upstream mapping.
+The right MANUS profile has localized `pinch_tip_scaling.index` and
+`pinch_tip_scaling.middle` corrections. They change only the corresponding
+right fingertip target while its thumb pinch mode is active; the left profile,
+open-hand mapping and other fingers retain the upstream mapping. During a
+thumb-index pinch, the right thumb target also shifts 2 mm toward the center of
+the index pad; this correction fades with the pinch activation and is inactive
+during other pinch gestures.
 
 Install the additional Python dependencies once:
 
@@ -141,6 +144,7 @@ One original USB Wuji Hand is also supported:
   --wuji-right-serial SERIAL
 ```
 
-Wuji Hand 2 defaults match the imported implementation: `kp=3.0`, `kd=0.1`,
-and a per-joint current limit of `1.5 A`. Override them only after hardware
-validation with `--wuji-kp`, `--wuji-kd`, and `--wuji-current-limit`.
+Wuji Hand 2 now defaults to `kp=4.0`, `kd=0.1`, and a per-joint current limit
+of `1.0 A`. Start with one hand in free space and watch current and motor
+temperature during hardware validation. Override them with `--wuji-kp`,
+`--wuji-kd`, and `--wuji-current-limit`.
