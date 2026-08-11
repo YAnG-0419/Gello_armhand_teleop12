@@ -47,9 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
         )
     parser.add_argument("--wuji-rate", type=float, default=30.0)
     parser.add_argument("--wuji-stale-timeout", type=float, default=0.25)
-    parser.add_argument("--wuji-kp", type=float, default=3.0)
+    parser.add_argument("--wuji-kp", type=float, default=4.0)
     parser.add_argument("--wuji-kd", type=float, default=0.1)
-    parser.add_argument("--wuji-current-limit", type=float, default=1.5)
+    parser.add_argument("--wuji-current-limit", type=float, default=1.0)
     parser.add_argument("--keyboard-device", default="/dev/tty")
     parser.add_argument("--debug-log")
     parser.add_argument(

@@ -22,10 +22,16 @@ retarget:
   w_pos: 1.0
   w_dir: 2.0
   scaling: 1.0
-  # Right MANUS index pinch only: bring the index pad to the thumb without
-  # changing the thumb, the other fingers, or the open-hand FullHand mapping.
+  # Right MANUS pinch-only corrections: bring the index/middle pads to the
+  # thumb without changing the thumb, other fingers, or open-hand mapping.
+  # The middle value was selected from the recorded r_pinch_2 sequence; using
+  # the index value here over-closes the middle finger and increases the gap.
   pinch_tip_scaling:
     index: 0.81
+    middle: 0.90
+  # At full thumb-index pinch, move the thumb target 2 mm from the
+  # thumb-facing edge of the index pad toward the middle of the pad.
+  index_pinch_thumb_shift_cm: 0.20
   project_tip_dir: false
   w_full_hand: 1.0
   segment_scaling:
