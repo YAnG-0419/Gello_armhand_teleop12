@@ -1,0 +1,53 @@
+# Wuji Hand 2 Pose UI
+
+This local NiceGUI application owns two network Wuji Hand 2 devices and the
+MANUS bridge. It starts with both hands disabled, displays actual motor joint
+feedback, and stores independently named left/right poses in one JSON file.
+
+## Start
+
+Install the Wuji environment once, then pass both explicit device addresses:
+
+```bash
+./ops/setup/setup_wuji_env.sh
+./ops/run/start_wuji_ui.sh \
+  --wuji-left-address 192.168.2.111:7447 \
+  --wuji-right-address 192.168.2.112:7447
+```
+
+The launcher opens <http://127.0.0.1:8082>. Pass `--no-browser` to suppress
+automatic browser opening. The default pose file is
+`config/calibration/wuji_hand_2_poses.json`; override it with `--output PATH`.
+
+## Operator workflow
+
+1. Both hands start in **manual** mode with motors disabled. Move either hand
+   by hand, click **读取当前位置**, enter an independent name, and save it.
+   Each pending angle can be adjusted with a model-bounded slider or its linked
+   numeric degree field; editing these controls never commands hardware.
+2. To teach from MANUS, confirm **启动 MANUS 遥操** for either side. Return to
+   **手动 / 失能** before touching or repositioning that hand directly.
+3. Clicking a saved pose only selects it and shows its 20 angles. **移动到选中姿态**
+   requires a separate confirmation and moves at the configured bounded speed.
+4. Closing the server disables and disconnects both hands.
+
+## MANUS threshold capture
+
+The **MANUS 距离阈值采集** card works while the Wuji motors are disabled. Pick
+a side, one thumb-to-fingertip distance, and an existing pose. Start capture,
+repeat the intended gesture through its normal variation, then stop. The UI
+shows live millimetres and robust min/p05/median/p95/max statistics.
+
+The suggested enter threshold is the observed p95 plus a small margin. The
+exit threshold is larger to provide hysteresis, and both remain editable. A
+saved mapping contains the side, target finger, pose name, enter/exit values,
+dwell time, and calibration statistics in `manus_triggers` in the same JSON.
+At least 10 distinct MANUS frames are required.
+
+This version records and validates the mapping but deliberately does not yet
+execute a saved pose automatically when the gesture occurs. Gesture-triggered
+hardware execution remains the separate next step.
+
+Only fresh, complete 20-joint motor feedback can be recorded. JSON stores
+radians in firmware/device command order and includes all joint names so later
+gesture-triggered policies can reorder by name rather than assuming indices.

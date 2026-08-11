@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import math
 from pathlib import Path
@@ -12,6 +11,7 @@ import threading
 from nicegui import events, run, ui
 
 from .models import ArmRepository, MAX_ROUTINE_WAYPOINTS, Routine, Waypoint
+from .recording import ActionStore, build_recorded_action
 from .runtime import ArmRosRuntime, TrajectoryCancelled
 
 SIDE_LABELS = {"left": "左臂", "right": "右臂"}
@@ -28,6 +28,7 @@ def _radians(degrees: object) -> float:
 class ArmUiApplication:
     def __init__(self, repository: ArmRepository, runtime: ArmRosRuntime) -> None:
         self.repository = repository
+        self.action_store = ActionStore(repository.root)
         self.runtime = runtime
         self._status_lock = threading.RLock()
         self._status = {"left": "等待关节状态", "right": "等待关节状态"}
@@ -46,6 +47,7 @@ class ArmUiApplication:
             "selected": None,
             "sequence": [],
             "routine": None,
+            "preview_action": None,
             "busy": False,
         }
 
@@ -342,6 +344,122 @@ class ArmUiApplication:
                         "w-full rounded bg-slate-100 p-3"
                     )
 
+            with ui.card().classes(
+                "arm-card arm-workspace w-full min-w-[1816px] p-5"
+            ):
+                with ui.row().classes("w-full items-start"):
+                    with ui.column().classes("gap-1 grow"):
+                        ui.label("动作示教（相对末端轨迹）").classes(
+                            "text-lg font-semibold"
+                        )
+                        ui.label(
+                            "进入零力矩拖动后录制。系统同时保存原始关节/末端轨迹，"
+                            "并生成相对动作；停止录制后机械臂仍保持拖动模式。"
+                        ).classes("text-sm text-slate-500")
+                    capture_frame_label = ui.label(
+                        f"基准：{self.runtime.base_frame} → {self.runtime.tool_frame(state['side'])}"
+                    ).classes("text-sm font-mono text-slate-500")
+
+                with ui.row().classes("w-full items-end gap-3"):
+                    action_name = ui.input(
+                        "动作名称", placeholder="例如 scoop_food_1"
+                    ).classes("w-96")
+                    capture_rate = ui.number(
+                        "采样频率", value=100, min=10, max=250, step=10
+                    ).props("outlined suffix=Hz").classes("w-40")
+                    start_capture_button = ui.button(
+                        "开始录制动作", icon="fiber_manual_record", color="negative"
+                    ).classes("h-12")
+                    stop_capture_button = ui.button(
+                        "停止并保存", icon="stop", color="positive"
+                    ).classes("h-12")
+                    discard_capture_button = ui.button(
+                        "放弃录制", icon="delete_sweep", color="warning"
+                    ).props("outline").classes("h-12")
+                    capture_status_label = ui.label("未录制").classes(
+                        "grow rounded bg-slate-100 p-3 font-mono"
+                    )
+
+                with ui.row().classes("w-full items-end gap-3"):
+                    preview_speed = ui.number(
+                        "低速试运行速度", value=15, min=5, max=30, step=5
+                    ).props("outlined suffix=%").classes("w-48")
+                    preview_stop_button = ui.button(
+                        "停止试运行", icon="stop", color="negative"
+                    ).classes("h-12")
+                    preview_status_label = ui.label(
+                        "先将机械臂拖到新起点，验证 IK 后再低速试运行"
+                    ).classes("grow rounded bg-amber-50 p-3 font-mono")
+
+                @ui.refreshable
+                def action_list() -> None:
+                    actions = self.action_store.summaries(state["side"])
+                    if not actions:
+                        ui.label("还没有保存的动作录制。").classes(
+                            "text-slate-400"
+                        )
+                        return
+                    with ui.column().classes("w-full gap-2"):
+                        for summary in actions:
+                            active = ", ".join(
+                                f"J{index}" for index in summary["active_joints"]
+                            ) or "未识别"
+                            with ui.card().classes(
+                                "arm-card w-full py-2 px-4"
+                            ):
+                                with ui.row().classes("w-full items-center"):
+                                    ui.icon("gesture").classes("text-blue-500")
+                                    ui.label(str(summary["name"])).classes(
+                                        "w-64 font-medium"
+                                    )
+                                    ui.label(
+                                        f"{summary['duration_sec']:.2f}s"
+                                    ).classes("w-24 font-mono")
+                                    ui.label(
+                                        f"{summary['sample_count']} 帧"
+                                    ).classes("w-24 font-mono")
+                                    ui.label(f"活动关节：{active}").classes("grow")
+                                    async def validate_selected_action(
+                                        _event: object = None,
+                                        name: object = summary["name"],
+                                    ) -> None:
+                                        await _validate_action(str(name))
+
+                                    def open_selected_preview(
+                                        _event: object = None,
+                                        name: object = summary["name"],
+                                    ) -> None:
+                                        _open_preview(str(name))
+
+                                    ui.button(
+                                        "当前位置验证 IK", icon="fact_check"
+                                    ).props("outline").on(
+                                        "click", validate_selected_action
+                                    )
+                                    ui.button(
+                                        "低速试运行", icon="slow_motion_video",
+                                        color="warning",
+                                    ).on("click", open_selected_preview)
+                                    ui.button(
+                                        "下载 YAML", icon="download"
+                                    ).props("flat").on(
+                                        "click",
+                                        lambda _event, path=summary["path"]: _download(
+                                            path
+                                        ),
+                                    )
+                                    ui.button(
+                                        icon="delete", color="negative"
+                                    ).props("flat round").on(
+                                        "click",
+                                        lambda _event,
+                                        name=summary["name"]: _delete_action(
+                                            str(name)
+                                        ),
+                                    )
+
+                action_list()
+
         def _nudge(index: int, direction: int) -> None:
             try:
                 step = float(nudge_step.value or 0.1)
@@ -528,10 +646,132 @@ class ArmUiApplication:
                 accepted = await run.io_bound(self.runtime.stop)
                 if accepted:
                     execution_label.text = "已发送停止请求，等待机械臂保持"
+                    preview_status_label.text = "已发送停止请求，等待机械臂保持"
                 else:
                     ui.notify("当前没有正在执行的轨迹")
             except Exception as error:
                 ui.notify(str(error), color="negative", timeout=10)
+
+        async def _start_capture() -> None:
+            if state["busy"]:
+                return
+            name = str(action_name.value or "").strip()
+            if not name:
+                ui.notify("请先填写动作名称", color="warning")
+                return
+            if self.action_store.path_for(state["side"], name).exists():
+                ui.notify(f"动作名称已存在: {name}", color="negative")
+                return
+            state["busy"] = True
+            try:
+                await run.io_bound(
+                    self.runtime.start_recording,
+                    state["side"],
+                    rate_hz=float(capture_rate.value),
+                )
+                ui.notify("动作录制已开始，请拖动机械臂", color="negative")
+            except Exception as error:
+                ui.notify(str(error), color="negative", timeout=10)
+            finally:
+                state["busy"] = False
+
+        async def _stop_capture() -> None:
+            if state["busy"]:
+                return
+            state["busy"] = True
+            try:
+                capture = await run.io_bound(self.runtime.stop_recording)
+                action = await run.io_bound(
+                    build_recorded_action,
+                    name=str(action_name.value or "").strip(),
+                    side=capture.side,
+                    base_frame=capture.base_frame,
+                    tool_frame=capture.tool_frame,
+                    samples=capture.samples,
+                )
+                path = await run.io_bound(self.action_store.save, action)
+                action_list.refresh()
+                ui.notify(
+                    f"动作“{action.name}”已保存：{path.name}", color="positive"
+                )
+            except Exception as error:
+                ui.notify(str(error), color="negative", timeout=10)
+            finally:
+                state["busy"] = False
+
+        async def _discard_capture() -> None:
+            try:
+                discarded = await run.io_bound(self.runtime.discard_recording)
+                ui.notify("已放弃本次动作录制" if discarded else "当前没有录制")
+            except Exception as error:
+                ui.notify(str(error), color="negative")
+
+        async def _validate_action(name: str) -> None:
+            if state["busy"]:
+                return
+            state["busy"] = True
+            try:
+                action = await run.io_bound(
+                    self.action_store.load, state["side"], name
+                )
+                result = await run.io_bound(
+                    self.runtime.validate_relative_action, action
+                )
+                ui.notify(
+                    f"IK验证通过：检查 {result.checked_frames}/{result.total_frames} 帧，"
+                    f"最大相邻关节变化 {math.degrees(result.max_joint_step_rad):.2f}°；"
+                    "机械臂未运动",
+                    color="positive",
+                    timeout=10,
+                )
+            except Exception as error:
+                ui.notify(str(error), color="negative", timeout=12)
+            finally:
+                state["busy"] = False
+
+        def _open_preview(name: str) -> None:
+            if state["busy"]:
+                ui.notify("当前有操作正在进行", color="warning")
+                return
+            state["preview_action"] = name
+            preview_dialog_action.text = f"动作：{name}"
+            preview_dialog.open()
+
+        async def _preview_action() -> None:
+            name = state["preview_action"]
+            if not name or state["busy"]:
+                return
+            state["busy"] = True
+            preview_status_label.text = f"正在从当前姿态求解动作“{name}”…"
+            try:
+                action = await run.io_bound(
+                    self.action_store.load, state["side"], str(name)
+                )
+                result = await run.io_bound(
+                    self.runtime.execute_relative_action,
+                    action,
+                    speed_scale=float(preview_speed.value) / 100.0,
+                )
+                preview_status_label.text = (
+                    f"完成：{result.checked_frames}帧IK全部通过，保持在动作末点"
+                )
+                ui.notify("低速试运行完成，机械臂保持在末点", color="positive")
+            except TrajectoryCancelled:
+                preview_status_label.text = "已停止：机械臂保持当前位置"
+                ui.notify("低速试运行已停止", color="warning")
+            except Exception as error:
+                preview_status_label.text = f"试运行失败：{error}"
+                ui.notify(str(error), color="negative", timeout=12)
+            finally:
+                state["busy"] = False
+
+        def _delete_action(name: str) -> None:
+            try:
+                self.action_store.delete(state["side"], name)
+                action_list.refresh()
+                ui.notify(f"动作“{name}”已删除")
+            except Exception as error:
+                ui.notify(str(error), color="negative")
 
         def _change_side(side: str) -> None:
             if state["busy"]:
@@ -555,6 +795,10 @@ class ArmUiApplication:
             point_list.refresh()
             sequence_view.refresh()
             _refresh_routines()
+            capture_frame_label.text = (
+                f"基准：{self.runtime.base_frame} → {self.runtime.tool_frame(state['side'])}"
+            )
+            action_list.refresh()
 
         def _refresh_state() -> None:
             side = state["side"]
@@ -578,12 +822,53 @@ class ArmUiApplication:
                 mode, "未知"
             )
             mode_label.text = f"控制模式：{mode_text}｜{self.status(side)}"
+            capture_status = self.runtime.recording_status()
+            if capture_status["active"]:
+                capture_status_label.text = (
+                    f"录制中  {capture_status['elapsed_sec']:.1f}s  "
+                    f"{capture_status['sample_count']}帧  "
+                    f"TF跳过:{capture_status['skipped_tf_samples']}"
+                )
+                capture_status_label.classes(
+                    remove="bg-slate-100 bg-red-100 text-red-900",
+                    add="bg-red-100 text-red-900",
+                )
+                start_capture_button.disable()
+                stop_capture_button.enable()
+                discard_capture_button.enable()
+            else:
+                capture_status_label.text = "未录制"
+                capture_status_label.classes(
+                    remove="bg-red-100 text-red-900", add="bg-slate-100"
+                )
+                start_capture_button.enable()
+                stop_capture_button.disable()
+                discard_capture_button.disable()
+            if self.runtime.is_running():
+                preview_stop_button.enable()
+            else:
+                preview_stop_button.disable()
 
         def _download(path: Path) -> None:
             if not path.exists():
                 ui.notify("还没有可下载的YAML文件", color="warning")
                 return
             ui.download(path)
+
+        async def _confirm_teach() -> None:
+            teach_dialog.close()
+            await _switch_mode("teach")
+
+        async def _confirm_start() -> None:
+            start_dialog.close()
+            await _start()
+
+        async def _hold() -> None:
+            await _switch_mode("trajectory")
+
+        async def _confirm_preview() -> None:
+            preview_dialog.close()
+            await _preview_action()
 
         with ui.dialog() as teach_dialog, ui.card().classes("max-w-lg"):
             ui.label("确认进入零力矩拖动模式").classes("text-lg font-semibold")
@@ -595,10 +880,7 @@ class ArmUiApplication:
                 ui.button("取消", on_click=teach_dialog.close).props("flat")
                 ui.button(
                     "我已托住，进入拖动",
-                    on_click=lambda: (
-                        teach_dialog.close(),
-                        asyncio.create_task(_switch_mode("teach")),
-                    ),
+                    on_click=_confirm_teach,
                     color="warning",
                 )
 
@@ -612,11 +894,27 @@ class ArmUiApplication:
                 ui.button("取消", on_click=start_dialog.close).props("flat")
                 ui.button(
                     "确认 START",
-                    on_click=lambda: (
-                        start_dialog.close(),
-                        asyncio.create_task(_start()),
-                    ),
+                    on_click=_confirm_start,
                     color="positive",
+                )
+
+        with ui.dialog() as preview_dialog, ui.card().classes("max-w-xl"):
+            ui.label("确认低速试运行相对动作").classes(
+                "text-lg font-semibold"
+            )
+            preview_dialog_action = ui.label("动作：").classes("font-mono")
+            ui.label(
+                "系统会从当前真实末端姿态重新求解完整IK轨迹，验证通过后自动退出"
+                "零力矩拖动并驱动机械臂。请松开机械臂、清空周围空间，并确保STOP"
+                "和硬件停止手段可触达。"
+            )
+            ui.label("试运行结束后机械臂保持在动作末点。")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("取消", on_click=preview_dialog.close).props("flat")
+                ui.button(
+                    "确认低速试运行",
+                    on_click=_confirm_preview,
+                    color="warning",
                 )
 
         side_toggle.on_value_change(lambda event: _change_side(event.value))
@@ -628,9 +926,13 @@ class ArmUiApplication:
         delete_routine_button.on("click", lambda: _delete_routine())
         routine_select.on_value_change(lambda event: _load_routine(event.value))
         teach_button.on("click", teach_dialog.open)
-        hold_button.on("click", lambda: asyncio.create_task(_switch_mode("trajectory")))
+        hold_button.on("click", _hold)
         start_button.on("click", start_dialog.open)
-        stop_button.on("click", lambda: asyncio.create_task(_stop()))
+        stop_button.on("click", _stop)
+        start_capture_button.on("click", _start_capture)
+        stop_capture_button.on("click", _stop_capture)
+        discard_capture_button.on("click", _discard_capture)
+        preview_stop_button.on("click", _stop)
         download_points_button.on(
             "click", lambda: _download(self.repository.waypoints_path)
         )

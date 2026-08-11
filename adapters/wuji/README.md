@@ -144,6 +144,23 @@ One original USB Wuji Hand is also supported:
   --wuji-right-serial SERIAL
 ```
 
+## Dual Hand 2 pose UI
+
+For manual/MANUS teaching and independently named left/right pose capture, use
+the local browser UI. Both hands connect with motors disabled, and only actual
+20-joint feedback is recorded:
+
+```bash
+./ops/run/start_wuji_ui.sh \
+  --wuji-left-address 192.168.2.111:7447 \
+  --wuji-right-address 192.168.2.112:7447
+```
+
+The browser opens at <http://127.0.0.1:8082>. See
+[`apps/wuji_ui/README.md`](../../apps/wuji_ui/README.md) for the safety workflow
+and JSON contract, or [`docs/WUJI_HAND_UI.md`](../../docs/WUJI_HAND_UI.md) for
+the complete Chinese runbook and code map.
+
 Wuji Hand 2 now defaults to `kp=4.0`, `kd=0.1`, and a per-joint current limit
 of `1.0 A`. Start with one hand in free space and watch current and motor
 temperature during hardware validation. Override them with `--wuji-kp`,

@@ -19,6 +19,43 @@ switches controllers, and submits a MoveIt Pilz sequence.
    stays under trajectory control at the final point.
 6. Click **进入零力矩拖动** explicitly before guiding the arm again.
 
+### Relative action recording
+
+The lower **动作示教（相对末端轨迹）** panel records continuous hand-guided
+motion for actions such as a wrist scooping gesture:
+
+1. Select one arm and enter zero-effort hand-guiding mode.
+2. Enter an action name, click **开始录制动作**, and guide the real arm through
+   the motion. The default sample rate is 100 Hz.
+3. Click **停止并保存**. Static lead-in/out is trimmed, while both the raw
+   seven-joint samples and the end-effector path relative to its initial pose
+   are retained.
+4. Hand-guide the arm to another candidate start pose and click
+   **当前位置验证 IK**. MoveIt sequentially solves the relative end-effector
+   path from that pose and checks for IK branch jumps. This validation never
+   sends a motion command.
+5. Set **低速试运行速度** between 5% and 30% (15% by default), then click the
+   saved action's **低速试运行** button. After confirmation, the backend solves
+   every frame again, rejects movement during solving, switches the selected
+   arm to trajectory control, and submits one time-scaled spline trajectory.
+6. **停止试运行** cancels the active controller goal and holds the current
+   position. A completed preview stays at the action's final pose; explicitly
+   re-enter zero-effort mode before hand-guiding again.
+
+Recording uses `lychee_root` as the fixed URDF base and the selected arm's
+`link8` as the tool frame. A saved relative frame is
+`T_initial_tool^-1 * T_sample_tool`; during validation it is reapplied as
+`T_current_tool * T_relative`. IK validation keeps MoveIt's collision,
+reachability, and continuity checks enabled. The two arms are not coordinated
+or moved by this feature.
+
+Low-speed preview is deliberately restricted to one execution, 5%–30% speed,
+at most 2,000 recorded frames, and at most 120 seconds after scaling. The first
+IK point must remain within 0.05 rad of the current joints, and movement greater
+than 0.03 rad while IK is being solved aborts before controller switching.
+Adjacent IK jumps and generated joint-velocity limit violations also abort the
+preview.
+
 `STOP` requests cancellation through the MoveIt action. It is not a hardware
 emergency stop.
 
@@ -29,6 +66,8 @@ Files are written atomically under `/data/arm_ui` in the container:
 - `waypoints.yaml`: named left/right joint configurations in radians.
 - `routines.yaml`: named sequences referencing those point names, plus speed,
   acceleration, and blend settings.
+- `actions/<side>__<name>.yaml`: raw hand-guided joint/tool samples and the
+  derived tool-relative action frames.
 
 The browser also exposes download buttons for both files. The `/data` volume is
 provided by `TELEOP_DATA_ROOT` in `docker/.env`.

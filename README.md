@@ -337,6 +337,7 @@ docker compose ps
 - [硬件部署与故障处理](docs/HARDWARE_DEPLOY.md)
 - [GELLO 控制语义](docs/GELLO_TELEOP.md)
 - [MoveIt 模式](docs/MOVEIT.md)
+- [FR3 相对末端动作示教与遥操接入计划](docs/RELATIVE_ACTION_TEACHING.md)
 - [手动灵巧手 UI](apps/hand_ui/README.md)
 - [Wuji 手集成](adapters/wuji/README.md)
 - [Powder weighing 特殊任务](tasks/powderweighing/README.md)
