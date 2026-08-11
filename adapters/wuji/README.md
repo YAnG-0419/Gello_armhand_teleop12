@@ -33,7 +33,12 @@ Install the additional Python dependencies once:
 ## Simulation
 
 The simulation entry point never connects to Wuji hardware or publishes a
-hardware command. It uses the bundled 2751-frame replay by default.
+hardware command. Its side-specific defaults are the recorded raw MANUS data:
+
+- right: `/home/descfly/franka_teleop_data/wuji_replays/r_pinch_2.pkl`
+- left: `/home/descfly/franka_teleop_data/wuji_replays/l_pinch_2.pkl`
+
+Pass `--replay FILE` only when intentionally testing another recording.
 
 Open the `hand2_beta` model:
 
@@ -60,6 +65,28 @@ conda run --no-capture-output -n gello-upper-body-teleop \
 
 The live MANUS mode reads the glove and drives MuJoCo only; it still does not
 connect to either O30i or Wuji hand hardware.
+
+Record new raw right MANUS landmarks while watching that same simulation:
+
+```bash
+mkdir -p /home/descfly/franka_teleop_data/wuji_replays
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python -m adapters.wuji.sim --side right --input manus \
+  --record /home/descfly/franka_teleop_data/wuji_replays/right_pinch.pkl \
+  --frames 900
+```
+
+During the roughly 30-second capture, perform open-hand, fist, and several slow
+thumb-index pinches. It saves automatically after 900 valid frames; `Ctrl+C` or
+closing the viewer also saves. The file uses the same raw 21-landmark format as
+the bundled replay, and an existing file is never overwritten. Replay it later
+without MANUS Core or a glove:
+
+```bash
+conda run --no-capture-output -n gello-upper-body-teleop \
+  python -m adapters.wuji.sim --side right \
+  --replay /home/descfly/franka_teleop_data/wuji_replays/right_pinch.pkl
+```
 
 For two network Wuji Hand 2 devices, addresses are deliberately explicit so
 left/right cannot be selected by network discovery incorrectly:
