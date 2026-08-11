@@ -23,7 +23,7 @@ The right MANUS profile has localized `pinch_tip_scaling.index` and
 `pinch_tip_scaling.middle` corrections. They change only the corresponding
 right fingertip target while its thumb pinch mode is active; the left profile,
 open-hand mapping and other fingers retain the upstream mapping. During a
-thumb-index pinch, the right thumb target also shifts 2 mm toward the center of
+thumb-index pinch, the right thumb target also shifts 4 mm toward the center of
 the index pad; this correction fades with the pinch activation and is inactive
 during other pinch gestures.
 

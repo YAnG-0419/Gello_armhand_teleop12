@@ -75,7 +75,7 @@ def test_right_pinch_corrections_are_local_to_that_profile_and_targets():
         right.pinch_tip_scaling,
         np.array([1.0, 0.81, 0.90, 1.0, 1.0]),
     )
-    assert right.index_pinch_thumb_shift_cm == pytest.approx(0.20)
+    assert right.index_pinch_thumb_shift_cm == pytest.approx(0.40)
 
     keypoints = np.zeros((21, 3), dtype=np.float64)
     keypoints[[4, 8, 12, 16, 20], 0] = np.arange(1.0, 6.0)
@@ -98,7 +98,7 @@ def test_right_index_pinch_shifts_thumb_toward_middle_finger_only():
     right._apply_index_pinch_thumb_shift(
         target, keypoints, np.array([0.7, 0.7, 0.0, 0.0, 0.0])
     )
-    np.testing.assert_allclose(target[0], [0.0, -0.20, 0.0])
+    np.testing.assert_allclose(target[0], [0.0, -0.40, 0.0])
     np.testing.assert_array_equal(target[1:], np.zeros((4, 3)))
 
     middle_pinch_target = np.zeros((5, 3), dtype=np.float64)

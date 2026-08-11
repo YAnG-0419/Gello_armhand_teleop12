@@ -29,9 +29,9 @@ retarget:
   pinch_tip_scaling:
     index: 0.81
     middle: 0.90
-  # At full thumb-index pinch, move the thumb target 2 mm from the
+  # At full thumb-index pinch, move the thumb target 4 mm from the
   # thumb-facing edge of the index pad toward the middle of the pad.
-  index_pinch_thumb_shift_cm: 0.20
+  index_pinch_thumb_shift_cm: 0.40
   project_tip_dir: false
   w_full_hand: 1.0
   segment_scaling:
