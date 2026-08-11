@@ -36,10 +36,27 @@ class AdaptiveOptimizerAnalytical(BaseOptimizer):
         self.scaling = retarget_config.get('scaling', 1.0)
         self.project_tip_dir = retarget_config.get('project_tip_dir', False)
 
+        # Optional per-finger correction for the wrist->tip target used only by
+        # the pinch branch.  This leaves FullHandVec (the open-hand mapping)
+        # untouched and defaults to the original behavior for every finger.
+        finger_names = ['thumb', 'index', 'middle', 'ring', 'pinky']
+        pinch_tip_scaling_config = retarget_config.get(
+            'pinch_tip_scaling', {}
+        )
+        self.pinch_tip_scaling = np.ones(5, dtype=np.float64)
+        for i, finger_name in enumerate(finger_names):
+            if finger_name not in pinch_tip_scaling_config:
+                continue
+            value = float(pinch_tip_scaling_config[finger_name])
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    f"pinch_tip_scaling.{finger_name} must be positive and finite"
+                )
+            self.pinch_tip_scaling[i] = value
+
         # FullHandVec parameters
         self.w_full_hand = retarget_config.get('w_full_hand', 1.0)
         segment_scaling_config = retarget_config.get('segment_scaling', {})
-        finger_names = ['thumb', 'index', 'middle', 'ring', 'pinky']
         # For optimization: (5, 3) - PIP, DIP, TIP only
         self.segment_scaling = np.ones((5, 3), dtype=np.float64)
         # For visualization: (5, 4) - MCP, PIP, DIP, TIP (full version)
@@ -161,7 +178,9 @@ class AdaptiveOptimizerAnalytical(BaseOptimizer):
         init_qpos = self._get_init_qpos(last_qpos)
 
         alphas = self._compute_pinch_alpha(mediapipe_keypoints)
-        target_tip_vectors = self._compute_tip_vectors(mediapipe_keypoints, self.scaling)
+        target_tip_vectors = self._compute_tip_vectors(
+            mediapipe_keypoints, self.scaling
+        ) * self.pinch_tip_scaling[:, None]
         target_tip_dirs = self._compute_tip_dirs(mediapipe_keypoints)
         target_full_hand_vectors = self._compute_full_hand_vectors(
             mediapipe_keypoints, self.segment_scaling
@@ -191,7 +210,9 @@ class AdaptiveOptimizerAnalytical(BaseOptimizer):
     ) -> float:
         """Compute cost for given joint angles."""
         alphas = self._compute_pinch_alpha(mediapipe_keypoints)
-        target_tip_vectors = self._compute_tip_vectors(mediapipe_keypoints, self.scaling)
+        target_tip_vectors = self._compute_tip_vectors(
+            mediapipe_keypoints, self.scaling
+        ) * self.pinch_tip_scaling[:, None]
         target_tip_dirs = self._compute_tip_dirs(mediapipe_keypoints)
         target_full_hand_vectors = self._compute_full_hand_vectors(
             mediapipe_keypoints, self.segment_scaling

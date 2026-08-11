@@ -19,6 +19,11 @@ is reordered from the URDF/Pinocchio order into the compiled MJCF/device order
 by joint name before it is sent to the SDK. The resolved permutation is printed
 at startup so the active mapping can be checked before engaging either hand.
 
+The right MANUS profile has a localized `pinch_tip_scaling.index` correction.
+It changes only the right index fingertip target while thumb-index pinch mode is
+active; the left profile, open-hand mapping, thumb, and other fingers retain the
+upstream mapping.
+
 Install the additional Python dependencies once:
 
 ```bash
