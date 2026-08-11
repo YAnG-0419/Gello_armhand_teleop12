@@ -2,7 +2,8 @@
 
 This entry point never connects to a Wuji hand or publishes a hardware command.
 It accepts the bundled replay by default and can optionally read one live MANUS
-glove through the existing native bridge.
+glove through the existing native bridge. Live landmarks can be recorded for
+later replay without a glove.
 """
 
 from __future__ import annotations
@@ -22,11 +23,22 @@ from adapters.wuji.wuji_retargeting import Retargeter
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = ROOT / "config"
-DEFAULT_REPLAY = ROOT / "sim_data" / "avp1.pkl"
+DEFAULT_REPLAYS = {
+    "left": Path(
+        "/home/descfly/franka_teleop_data/wuji_replays/l_pinch_2.pkl"
+    ),
+    "right": Path(
+        "/home/descfly/franka_teleop_data/wuji_replays/r_pinch_2.pkl"
+    ),
+}
 
 
 def config_path(side: str) -> Path:
     return CONFIG_DIR / f"retarget_manus_wuji_hand_2_{side}.yaml"
+
+
+def selected_replay_path(side: str, override: Path | None) -> Path:
+    return override if override is not None else DEFAULT_REPLAYS[side]
 
 
 def model_path(config: Path) -> Path:
@@ -101,6 +113,42 @@ def manus_frames(side: str) -> Iterator[np.ndarray]:
         bridge.close()
 
 
+class ReplayRecorder:
+    """Collect raw canonical MANUS landmarks in the bundled replay format."""
+
+    def __init__(self, path: Path, side: str) -> None:
+        self.path = path.expanduser().resolve()
+        if self.path.exists():
+            raise FileExistsError(
+                f"refusing to overwrite existing replay: {self.path}"
+            )
+        self.side = side
+        self.started = time.monotonic()
+        self.rows = []
+
+    def add(self, landmarks: np.ndarray) -> None:
+        frame = np.asarray(landmarks, dtype=np.float64)
+        if frame.shape != (21, 3) or not np.isfinite(frame).all():
+            raise ValueError("recorded MANUS frame must contain 21 finite landmarks")
+        self.rows.append(
+            {
+                "t": time.monotonic() - self.started,
+                "left_fingers": frame.copy() if self.side == "left" else None,
+                "right_fingers": frame.copy() if self.side == "right" else None,
+            }
+        )
+
+    def save(self) -> int:
+        if not self.rows:
+            return 0
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive creation protects an existing recording even if it appears
+        # after argument validation but before Ctrl+C triggers this save.
+        with self.path.open("xb") as stream:
+            pickle.dump(self.rows, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        return len(self.rows)
+
+
 def run(args: argparse.Namespace) -> None:
     config = config_path(args.side)
     retargeter = Retargeter.from_yaml(str(config), args.side)
@@ -109,11 +157,13 @@ def run(args: argparse.Namespace) -> None:
     data = mujoco.MjData(model)
     permutation = actuator_permutation(retargeter, model)
 
+    replay = selected_replay_path(args.side, args.replay)
     frames = (
-        replay_frames(args.replay, args.side)
+        replay_frames(replay, args.side)
         if args.input == "replay"
         else manus_frames(args.side)
     )
+    recorder = ReplayRecorder(args.record, args.side) if args.record else None
     maximum_frames = args.frames or (300 if args.headless else None)
     steps_per_frame = max(1, round(1.0 / (args.fps * model.opt.timestep)))
 
@@ -131,11 +181,18 @@ def run(args: argparse.Namespace) -> None:
     print(f"  model: hand2_beta ({mjcf_path})")
     print(f"  input: {args.input}")
     print(f"  side: {args.side}")
+    if args.input == "replay":
+        print(f"  replay: {replay.expanduser().resolve()}")
+    if recorder is not None:
+        print(f"  recording raw MANUS landmarks: {recorder.path}")
+        print("  press Ctrl+C or close the viewer to save")
     started = time.monotonic()
     processed = 0
     try:
         for landmarks in frames:
             tick_started = time.monotonic()
+            if recorder is not None:
+                recorder.add(landmarks)
             qpos = retargeter.retarget(landmarks)
             data.ctrl[:] = qpos[permutation]
             for _ in range(steps_per_frame):
@@ -159,6 +216,12 @@ def run(args: argparse.Namespace) -> None:
         close_frames = getattr(frames, "close", None)
         if callable(close_frames):
             close_frames()
+        if recorder is not None:
+            saved = recorder.save()
+            if saved:
+                print(f"saved {saved} raw MANUS frames to {recorder.path}")
+            else:
+                print("no MANUS frames received; no replay file was written")
 
     elapsed = max(time.monotonic() - started, 1e-9)
     print(f"processed {processed} frames at {processed / elapsed:.1f} frame/s")
@@ -170,7 +233,19 @@ def main() -> None:
     parser.add_argument(
         "--input", choices=("replay", "manus"), default="replay"
     )
-    parser.add_argument("--replay", type=Path, default=DEFAULT_REPLAY)
+    parser.add_argument(
+        "--replay",
+        type=Path,
+        default=None,
+        help="override the side-specific l_pinch_2/r_pinch_2 replay",
+    )
+    parser.add_argument(
+        "--record",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="with --input manus, save raw landmarks for later replay",
+    )
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument(
         "--frames",
@@ -186,6 +261,8 @@ def main() -> None:
         parser.error("--fps must be positive")
     if args.frames < 0:
         parser.error("--frames cannot be negative")
+    if args.record is not None and args.input != "manus":
+        parser.error("--record requires --input manus")
     run(args)
 
 

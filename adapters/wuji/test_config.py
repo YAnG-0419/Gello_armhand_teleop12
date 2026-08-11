@@ -63,6 +63,26 @@ def test_real_hand2_entry_uses_beta_model_and_device_joint_order():
         assert permutation.tolist() == HAND2_DEVICE_PERMUTATION
 
 
+def test_right_index_pinch_correction_is_local_to_that_profile_and_target():
+    left_path = _config_path("left", "wuji_hand_2")
+    right_path = _config_path("right", "wuji_hand_2")
+    left = Retargeter.from_yaml(str(left_path), "left").optimizer
+    right = Retargeter.from_yaml(str(right_path), "right").optimizer
+
+    np.testing.assert_array_equal(left.pinch_tip_scaling, np.ones(5))
+    np.testing.assert_array_equal(
+        right.pinch_tip_scaling,
+        np.array([1.0, 0.81, 1.0, 1.0, 1.0]),
+    )
+
+    keypoints = np.zeros((21, 3), dtype=np.float64)
+    keypoints[[4, 8, 12, 16, 20], 0] = np.arange(1.0, 6.0)
+    original = right._compute_tip_vectors(keypoints, right.scaling)
+    corrected = original * right.pinch_tip_scaling[:, None]
+    np.testing.assert_allclose(corrected[1], original[1] * 0.81)
+    np.testing.assert_array_equal(corrected[[0, 2, 3, 4]], original[[0, 2, 3, 4]])
+
+
 @pytest.mark.parametrize("side", ("left", "right"))
 def test_real_hand2_tick_sends_reordered_command(monkeypatch, side):
     config_path = _config_path(side, "wuji_hand_2")

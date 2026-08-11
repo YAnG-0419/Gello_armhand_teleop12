@@ -248,7 +248,8 @@ Wuji 模式继续使用双 GELLO 控制 FR3，使用现有 MANUS bridge 和 Oper
   --wuji-current-limit 0.5
 ```
 
-无需连接硬件即可测试正确的 `hand2_beta` 模型：
+无需连接硬件即可测试正确的 `hand2_beta` 模型。右手默认重放
+`r_pinch_2.pkl`，左手默认重放 `l_pinch_2.pkl`：
 
 ```bash
 conda run --no-capture-output -n gello-upper-body-teleop \
