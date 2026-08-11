@@ -8,6 +8,7 @@ import pytest
 
 from pico_bimanual_franka_teleop import hardware
 from pico_bimanual_franka_teleop.gello_input import (
+    _SideReader,
     DynamixelJointReader,
     DualGelloJointInput,
     GelloConfig,
@@ -124,6 +125,57 @@ class _FakeReader:
 
     def close(self):
         self.closed = True
+
+
+class _JumpThenStableReader:
+    def __init__(self, *_args):
+        self.calls = 0
+
+    def read(self):
+        self.calls += 1
+        return np.zeros(7) if self.calls <= 20 else np.ones(7)
+
+    def close(self):
+        return None
+
+
+def test_side_reader_reacquires_stable_input_after_fail_closed_jump():
+    side = _SideReader(
+        "right",
+        GelloSideConfig(
+            "/dev/RIGHT",
+            "RIGHT",
+            (1, 1, 1, 1, 1, 1, 1),
+            (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        ),
+        baudrate=57600,
+        joint_ids=(1, 2, 3, 4, 5, 6, 7),
+        signs=np.ones(7),
+        max_joint_jump=0.35,
+        stale_timeout=0.25,
+        reader_factory=_JumpThenStableReader,
+    )
+    try:
+        deadline = time.monotonic() + 0.5
+        observed_fault = None
+        while time.monotonic() < deadline:
+            _values, _updated_at, error, _samples = side.snapshot()
+            if error is not None:
+                observed_fault = error
+                break
+            time.sleep(0.001)
+        assert observed_fault is not None
+        assert "exceeds 0.350 rad" in observed_fault
+
+        while time.monotonic() < deadline:
+            values, _updated_at, error, _samples = side.snapshot()
+            if error is None and values is not None and np.allclose(values, 1.0):
+                break
+            time.sleep(0.001)
+        else:
+            raise AssertionError("stable GELLO input was not reacquired")
+    finally:
+        side.close()
 
 
 def _config(stale_timeout=0.25, ready_timeout=0.2):

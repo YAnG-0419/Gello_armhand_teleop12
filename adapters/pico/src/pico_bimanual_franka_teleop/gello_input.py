@@ -240,6 +240,8 @@ class DynamixelJointReader:
 
 
 class _SideReader:
+    _RECOVERY_SAMPLES = 10
+
     def __init__(
         self,
         side: str,
@@ -270,6 +272,8 @@ class _SideReader:
 
     def _run(self) -> None:
         previous_raw: np.ndarray | None = None
+        recovery_candidate: np.ndarray | None = None
+        recovery_samples = 0
         while not self._stop.is_set():
             try:
                 health_reader = getattr(self._reader, "health_error", None)
@@ -286,8 +290,39 @@ class _SideReader:
                     continuous = previous_raw + (raw - previous_raw + np.pi) % (
                         2.0 * np.pi
                     ) - np.pi
-                    if np.max(np.abs(continuous - previous_raw)) > self._max_joint_jump:
-                        raise ValueError("joint jump exceeds configured limit")
+                    delta = np.abs(continuous - previous_raw)
+                    if np.max(delta) > self._max_joint_jump:
+                        if recovery_candidate is None:
+                            recovery_candidate = raw.copy()
+                            recovery_samples = 1
+                        else:
+                            candidate = recovery_candidate + (
+                                raw - recovery_candidate + np.pi
+                            ) % (2.0 * np.pi) - np.pi
+                            if (
+                                np.max(np.abs(candidate - recovery_candidate))
+                                <= self._max_joint_jump
+                            ):
+                                recovery_candidate = candidate
+                                recovery_samples += 1
+                            else:
+                                recovery_candidate = raw.copy()
+                                recovery_samples = 1
+                        joint = int(np.argmax(delta)) + 1
+                        if recovery_samples < self._RECOVERY_SAMPLES:
+                            raise ValueError(
+                                f"joint {joint} jump {delta[joint - 1]:.3f} rad "
+                                f"exceeds {self._max_joint_jump:.3f} rad; "
+                                f"reacquiring stable input "
+                                f"({recovery_samples}/{self._RECOVERY_SAMPLES})"
+                            )
+                        # The side has already been fail-closed by sample().
+                        # Rebase only after a stable run; re-engagement remains
+                        # an explicit operator action and the relative mapper
+                        # anchors that action to the measured robot pose.
+                        continuous = recovery_candidate
+                    recovery_candidate = None
+                    recovery_samples = 0
                 previous_raw = continuous
                 now = time.monotonic()
                 with self._lock:

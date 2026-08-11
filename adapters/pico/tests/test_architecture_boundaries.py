@@ -264,3 +264,68 @@ def test_hardware_coordinator_runs_with_a_device_agnostic_arm_source(monkeypatch
         teleop.run()
 
     assert closed == {"source": True, "robot": True}
+
+
+def test_hardware_coordinator_reports_and_exits_after_state_loss(monkeypatch):
+    statuses = []
+    disabled = []
+    closed = {"source": False, "robot": False}
+
+    class Source:
+        def close(self):
+            closed["source"] = True
+
+    class Operator:
+        def disable_all(self, reason):
+            disabled.append(reason)
+
+        def set_status(self, status):
+            statuses.append(status)
+
+        def show(self, _message):
+            return None
+
+    class Robot:
+        def __init__(self, **_kwargs):
+            return None
+
+        def wait_for_state(self, timeout):
+            return np.zeros(14)
+
+        def receive_state(self):
+            return None
+
+        def send_command(self, _q, active_sides):
+            assert active_sides == ()
+
+        def close(self):
+            closed["robot"] = True
+
+    class IK:
+        def __init__(self, **_kwargs):
+            self.configuration = type("Configuration", (), {"q": np.zeros(14)})()
+
+    monkeypatch.setattr(hardware, "UdpRobotBackend", Robot)
+    monkeypatch.setattr(hardware, "BimanualPinkIK", IK)
+    teleop = hardware.DualFr3HardwareTeleop(
+        command_host="unused",
+        command_port=1,
+        state_host="unused",
+        state_port=2,
+        state_timeout=0.01,
+        translation_scale=1.0,
+        rotation_scale=1.0,
+        control_rate=1000.0,
+        max_joint_speed=0.5,
+        robot_state_wait_timeout=0.01,
+        arm_source=Source(),
+        operator=Operator(),
+    )
+
+    with pytest.raises(TimeoutError, match="Lost fresh dual-FR3 state"):
+        teleop.run()
+
+    assert disabled == ["robot state missing or stale"]
+    assert statuses
+    assert statuses[-1].startswith("FAULT | robot state missing or stale")
+    assert closed == {"source": True, "robot": True}

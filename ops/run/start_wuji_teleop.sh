@@ -14,10 +14,38 @@ for argument in "$@"; do
 done
 SERVICES=("$FRANKA_SERVICE" teleop-control gello-bridge)
 stack_started=false
+operator_pid=""
+
+pid_alive() {
+  local pid=$1
+  [[ -n "$pid" ]] && kill -0 -- "$pid" 2>/dev/null
+}
+
+wait_until_dead() {
+  local pid=$1
+  local attempts=$2
+  local attempt
+  for ((attempt = 0; attempt < attempts; attempt++)); do
+    pid_alive "$pid" || return 0
+    sleep 0.1
+  done
+  return 1
+}
 
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
+  # run_operator owns the separately-sessioned backend and GUI.  Signal and
+  # reap that supervisor before stopping Docker; otherwise an outer Ctrl-C can
+  # return the prompt while the native MANUS/Wuji backend remains alive.
+  if pid_alive "$operator_pid"; then
+    kill -TERM -- "$operator_pid" 2>/dev/null || true
+    if ! wait_until_dead "$operator_pid" 200; then
+      echo "Operator supervisor did not stop; sending SIGKILL..." >&2
+      kill -KILL -- "$operator_pid" 2>/dev/null || true
+    fi
+  fi
+  [[ -z "$operator_pid" ]] || wait "$operator_pid" 2>/dev/null || true
   if [[ "$stack_started" == true ]]; then
     (cd "$REPO_ROOT/docker" && docker compose stop --timeout 10 "${SERVICES[@]}") || true
   fi
@@ -57,4 +85,12 @@ docker compose ps "${SERVICES[@]}"
 cd "$REPO_ROOT"
 "$REPO_ROOT/ops/run/run_operator.sh" \
   --hand-source wuji \
-  "${OPERATOR_ARGS[@]}"
+  "${OPERATOR_ARGS[@]}" &
+operator_pid=$!
+
+set +e
+wait "$operator_pid"
+status=$?
+set -e
+operator_pid=""
+exit "$status"

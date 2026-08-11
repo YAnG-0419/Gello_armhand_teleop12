@@ -194,6 +194,7 @@ class DualFr3HardwareTeleop:
 
     def run(self) -> None:
         next_status_report = 0.0
+        state_missing_since: float | None = None
         # Worst IK step per side since the last status report; a transient
         # at the report instant must not hide a limit hit seconds earlier.
         ik_worst: dict[str, dict] = {}
@@ -212,7 +213,14 @@ class DualFr3HardwareTeleop:
                 self._service_reset()
                 q = self.robot.receive_state()
                 if q is None:
-                    self.operator.disable_all("robot state missing or stale")
+                    reason = "robot state missing or stale"
+                    if state_missing_since is None:
+                        state_missing_since = started_at
+                        self.operator.disable_all(reason)
+                    missing_for = started_at - state_missing_since
+                    self.operator.set_status(
+                        f"FAULT | {reason} for {missing_for:.1f}s"
+                    )
                     for mapper in self.mappers.values():
                         mapper.reset()
                     self.robot.send_command(
@@ -225,8 +233,14 @@ class DualFr3HardwareTeleop:
                         self.hands.set_active(
                             {side: False for side in SIDES}
                         )
+                    if missing_for >= self.robot_state_wait_timeout:
+                        raise TimeoutError(
+                            "Lost fresh dual-FR3 state for "
+                            f"{missing_for:.1f}s"
+                        )
                     time.sleep(self.dt)
                     continue
+                state_missing_since = None
                 if self.hold_q is None:
                     self.hold_q = np.asarray(q, dtype=float).copy()
                     # Anchor the IK null-space attractor at the pose the session
