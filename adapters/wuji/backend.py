@@ -85,8 +85,10 @@ class WujiHand2Backend:
             )
         self._sdk = wuji_sdk
         self._manager = SdkManager.instance()
+        # device_name is a local SdkManager alias, not the product type; it must
+        # be unique when both hands are connected in one process.
         self._hand: Any = self._manager.connect(
-            address=address, device_name="wuji_hand_2"
+            address=address, device_name=f"wuji_hand_2_{side}"
         )
         self._publisher: Any = None
         try:
