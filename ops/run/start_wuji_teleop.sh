@@ -31,7 +31,7 @@ if grep -qx hand-control <<<"$running"; then
   echo "Stop the existing teleop stack first. O30i configuration has not been changed." >&2
   exit 1
 fi
-if grep -Eq '^(moveit-fake|moveit-real)$' <<<"$running"; then
+if grep -Eq '^(moveit-fake|moveit-real|arm-ui)$' <<<"$running"; then
   echo "Refusing to start Wuji/Gello mode while a MoveIt service is running." >&2
   echo "Stop MoveIt first so only one controller stack owns the FR3 arms." >&2
   exit 1

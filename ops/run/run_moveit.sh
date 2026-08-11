@@ -14,7 +14,7 @@ fi
 
 cd "$REPO_ROOT/docker"
 running="$(docker compose ps --services --status running)"
-for service in franka-control fake-franka-control teleop-control gello-bridge pico-bridge vive-bridge moveit-fake moveit-real; do
+for service in franka-control fake-franka-control teleop-control gello-bridge pico-bridge vive-bridge moveit-fake moveit-real arm-ui; do
   if grep -qx "$service" <<<"$running"; then
     echo "Refusing to start MoveIt while $service is running." >&2
     echo "Stop the Gello/teleop stack first; both modes own the FR3 command path." >&2
@@ -32,4 +32,12 @@ fi
 if [[ -n "${DISPLAY:-}" ]] && command -v xhost >/dev/null 2>&1; then
   xhost +local:root >/dev/null
 fi
-exec docker compose up "$service"
+if [[ "${ARM_UI_NO_BROWSER:-0}" != "1" ]] \
+  && [[ -n "${DISPLAY:-}" ]] \
+  && command -v xdg-open >/dev/null 2>&1; then
+  (
+    sleep 4
+    xdg-open http://127.0.0.1:8081 >/dev/null 2>&1 || true
+  ) &
+fi
+exec docker compose up "$service" arm-ui

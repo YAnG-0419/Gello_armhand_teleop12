@@ -16,8 +16,9 @@ The hand retargeting optimizer in `adapters/pico/src/pico_bimanual_franka_teleop
 
 The container downloads pinned upstream releases of libfranka, franka_ros2, and franka_description during the build. Those components remain under their respective upstream licenses.
 
-The optional dual-FR3 MoveIt packages and NiceGUI hand-control source under
-`ros_ws/src/lychee_fr3_*` and `apps/hand_ui/barmate` were imported from
+The optional dual-FR3 MoveIt packages, zero-effort teach controller, and
+NiceGUI hand-control source under `ros_ws/src/lychee_fr3_*`,
+`ros_ws/src/lychee_teach_controllers`, and `apps/hand_ui/barmate` were imported from
 the local `lychee_barmate` repository at revision
 `0b8722134d07b872130b40e8642789a35c515424`. The ROS package manifests declare
 Apache-2.0 for the MoveIt packages. The source repository did not contain a

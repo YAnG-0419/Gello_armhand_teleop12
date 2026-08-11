@@ -113,6 +113,26 @@ services:
       - --port
       - "8080"
 
+  arm-ui:
+    <<: *runtime
+    profiles: [moveit]
+    environment:
+      - ROS_LOCALHOST_ONLY=0
+      - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
+      - PYTHONPATH=/workspace/franka_upper_body_teleop
+    command:
+      - python3
+      - -m
+      - apps.arm_ui
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8081"
+      - --data-root
+      - /data/arm_ui
+      - --robot-type
+      - fr3
+
   teleop-control:
     <<: *runtime
     command:

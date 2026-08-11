@@ -274,6 +274,11 @@ conda run --no-capture-output -n gello-upper-body-teleop \
 ./ops/run/run_moveit.sh --real
 ```
 
+两种模式都会同时启动 FR3 点位示教与轨迹编排 UI，浏览器打开
+<http://127.0.0.1:8081>。假硬件可验证点位编辑、任务 YAML 和轨迹执行；真机
+模式还可在单臂轨迹控制器与零力矩拖动控制器之间切换。进入拖动模式前必须托住
+机械臂，并确认负载、质心和硬件停止手段。
+
 当前 Compose 中的真机地址与 `config/workcell/current.yaml` 一致：左侧
 `172.16.0.3`、右侧 `172.16.0.2`。修改工作站地址时需要同步更新两处。MoveIt
 与正常 GELLO 安全网关是两套独立的机械臂控制模式，不能同时运行。
