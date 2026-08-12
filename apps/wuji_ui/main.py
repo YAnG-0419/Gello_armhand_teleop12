@@ -51,6 +51,7 @@ MODE_LABELS = {
     "teleop": "MANUS 遥操",
     "jog": "滑块实时控制",
     "pose": "移动到保存姿态",
+    "sequence": "姿态序列",
     "hold": "保持姿态",
 }
 
@@ -1058,6 +1059,223 @@ class WujiUiApplication:
                 gesture_delete.on("click", _delete_gesture_trigger)
                 _update_gesture_pose_options()
                 ui.timer(0.1, _refresh_composite_gesture)
+
+            sequence_state = {
+                "side": "left",
+                "steps": [],
+                "busy": False,
+            }
+            with ui.card().classes("wuji-card w-full p-5"):
+                with ui.row().classes("w-full items-center"):
+                    ui.label("姿态串联预览").classes("text-xl font-semibold")
+                    ui.label(
+                        "把同一只手的已保存姿态按顺序执行；每段使用现有限速并等待实际反馈到位。"
+                    ).classes("text-sm text-slate-500")
+                with ui.row().classes("w-full items-end gap-3"):
+                    sequence_side = ui.toggle(SIDE_LABELS, value="left").props(
+                        "no-caps"
+                    )
+                    sequence_pose = ui.select(
+                        [pose.name for pose in self.repository.poses("left")],
+                        label="选择姿态",
+                    ).classes("w-56")
+                    sequence_add = ui.button("加入序列", icon="playlist_add")
+                    sequence_hold = ui.number(
+                        "每步停留",
+                        value=0.5,
+                        min=0.0,
+                        max=10.0,
+                        step=0.1,
+                        suffix="s",
+                        format="%.1f",
+                    ).classes("w-40")
+                    sequence_tolerance = ui.number(
+                        "到位容差",
+                        value=5.0,
+                        min=0.5,
+                        max=20.0,
+                        step=0.5,
+                        suffix="°",
+                        format="%.1f",
+                    ).classes("w-40")
+                    ui.space()
+                    sequence_start = ui.button(
+                        "执行序列", icon="play_arrow", color="warning"
+                    )
+                    sequence_stop = ui.button(
+                        "STOP", icon="stop", color="negative"
+                    )
+
+                sequence_status_label = ui.label("尚未运行").classes(
+                    "w-full rounded bg-slate-100 p-3"
+                )
+
+                @ui.refreshable
+                def sequence_list() -> None:
+                    steps = sequence_state["steps"]
+                    if not steps:
+                        ui.label("从已保存姿态中加入两个或更多步骤").classes(
+                            "text-slate-400 py-3"
+                        )
+                        return
+                    with ui.list().props("bordered separator").classes("w-full"):
+                        for index, name in enumerate(steps):
+                            with ui.item():
+                                with ui.item_section().props("avatar"):
+                                    ui.label(str(index + 1)).classes(
+                                        "rounded-full bg-slate-200 px-2 py-1"
+                                    )
+                                with ui.item_section():
+                                    ui.item_label(name)
+                                with ui.item_section().props("side"):
+                                    with ui.row().classes("gap-1"):
+                                        ui.button(
+                                            icon="arrow_upward",
+                                            on_click=lambda _event, index=index: (
+                                                _move_sequence_step(index, -1)
+                                            ),
+                                        ).props("flat dense")
+                                        ui.button(
+                                            icon="arrow_downward",
+                                            on_click=lambda _event, index=index: (
+                                                _move_sequence_step(index, 1)
+                                            ),
+                                        ).props("flat dense")
+                                        ui.button(
+                                            icon="close",
+                                            color="negative",
+                                            on_click=lambda _event, index=index: (
+                                                _remove_sequence_step(index)
+                                            ),
+                                        ).props("flat dense")
+
+                sequence_list()
+
+                def _update_sequence_pose_options() -> None:
+                    options = [
+                        pose.name
+                        for pose in self.repository.poses(sequence_side.value)
+                    ]
+                    if list(sequence_pose.options) == options:
+                        return
+                    sequence_pose.options = options
+                    if sequence_pose.value not in options:
+                        sequence_pose.value = options[0] if options else None
+                    sequence_pose.update()
+
+                def _add_sequence_step() -> None:
+                    try:
+                        name = sequence_pose.value
+                        if not name:
+                            raise ValueError("当前手侧还没有可加入的保存姿态")
+                        self.repository.pose(sequence_side.value, name)
+                        sequence_state["steps"].append(name)
+                        sequence_list.refresh()
+                    except Exception as error:
+                        ui.notify(str(error), color="negative")
+
+                def _move_sequence_step(index: int, offset: int) -> None:
+                    target = index + offset
+                    steps = sequence_state["steps"]
+                    if 0 <= index < len(steps) and 0 <= target < len(steps):
+                        steps[index], steps[target] = steps[target], steps[index]
+                        sequence_list.refresh()
+
+                def _remove_sequence_step(index: int) -> None:
+                    steps = sequence_state["steps"]
+                    if 0 <= index < len(steps):
+                        steps.pop(index)
+                        sequence_list.refresh()
+
+                def _change_sequence_side() -> None:
+                    if sequence_state["busy"]:
+                        sequence_side.value = sequence_state["side"]
+                        ui.notify("序列运行时不能切换手侧", color="warning")
+                        return
+                    sequence_state["side"] = sequence_side.value
+                    sequence_state["steps"] = []
+                    _update_sequence_pose_options()
+                    sequence_list.refresh()
+
+                async def _run_sequence() -> None:
+                    if sequence_state["busy"]:
+                        return
+                    side = sequence_side.value
+                    try:
+                        names = list(sequence_state["steps"])
+                        if len(names) < 2:
+                            raise ValueError("姿态串联至少需要两个步骤")
+                        poses = [
+                            (name, self.repository.pose(side, name).qpos)
+                            for name in names
+                        ]
+                        sequence_state["busy"] = True
+                        sequence_status_label.text = "正在启动姿态序列…"
+                        await run.io_bound(
+                            self.runtime.execute_pose_sequence,
+                            side,
+                            poses,
+                            hold_seconds=float(sequence_hold.value),
+                            position_tolerance_rad=_radians(
+                                sequence_tolerance.value
+                            ),
+                        )
+                        sequence_status_label.text = "序列执行完成，保持最后姿态"
+                        ui.notify("姿态序列执行完成", color="positive")
+                    except InterruptedError:
+                        sequence_status_label.text = "序列已停止，保持当前位置"
+                        ui.notify("姿态序列已停止", color="warning")
+                    except Exception as error:
+                        sequence_status_label.text = f"序列失败：{error}"
+                        ui.notify(str(error), color="negative", timeout=10)
+                    finally:
+                        sequence_state["busy"] = False
+
+                async def _stop_sequence() -> None:
+                    running = await run.io_bound(
+                        self.runtime.stop_pose_sequence, sequence_side.value
+                    )
+                    if running:
+                        sequence_status_label.text = "已请求停止…"
+                    else:
+                        ui.notify("当前没有运行中的姿态序列")
+
+                def _refresh_sequence_status() -> None:
+                    _update_sequence_pose_options()
+                    status = self.runtime.sequence_status(sequence_side.value)
+                    if status.running:
+                        sequence_status_label.text = (
+                            f"运行中：{status.step_index}/{status.step_count} "
+                            f"{status.pose_name}"
+                        )
+
+                with ui.dialog() as sequence_dialog, ui.card().classes("max-w-lg"):
+                    ui.label("确认执行姿态序列").classes("text-lg font-semibold")
+                    ui.label(
+                        "电机将使能并依次移动。请确认手周围无障碍物，"
+                        "硬件停止手段可触达。"
+                    )
+                    with ui.row().classes("w-full justify-end"):
+                        ui.button("取消", on_click=sequence_dialog.close).props("flat")
+                        ui.button(
+                            "确认执行",
+                            color="warning",
+                            on_click=lambda: (
+                                sequence_dialog.close(),
+                                asyncio.create_task(_run_sequence()),
+                            ),
+                        )
+
+                sequence_side.on_value_change(
+                    lambda _event: _change_sequence_side()
+                )
+                sequence_add.on("click", _add_sequence_step)
+                sequence_start.on("click", sequence_dialog.open)
+                sequence_stop.on(
+                    "click", lambda: asyncio.create_task(_stop_sequence())
+                )
+                _update_sequence_pose_options()
+                ui.timer(0.2, _refresh_sequence_status)
 
             with ui.row().classes("w-full items-center"):
                 ui.label(f"保存文件：{self.repository.path}").classes(
