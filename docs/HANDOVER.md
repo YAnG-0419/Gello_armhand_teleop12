@@ -16,7 +16,7 @@ VIVE hand tracker ids: config/modes/vive.yaml    PICO fallback ids: config/modes
 
 ## Current status
 
-- Standard startup is `docker compose up franka-control teleop-control gello-bridge hand-control`, then `ops/run/run_teleop.sh`, then `python apps/operator_gui/operator_gui.py`. VIVE and PICO remain optional fallbacks; never run multiple UDP bridges.
+- Standard startup is `docker compose up franka-control teleop-control moveit-ik gello-bridge hand-control`, then `ops/run/run_teleop.sh`, then `python apps/operator_gui/operator_gui.py`. `moveit-ik` is read-only and starts no controller manager. VIVE and PICO remain optional fallbacks; never run multiple UDP bridges.
 - Arms are settled; contact torque gating and collision thresholds are hardware-validated. Do not retune without reading the relevant git history.
 - The false-stale PICO regression is resolved and hardware-verified. Motion is parsed first, published atomically, and considered fresh only when the local callback sequence advances; no native parsing exception may cross the vendor callback boundary.
 - Do not restore the former multi-getter consistency loop or cached-snapshot engagement grace. An invalid atomic snapshot disengages immediately.

@@ -18,6 +18,20 @@ SIDES = ("left", "right")
 FORMAT = "wuji-hand-2-hardcoded-poses"
 VERSION = 1
 FINGERS = ("index", "middle", "ring", "pinky")
+GESTURE_FEATURES = (
+    "thumb_curl_rad",
+    "index_curl_rad",
+    "middle_curl_rad",
+    "ring_curl_rad",
+    "pinky_curl_rad",
+    "thumb_index_gap_palm",
+    "thumb_middle_gap_palm",
+    "thumb_ring_gap_palm",
+    "thumb_pinky_gap_palm",
+    "index_middle_gap_palm",
+    "middle_ring_gap_palm",
+    "ring_pinky_gap_palm",
+)
 
 
 def _side(value: str) -> str:
@@ -101,6 +115,211 @@ class ManusTrigger:
         )
 
 
+@dataclass(frozen=True)
+class ManusGestureTrigger:
+    name: str
+    side: str
+    pose_name: str
+    feature_ranges: Mapping[str, Mapping[str, float]]
+    enter_match_fraction: float
+    exit_match_fraction: float
+    dwell_seconds: float
+    sample_count: int
+
+    @classmethod
+    def create(
+        cls,
+        name: object,
+        side: str,
+        pose_name: object,
+        feature_ranges: Mapping[str, Mapping[str, float]],
+        *,
+        enter_match_fraction: float = 0.80,
+        exit_match_fraction: float = 0.60,
+        dwell_seconds: float = 0.15,
+        sample_count: int = 0,
+    ) -> "ManusGestureTrigger":
+        enter = float(enter_match_fraction)
+        exit_value = float(exit_match_fraction)
+        dwell = float(dwell_seconds)
+        count = int(sample_count)
+        if not 0.0 <= exit_value < enter <= 1.0:
+            raise ValueError("复合手势要求0≤退出命中率<进入命中率≤1")
+        if not math.isfinite(dwell) or dwell <= 0.0:
+            raise ValueError("复合手势停留时间必须为正数")
+        if count < 0:
+            raise ValueError("复合手势样本数不能为负数")
+        if set(feature_ranges) != set(GESTURE_FEATURES):
+            raise ValueError("复合手势特征集合不完整")
+        ranges: dict[str, dict[str, float]] = {}
+        for feature in GESTURE_FEATURES:
+            payload = feature_ranges[feature]
+            low = float(payload["min"])
+            high = float(payload["max"])
+            median = float(payload.get("median", (low + high) / 2.0))
+            if not all(math.isfinite(value) for value in (low, high, median)):
+                raise ValueError(f"复合手势特征{feature}范围必须为有限数值")
+            if low > median or median > high:
+                raise ValueError(f"复合手势特征{feature}要求min≤median≤max")
+            ranges[feature] = {"min": low, "max": high, "median": median}
+        return cls(
+            _name(name),
+            _side(side),
+            _name(pose_name),
+            ranges,
+            enter,
+            exit_value,
+            dwell,
+            count,
+        )
+
+
+class GestureRangeGate:
+    """Dwell and hysteresis gate for a composite gesture match fraction."""
+
+    def __init__(
+        self,
+        *,
+        enter_match_fraction: float,
+        exit_match_fraction: float,
+        dwell_seconds: float,
+    ) -> None:
+        self.enter = float(enter_match_fraction)
+        self.exit = float(exit_match_fraction)
+        self.dwell = float(dwell_seconds)
+        if not 0.0 <= self.exit < self.enter <= 1.0:
+            raise ValueError("复合手势要求0≤退出命中率<进入命中率≤1")
+        if not math.isfinite(self.dwell) or self.dwell <= 0.0:
+            raise ValueError("复合手势停留时间必须为正数")
+        self.reset()
+
+    def reset(self) -> None:
+        self.active = False
+        self.candidate_since: float | None = None
+
+    @property
+    def phase(self) -> str:
+        if self.active:
+            return "active"
+        return "candidate" if self.candidate_since is not None else "inactive"
+
+    def update(self, now: float, match_fraction: float) -> bool:
+        moment = float(now)
+        fraction = float(match_fraction)
+        if not math.isfinite(moment) or not math.isfinite(fraction):
+            raise ValueError("复合手势时间和命中率必须为有限数值")
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("复合手势命中率必须在0到1之间")
+        if self.active:
+            if fraction < self.exit:
+                self.reset()
+            return self.active
+        if fraction >= self.enter:
+            if self.candidate_since is None:
+                self.candidate_since = moment
+            if moment - self.candidate_since >= self.dwell:
+                self.active = True
+        else:
+            self.candidate_since = None
+        return self.active
+
+
+def _chain_curl(points: np.ndarray, indices: Sequence[int]) -> float:
+    chain = points[np.asarray(indices, dtype=int)]
+    segments = np.diff(chain, axis=0)
+    lengths = np.linalg.norm(segments, axis=1)
+    if np.any(lengths < 1e-6):
+        raise ValueError("MANUS手指骨段长度过小")
+    unit = segments / lengths[:, None]
+    cosines = np.clip(np.sum(unit[:-1] * unit[1:], axis=1), -1.0, 1.0)
+    return float(np.arccos(cosines).sum())
+
+
+def manus_gesture_features(landmarks: np.ndarray) -> dict[str, float]:
+    """Orientation-invariant hand-shape features from canonical 21 landmarks."""
+    points = np.asarray(landmarks, dtype=np.float64)
+    if points.shape != (21, 3) or not np.isfinite(points).all():
+        raise ValueError("复合手势需要有限的21x3 MANUS landmarks")
+    palm_width = float(np.linalg.norm(points[5] - points[17]))
+    if palm_width < 0.02:
+        raise ValueError("MANUS掌宽无效")
+    tips = {"thumb": 4, "index": 8, "middle": 12, "ring": 16, "pinky": 20}
+    chains = {
+        "thumb": (1, 2, 3, 4),
+        "index": (5, 6, 7, 8),
+        "middle": (9, 10, 11, 12),
+        "ring": (13, 14, 15, 16),
+        "pinky": (17, 18, 19, 20),
+    }
+    features = {
+        f"{finger}_curl_rad": _chain_curl(points, chain)
+        for finger, chain in chains.items()
+    }
+    for finger in FINGERS:
+        features[f"thumb_{finger}_gap_palm"] = float(
+            np.linalg.norm(points[tips["thumb"]] - points[tips[finger]])
+            / palm_width
+        )
+    for first, second in (
+        ("index", "middle"),
+        ("middle", "ring"),
+        ("ring", "pinky"),
+    ):
+        features[f"{first}_{second}_gap_palm"] = float(
+            np.linalg.norm(points[tips[first]] - points[tips[second]])
+            / palm_width
+        )
+    if set(features) != set(GESTURE_FEATURES) or not all(
+        math.isfinite(value) for value in features.values()
+    ):
+        raise ValueError("MANUS复合手势特征无效")
+    return features
+
+
+def summarize_gesture_samples(
+    samples: Sequence[Mapping[str, float]],
+) -> dict[str, object]:
+    if len(samples) < 30:
+        raise ValueError("复合手势至少需要30个有效MANUS帧")
+    matrix = np.asarray(
+        [[float(sample[name]) for name in GESTURE_FEATURES] for sample in samples],
+        dtype=np.float64,
+    )
+    if matrix.shape != (len(samples), len(GESTURE_FEATURES)) or not np.isfinite(
+        matrix
+    ).all():
+        raise ValueError("复合手势样本特征无效")
+    p05, median, p95 = np.percentile(matrix, [5.0, 50.0, 95.0], axis=0)
+    feature_ranges: dict[str, dict[str, float]] = {}
+    for index, name in enumerate(GESTURE_FEATURES):
+        span = float(p95[index] - p05[index])
+        absolute_margin = 0.05 if name.endswith("_rad") else 0.03
+        margin = max(absolute_margin, 0.15 * span)
+        feature_ranges[name] = {
+            "min": max(0.0, float(p05[index]) - margin),
+            "median": float(median[index]),
+            "max": float(p95[index]) + margin,
+        }
+    return {"sample_count": len(samples), "feature_ranges": feature_ranges}
+
+
+def gesture_match_fraction(
+    features: Mapping[str, float],
+    feature_ranges: Mapping[str, Mapping[str, float]],
+) -> tuple[float, dict[str, bool]]:
+    if set(features) != set(GESTURE_FEATURES):
+        raise ValueError("实时复合手势特征集合不完整")
+    matches = {
+        name: (
+            float(feature_ranges[name]["min"])
+            <= float(features[name])
+            <= float(feature_ranges[name]["max"])
+        )
+        for name in GESTURE_FEATURES
+    }
+    return sum(matches.values()) / len(matches), matches
+
+
 def summarize_gap_samples(samples_m: Sequence[float]) -> dict[str, float | int]:
     values = np.asarray(samples_m, dtype=np.float64)
     if values.ndim != 1 or values.size < 10 or not np.isfinite(values).all():
@@ -141,12 +360,16 @@ class WujiPoseRepository:
         self._triggers: dict[str, dict[str, ManusTrigger]] = {
             side: {} for side in SIDES
         }
+        self._gesture_triggers: dict[str, dict[str, ManusGestureTrigger]] = {
+            side: {} for side in SIDES
+        }
         self.reload()
 
     def reload(self) -> None:
         with self._lock:
             self._poses = {side: {} for side in SIDES}
             self._triggers = {side: {} for side in SIDES}
+            self._gesture_triggers = {side: {} for side in SIDES}
             if not self.path.exists():
                 return
             data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -183,6 +406,32 @@ class WujiPoseRepository:
                             f"触发器{trigger.name}引用不存在的姿态{trigger.pose_name}"
                         )
                     self._triggers[side][trigger.name] = trigger
+                gesture_triggers = data.get("manus_gesture_triggers", {}).get(
+                    side, {}
+                )
+                if not isinstance(gesture_triggers, dict):
+                    raise ValueError(f"manus_gesture_triggers.{side}必须是对象")
+                for name, payload in gesture_triggers.items():
+                    trigger = ManusGestureTrigger.create(
+                        name,
+                        side,
+                        payload["pose"],
+                        payload["feature_ranges"],
+                        enter_match_fraction=payload.get(
+                            "enter_match_fraction", 0.80
+                        ),
+                        exit_match_fraction=payload.get(
+                            "exit_match_fraction", 0.60
+                        ),
+                        dwell_seconds=payload.get("dwell_seconds", 0.15),
+                        sample_count=payload.get("sample_count", 0),
+                    )
+                    if trigger.pose_name not in self._poses[side]:
+                        raise ValueError(
+                            f"复合触发器{trigger.name}引用不存在的姿态"
+                            f"{trigger.pose_name}"
+                        )
+                    self._gesture_triggers[side][trigger.name] = trigger
 
     def poses(self, side: str) -> tuple[HandPose, ...]:
         with self._lock:
@@ -216,6 +465,22 @@ class WujiPoseRepository:
                             dwell_seconds=trigger.dwell_seconds,
                             calibration=trigger.calibration,
                         )
+                for trigger_name, trigger in tuple(
+                    self._gesture_triggers[pose.side].items()
+                ):
+                    if trigger.pose_name == previous_name:
+                        self._gesture_triggers[pose.side][trigger_name] = (
+                            ManusGestureTrigger.create(
+                                trigger.name,
+                                trigger.side,
+                                pose.name,
+                                trigger.feature_ranges,
+                                enter_match_fraction=trigger.enter_match_fraction,
+                                exit_match_fraction=trigger.exit_match_fraction,
+                                dwell_seconds=trigger.dwell_seconds,
+                                sample_count=trigger.sample_count,
+                            )
+                        )
             poses[pose.name] = pose
             self._persist()
 
@@ -227,6 +492,11 @@ class WujiPoseRepository:
                 for trigger in self._triggers[normalized_side].values()
                 if trigger.pose_name == str(name)
             ]
+            used_by.extend(
+                trigger.name
+                for trigger in self._gesture_triggers[normalized_side].values()
+                if trigger.pose_name == str(name)
+            )
             if used_by:
                 raise ValueError("姿态正被MANUS触发器引用: " + ", ".join(used_by))
             if self._poses[normalized_side].pop(str(name), None) is None:
@@ -259,6 +529,32 @@ class WujiPoseRepository:
                 raise KeyError(f"触发器不存在: {name}")
             self._persist()
 
+    def gesture_triggers(self, side: str) -> tuple[ManusGestureTrigger, ...]:
+        with self._lock:
+            return tuple(self._gesture_triggers[_side(side)].values())
+
+    def save_gesture_trigger(
+        self, trigger: ManusGestureTrigger, *, previous_name: str | None = None
+    ) -> None:
+        with self._lock:
+            if trigger.pose_name not in self._poses[trigger.side]:
+                raise ValueError(f"对应姿态不存在: {trigger.pose_name}")
+            triggers = self._gesture_triggers[trigger.side]
+            if previous_name is None and trigger.name in triggers:
+                raise ValueError(f"复合触发器名称已存在: {trigger.name}")
+            if previous_name and previous_name != trigger.name:
+                if trigger.name in triggers:
+                    raise ValueError(f"复合触发器名称已存在: {trigger.name}")
+                triggers.pop(previous_name, None)
+            triggers[trigger.name] = trigger
+            self._persist()
+
+    def delete_gesture_trigger(self, side: str, name: str) -> None:
+        with self._lock:
+            if self._gesture_triggers[_side(side)].pop(str(name), None) is None:
+                raise KeyError(f"复合触发器不存在: {name}")
+            self._persist()
+
     def _persist(self) -> None:
         data = {
             "format": FORMAT,
@@ -285,6 +581,24 @@ class WujiPoseRepository:
                         "calibration": dict(trigger.calibration),
                     }
                     for name, trigger in self._triggers[side].items()
+                }
+                for side in SIDES
+            },
+            "manus_gesture_triggers": {
+                side: {
+                    name: {
+                        "pose": trigger.pose_name,
+                        "metric": "composite_landmark_ranges_v1",
+                        "feature_ranges": {
+                            feature: dict(bounds)
+                            for feature, bounds in trigger.feature_ranges.items()
+                        },
+                        "enter_match_fraction": trigger.enter_match_fraction,
+                        "exit_match_fraction": trigger.exit_match_fraction,
+                        "dwell_seconds": trigger.dwell_seconds,
+                        "sample_count": trigger.sample_count,
+                    }
+                    for name, trigger in self._gesture_triggers[side].items()
                 }
                 for side in SIDES
             },

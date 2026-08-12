@@ -170,7 +170,31 @@ def generate_robot_nodes(context):
         ],
     )
 
-    return [run_move_group_node]
+    # This launch file is also used beside the UDP teleop stack as an IK-only
+    # service. It observes the two existing hardware state topics and publishes
+    # the combined model state/TF required by /compute_ik; it never starts a
+    # controller manager or sends a hardware command.
+    joint_state_publisher = Node(
+        package='joint_state_publisher',
+        executable='joint_state_publisher',
+        name='moveit_ik_joint_state_publisher',
+        parameters=[{
+            'source_list': [
+                f'/{prefix}/franka/joint_states'
+                for prefix in yaml.safe_load(arm_prefixes)
+            ],
+            'rate': 100.0,
+            'use_robot_description': False,
+        }],
+    )
+    robot_state_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='moveit_ik_robot_state_publisher',
+        parameters=[robot_description],
+    )
+
+    return [run_move_group_node, joint_state_publisher, robot_state_publisher]
 
 
 def generate_launch_description():

@@ -9,8 +9,16 @@ from .ik import BimanualPinkIK, IKError, classify_step
 from .interfaces import ArmPoseSource, HandController, OperatorState
 from .joint_mapping import RelativeJointMapper
 from .pose_mapping import RelativePoseMapper
+from .relative_action import PresetAction, SolvedRelativeAction, sample_solved_action
 from .robot_udp import UdpRobotBackend
-from .types import ArmSample, SIDES, TeleopSample
+from .types import ArmSample, JointTeleopSample, SIDES, TeleopSample
+
+
+PRESET_INTERRUPT_DELTA_RAD = 0.08
+PRESET_LEAD_IN_SEC = 0.50
+PRESET_SETTLE_TOLERANCE_RAD = 0.03
+PRESET_SETTLE_HOLD_SEC = 0.25
+PRESET_SETTLE_TIMEOUT_SEC = 5.0
 
 
 def reseed_inactive_joints(held, measured, activations, mapper_active):
@@ -50,6 +58,9 @@ class DualFr3HardwareTeleop:
         hands: HandController | None = None,
         debug_logger=None,
         reset_invoker=None,
+        capture_home_invoker=None,
+        preset_actions: dict[str, PresetAction | None] | None = None,
+        preset_solver=None,
     ) -> None:
         self.arm_source = arm_source
         self.operator = operator
@@ -110,6 +121,22 @@ class DualFr3HardwareTeleop:
         self.reset_invoker = reset_invoker
         self.reset_thread: threading.Thread | None = None
         self.reset_outcome: list[tuple[bool, str]] = []
+        self.capture_home_invoker = capture_home_invoker
+        self.capture_thread: threading.Thread | None = None
+        self.capture_side: str | None = None
+        self.capture_outcome: list[tuple[bool, str]] = []
+        self.preset_actions = preset_actions or {key: None for key in ("q", "w", "e")}
+        self.preset_solver = preset_solver
+        self.preset_thread: threading.Thread | None = None
+        self.preset_pending: PresetAction | None = None
+        self.preset_outcome: list[tuple[bool, object]] = []
+        self.preset_cancelled = False
+        self.preset_cancel_resume = True
+        self.active_preset: SolvedRelativeAction | None = None
+        self.preset_started_at: float | None = None
+        self.preset_settled_since: float | None = None
+        self.preset_resume_active = False
+        self.preset_leader_anchor: np.ndarray | None = None
 
     def _start_reset(self, side: str | None = None) -> None:
         """Home both arms, or only `side`. Either way the whole session
@@ -119,8 +146,13 @@ class DualFr3HardwareTeleop:
         if self.reset_invoker is None:
             self._notify("reset requested, but no reset command is configured")
             return
-        if self.reset_thread is not None:
-            self._notify("reset already in progress")
+        if (
+            self.reset_thread is not None
+            or getattr(self, "capture_thread", None) is not None
+            or getattr(self, "preset_thread", None) is not None
+            or getattr(self, "active_preset", None) is not None
+        ):
+            self._notify("Home reset/capture is already in progress")
             return
         self.operator.disable_all("resetting to initial pose")
         for mapper in self.mappers.values():
@@ -148,6 +180,197 @@ class DualFr3HardwareTeleop:
             self.operator.deny_hand(side, "opening hand")
         self.hands.request_open(sides=selected)
         self._notify("hands: opening " + "/".join(selected))
+
+    def _start_capture_home(self, side: str) -> None:
+        """Persist one stopped arm's current measured joints as its Home."""
+        if self.capture_home_invoker is None:
+            self._notify(
+                "Home capture requested, but no capture command is configured"
+            )
+            return
+        if (
+            self.reset_thread is not None
+            or self.capture_thread is not None
+            or getattr(self, "preset_thread", None) is not None
+            or getattr(self, "active_preset", None) is not None
+        ):
+            self._notify("Home reset/capture is already in progress")
+            return
+        if self.operator.poll().get(side, False):
+            self._notify(f"{side} Home capture rejected: stop that arm first")
+            return
+        self.operator.set_active(side, False, target="arm")
+        self.mappers[side].reset()
+        self.capture_side = side
+        self._notify(f"{side}: recording current measured joints as Home")
+
+        def worker() -> None:
+            try:
+                outcome = self.capture_home_invoker(side)
+            except Exception as error:  # noqa: BLE001 - report, never crash loop
+                outcome = (False, str(error))
+            self.capture_outcome.append(outcome)
+
+        self.capture_thread = threading.Thread(target=worker, daemon=True)
+        self.capture_thread.start()
+
+    def _service_capture_home(self) -> None:
+        if self.capture_thread is None or self.capture_thread.is_alive():
+            return
+        self.capture_thread.join()
+        self.capture_thread = None
+        side = self.capture_side
+        self.capture_side = None
+        succeeded, message = (
+            self.capture_outcome.pop()
+            if self.capture_outcome
+            else (False, "no result")
+        )
+        self._notify(
+            f"{side} Home capture {'done' if succeeded else 'FAILED'}: {message}"
+        )
+
+    @staticmethod
+    def _side_slice(side: str) -> slice:
+        return slice(0, 7) if side == "left" else slice(7, 14)
+
+    def _start_preset(
+        self, key: str, measured_q: np.ndarray, sample: ArmSample | None
+    ) -> None:
+        preset = self.preset_actions.get(key)
+        if preset is None:
+            self._notify(f"preset {key.upper()}: slot is not configured")
+            return
+        if self.preset_solver is None:
+            self._notify("preset action requested, but MoveIt IK is not configured")
+            return
+        if (
+            self.reset_thread is not None
+            or self.capture_thread is not None
+            or self.preset_thread is not None
+            or self.active_preset is not None
+        ):
+            self._notify("another Home/preset operation is already in progress")
+            return
+        if not preset.path.exists():
+            self._notify(f"preset {key.upper()}: action file is missing: {preset.path}")
+            return
+        if not isinstance(sample, JointTeleopSample):
+            self._notify("preset actions currently require GELLO joint input")
+            return
+        side = preset.side
+        self.preset_resume_active = self.operator.poll().get(side, False)
+        self.operator.set_active(side, False, target="arm")
+        self.mappers[side].reset()
+        self.preset_leader_anchor = sample.positions[side].copy()
+        self.preset_pending = preset
+        self.preset_cancelled = False
+        self.preset_cancel_resume = True
+        self._notify(
+            f"preset {key.upper()} ({preset.label}): solving every MoveIt IK frame "
+            f"from current measured pose at {preset.speed_scale * 100:.0f}% speed"
+        )
+
+        def worker() -> None:
+            try:
+                outcome = (True, self.preset_solver(preset))
+            except Exception as error:  # noqa: BLE001 - report on control thread
+                outcome = (False, str(error))
+            self.preset_outcome.append(outcome)
+
+        self.preset_thread = threading.Thread(target=worker, daemon=True)
+        self.preset_thread.start()
+
+    def _service_preset_solver(self, measured_q: np.ndarray) -> None:
+        if self.preset_thread is None or self.preset_thread.is_alive():
+            return
+        self.preset_thread.join()
+        self.preset_thread = None
+        preset = self.preset_pending
+        succeeded, result = (
+            self.preset_outcome.pop()
+            if self.preset_outcome
+            else (False, "MoveIt IK returned no result")
+        )
+        if self.preset_cancelled:
+            self._finish_preset(
+                "IK precheck interrupted", resume=self.preset_cancel_resume
+            )
+            return
+        if not succeeded or not isinstance(result, SolvedRelativeAction):
+            self._notify(f"preset IK precheck FAILED: {result}")
+            self._finish_preset("IK precheck failed", resume=True)
+            return
+        assert preset is not None
+        if result.side != preset.side:
+            self._notify("preset IK precheck FAILED: solved side does not match slot")
+            self._finish_preset("IK side mismatch", resume=True)
+            return
+        joints = self._side_slice(result.side)
+        moved = float(np.max(np.abs(measured_q[joints] - result.start_q[joints])))
+        if moved > 0.03:
+            self._notify(
+                f"preset rejected: arm moved {np.degrees(moved):.1f} deg during IK"
+            )
+            self._finish_preset("arm moved during IK", resume=True)
+            return
+        self.preset_pending = None
+        self.active_preset = result
+        self.preset_started_at = time.monotonic()
+        self.preset_settled_since = None
+        self._notify(
+            f"preset IK passed ({len(result.positions)} frames); executing "
+            f"{result.name} at {result.speed_scale * 100:.0f}%"
+        )
+
+    def _finish_preset(self, reason: str, *, resume: bool) -> None:
+        side = None
+        if self.active_preset is not None:
+            side = self.active_preset.side
+        elif self.preset_pending is not None:
+            side = self.preset_pending.side
+        self.active_preset = None
+        self.preset_pending = None
+        self.preset_started_at = None
+        self.preset_settled_since = None
+        self.preset_leader_anchor = None
+        self.preset_cancelled = False
+        self.preset_cancel_resume = True
+        if side is not None:
+            self.mappers[side].reset()
+            if resume and self.preset_resume_active:
+                self.operator.set_active(side, True, target="arm")
+                self._notify(f"preset {reason}; {side} GELLO re-anchoring now")
+            else:
+                self._notify(f"preset {reason}; {side} arm remains stopped")
+        self.preset_resume_active = False
+
+    def _stop_preset(self, reason: str, *, resume: bool = True) -> None:
+        if self.preset_thread is not None:
+            if self.preset_cancelled:
+                return
+            self.preset_cancelled = True
+            self.preset_cancel_resume = resume
+            self.preset_leader_anchor = None
+            self._notify(f"preset stop requested during IK: {reason}")
+            return
+        if self.active_preset is not None:
+            self._finish_preset(reason, resume=resume)
+            return
+        self._notify("preset stop requested, but no preset is running")
+
+    def _preset_leader_moved(self, sample: ArmSample | None) -> bool:
+        if (
+            self.preset_leader_anchor is None
+            or not isinstance(sample, JointTeleopSample)
+        ):
+            return False
+        preset = self.active_preset
+        side = preset.side if preset is not None else self.preset_pending.side
+        delta = float(
+            np.max(np.abs(sample.positions[side] - self.preset_leader_anchor))
+        )
+        return delta >= PRESET_INTERRUPT_DELTA_RAD
 
     def _service_reset(self) -> None:
         """Fold a finished reset back into the loop, on the control thread."""
@@ -211,8 +434,11 @@ class DualFr3HardwareTeleop:
             while True:
                 started_at = time.monotonic()
                 self._service_reset()
+                self._service_capture_home()
                 q = self.robot.receive_state()
                 if q is None:
+                    if self.preset_thread is not None or self.active_preset is not None:
+                        self._stop_preset("robot state missing", resume=False)
                     reason = "robot state missing or stale"
                     if state_missing_since is None:
                         state_missing_since = started_at
@@ -241,6 +467,7 @@ class DualFr3HardwareTeleop:
                     time.sleep(self.dt)
                     continue
                 state_missing_since = None
+                self._service_preset_solver(q)
                 if self.hold_q is None:
                     self.hold_q = np.asarray(q, dtype=float).copy()
                     # Anchor the IK null-space attractor at the pose the session
@@ -258,8 +485,14 @@ class DualFr3HardwareTeleop:
                         self.operator.disable_all(
                             f"safety gateway: {fault}"
                         )
+                    if self.preset_thread is not None or self.active_preset is not None:
+                        self._stop_preset("safety gateway fault", resume=False)
                 sample = self.arm_source.sample()
                 requests = self.operator.take_requests()
+                if requests.get("stop_action"):
+                    self._stop_preset("operator STOP")
+                if requests.get("abort_action"):
+                    self._stop_preset("all followers disengaged", resume=False)
                 open_sides = {
                     side
                     for side in SIDES
@@ -274,11 +507,38 @@ class DualFr3HardwareTeleop:
                     self._start_reset("left")
                 elif requests.get("reset_right"):
                     self._start_reset("right")
+                elif requests.get("capture_home_left"):
+                    self._start_capture_home("left")
+                elif requests.get("capture_home_right"):
+                    self._start_capture_home("right")
+                else:
+                    for key in ("q", "w", "e"):
+                        if requests.get(f"preset_{key}"):
+                            self._start_preset(key, q, sample)
+                            break
+                if (
+                    (self.preset_thread is not None or self.active_preset is not None)
+                    and self._preset_leader_moved(sample)
+                ):
+                    self._stop_preset("GELLO moved more than 0.08 rad")
                 if self.reset_thread is not None:
                     # The reset trajectory owns the arms; nothing may engage,
                     # and this tick's sample must not act on stale activations.
                     self.operator.disable_all("reset in progress")
                     sample = None
+                if self.capture_thread is not None and self.capture_side is not None:
+                    self.operator.set_active(
+                        self.capture_side, False, target="arm"
+                    )
+                    sample = disengage_sample_sides(sample, (self.capture_side,))
+                preset_side = None
+                if self.active_preset is not None:
+                    preset_side = self.active_preset.side
+                elif self.preset_pending is not None:
+                    preset_side = self.preset_pending.side
+                if preset_side is not None:
+                    self.operator.set_active(preset_side, False, target="arm")
+                    sample = disengage_sample_sides(sample, (preset_side,))
                 if self.reset_thread is None:
                     activations = (
                         {side: False for side in SIDES}
@@ -338,8 +598,56 @@ class DualFr3HardwareTeleop:
                             "position_error"
                         ]:
                             ik_worst[side] = diagnostics
+                finish_preset_after_send: tuple[str, bool] | None = None
+                if self.active_preset is not None:
+                    assert self.preset_started_at is not None
+                    solution = self.active_preset
+                    elapsed = time.monotonic() - self.preset_started_at
+                    joints = self._side_slice(solution.side)
+                    if elapsed < PRESET_LEAD_IN_SEC:
+                        blend = elapsed / PRESET_LEAD_IN_SEC
+                        action_target = (
+                            solution.start_q[joints]
+                            + blend
+                            * (solution.positions[0] - solution.start_q[joints])
+                        )
+                    else:
+                        action_target = sample_solved_action(
+                            solution, elapsed - PRESET_LEAD_IN_SEC
+                        )
+                    self.hold_q[joints] = action_target
+                    targets[solution.side] = action_target
+                    scheduled_end = PRESET_LEAD_IN_SEC + solution.duration_sec
+                    if elapsed >= scheduled_end:
+                        final_error = float(
+                            np.max(np.abs(q[joints] - solution.positions[-1]))
+                        )
+                        if final_error <= PRESET_SETTLE_TOLERANCE_RAD:
+                            self.preset_settled_since = (
+                                self.preset_settled_since or time.monotonic()
+                            )
+                            if (
+                                time.monotonic() - self.preset_settled_since
+                                >= PRESET_SETTLE_HOLD_SEC
+                            ):
+                                finish_preset_after_send = ("completed", True)
+                        else:
+                            self.preset_settled_since = None
+                        if elapsed >= scheduled_end + PRESET_SETTLE_TIMEOUT_SEC:
+                            self._notify(
+                                "preset FAILED: final pose did not settle within "
+                                f"{PRESET_SETTLE_TIMEOUT_SEC:.0f}s "
+                                f"({np.degrees(final_error):.1f} deg max error)"
+                            )
+                            finish_preset_after_send = (
+                                "final pose did not settle",
+                                False,
+                            )
                 active_sides = tuple(side for side in SIDES if side in targets)
                 self.robot.send_command(self.hold_q, active_sides)
+                if finish_preset_after_send is not None:
+                    reason, resume = finish_preset_after_send
+                    self._finish_preset(reason, resume=resume)
                 if self.debug_logger is not None:
                     raw_pose_reader = getattr(
                         self.arm_source, "debug_raw_poses", None

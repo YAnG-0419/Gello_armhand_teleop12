@@ -142,6 +142,19 @@ services:
       - control.launch.py
       - config:=/workspace/franka_upper_body_teleop/config/modes/teleop_control.yaml
 
+  moveit-ik:
+    <<: *runtime
+    # Read-only MoveIt service for preset-action IK/collision prechecks during
+    # teleop. move_group.launch.py starts no ros2_control/controller manager.
+    command:
+      - ros2
+      - launch
+      - lychee_fr3_moveit_config
+      - move_group.launch.py
+      - robot_types:=['fr3','fr3']
+      - robot_ips:=['172.16.0.3','172.16.0.2']
+      - move_group_log_level:=warn
+
   moveit-fake:
     <<: *runtime
     profiles: [moveit]

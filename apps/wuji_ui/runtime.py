@@ -11,7 +11,7 @@ import numpy as np
 
 from adapters.wuji.pipeline import WujiHandPipeline, canonical_landmarks
 
-from .models import SIDES
+from .models import SIDES, manus_gesture_features
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class HandSnapshot:
 class ManusGapSnapshot:
     side: str
     gaps_m: Mapping[str, float]
+    features: Mapping[str, float]
     sequence: int
     received_at: float
 
@@ -223,6 +224,7 @@ class WujiUiRuntime:
             if sequence == self._manus_sequences[side]:
                 continue
             points = canonical_landmarks(frame)
+            features = manus_gesture_features(points)
             thumb = points[4]
             gaps = {
                 finger: float(np.linalg.norm(points[index] - thumb))
@@ -236,7 +238,7 @@ class WujiUiRuntime:
             with self._lock:
                 self._manus_sequences[side] = sequence
                 self._manus_gaps[side] = ManusGapSnapshot(
-                    side, gaps, sequence, now
+                    side, gaps, features, sequence, now
                 )
 
     def _loop(self) -> None:

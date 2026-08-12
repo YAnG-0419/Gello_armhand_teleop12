@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import json
+import os
 import sys
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process
@@ -12,6 +14,11 @@ from pathlib import Path
 from pico_bimanual_franka_teleop.config import load_config
 from pico_bimanual_franka_teleop.hand_worker import HandWorker
 from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
+from pico_bimanual_franka_teleop.relative_action import (
+    PresetAction,
+    SolvedRelativeAction,
+    load_preset_actions,
+)
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +50,68 @@ def invoke_reset(side: str | None = None) -> tuple[bool, str]:
     return succeeded, output[-400:]
 
 
+def invoke_capture_home(side: str) -> tuple[bool, str]:
+    """Persist one arm's current measured joints through its ROS service."""
+    if side not in ("left", "right"):
+        raise ValueError(f"invalid Home capture side: {side}")
+    completed = subprocess.run(
+        [
+            "docker", "compose", "run", "--rm", "tools",
+            "ros2", "service", "call",
+            f"/capture_initial_pose/{side}", "std_srvs/srv/Trigger", "{}",
+        ],
+        cwd=REPO_ROOT / "docker",
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+    )
+    output = (completed.stdout + completed.stderr).strip()
+    succeeded = completed.returncode == 0 and "success=True" in completed.stdout
+    return succeeded, output[-400:]
+
+
+def invoke_preset_ik(
+    preset: PresetAction, *, max_joint_speed: float
+) -> SolvedRelativeAction:
+    """Run Arm UI's MoveIt IK solver in the ROS-enabled tools container."""
+    completed = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "run",
+            "--rm",
+            "-T",
+            "tools",
+            "python3",
+            "-m",
+            "apps.arm_ui.preset_ik_cli",
+            "--data-root",
+            "/data/arm_ui",
+            "--side",
+            preset.side,
+            "--action",
+            preset.action_name,
+            "--speed-scale",
+            str(preset.speed_scale),
+            "--max-joint-speed",
+            str(max_joint_speed),
+        ],
+        cwd=REPO_ROOT / "docker",
+        capture_output=True,
+        text=True,
+        timeout=90.0,
+    )
+    output = (completed.stdout + completed.stderr).strip()
+    prefix = "PRESET_IK_RESULT="
+    result_line = next(
+        (line for line in completed.stdout.splitlines() if line.startswith(prefix)),
+        None,
+    )
+    if completed.returncode != 0 or result_line is None:
+        raise RuntimeError(output[-800:] or "MoveIt IK process failed")
+    return SolvedRelativeAction.from_dict(json.loads(result_line[len(prefix):]))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -67,6 +136,16 @@ def main() -> None:
         "--gello-config",
         default=str(REPO_ROOT / "config" / "modes" / "gello.yaml"),
         help="dual GELLO identities, directions, and incremental-control limits",
+    )
+    parser.add_argument(
+        "--preset-config",
+        default=str(REPO_ROOT / "config" / "preset_actions.yaml"),
+        help="Q/W/E preset action slot configuration",
+    )
+    parser.add_argument(
+        "--preset-data-root",
+        default=os.environ.get("TELEOP_DATA_ROOT", str(REPO_ROOT / "data")),
+        help="host TELEOP_DATA_ROOT containing arm_ui/actions",
     )
     parser.add_argument(
         "--vive-config",
@@ -175,6 +254,9 @@ def main() -> None:
         help="Wuji Hand 2 per-joint current limit in amps",
     )
     args = parser.parse_args()
+    preset_actions = load_preset_actions(
+        args.preset_config, args.preset_data_root
+    )
     if args.hand_debug_log and args.hand_source == "none":
         parser.error("--hand-debug-log requires a hand source")
     if args.arm_source == "vive-trackers" and not args.vive_config:
@@ -411,10 +493,15 @@ def main() -> None:
             hands=hands,
             debug_logger=debug_logger,
             reset_invoker=invoke_reset,
+            capture_home_invoker=invoke_capture_home,
+            preset_actions=preset_actions,
+            preset_solver=lambda preset: invoke_preset_ik(
+                preset, max_joint_speed=config.host.max_joint_speed
+            ),
         )
-        # The keyboard's `q` (and Ctrl-C) surface as KeyboardInterrupt; run()'s
-        # finally block has already closed hands, robot, and input by the time
-        # it reaches here.
+        # A legacy terminal-backed input's `q` (and Ctrl-C) surface as
+        # KeyboardInterrupt. Operator GUI `Q` is a preset request and never
+        # reaches this path. run() has already closed hardware by this point.
         try:
             teleop.run()
         except KeyboardInterrupt:

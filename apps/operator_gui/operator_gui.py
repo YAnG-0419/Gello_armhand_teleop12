@@ -50,6 +50,7 @@ PEDAL_BINDINGS = {
     "B": ("toggle", "hand", "right"),
     "C": ("home", "arm", "right"),
 }
+PRESET_KEYS = ("Q", "W", "E")
 
 
 class ConnectionDialog(QDialog):
@@ -108,6 +109,7 @@ class OperatorWindow(QMainWindow):
         self.was_connected = False
         self.connection_dialog: ConnectionDialog | None = None
         self.disconnect_message: QMessageBox | None = None
+        self.capture_dialogs: dict[str, QMessageBox] = {}
 
         self.socket = QTcpSocket(self)
         self.socket.readyRead.connect(self._read_responses)
@@ -158,6 +160,7 @@ class OperatorWindow(QMainWindow):
         sides_row = QHBoxLayout()
         self.arm_engage_buttons: dict[str, QPushButton] = {}
         self.hand_engage_buttons: dict[str, QPushButton] = {}
+        self.capture_home_buttons: dict[str, QPushButton] = {}
         # Compatibility alias used by existing integrations and tests.
         self.engage_buttons = self.arm_engage_buttons
         pedal_keys = {
@@ -204,8 +207,23 @@ class OperatorWindow(QMainWindow):
             )
             home.setToolTip(f"Pedal/shortcut: {keys['home']} homes this arm")
             grid.addWidget(home, 2, 0)
+
+            capture_home = QPushButton("Record current as Home")
+            capture_home.setFocusPolicy(Qt.NoFocus)
+            capture_home.setToolTip(
+                "Save this arm's current measured joint angles as its new Home. "
+                "This does not move the robot."
+            )
+            capture_home.clicked.connect(
+                lambda _checked=False, side=side: self._confirm_capture_home(side)
+            )
+            self.capture_home_buttons[side] = capture_home
+            self.action_buttons = getattr(self, "action_buttons", [])
+            self.action_buttons.append(capture_home)
+            grid.addWidget(capture_home, 3, 0)
+
             grid.addWidget(
-                self._button("Open hand", "open_hand", {"side": side}), 3, 0
+                self._button("Open hand", "open_hand", {"side": side}), 4, 0
             )
             sides_row.addWidget(box)
         layout.addLayout(sides_row)
@@ -223,6 +241,34 @@ class OperatorWindow(QMainWindow):
         home_both = self._button("Home both arms", "home_arm", {"side": "both"})
         actions.addWidget(home_both)
         layout.addLayout(actions)
+
+        preset_box = QGroupBox("Preset relative actions — 50% speed")
+        preset_layout = QHBoxLayout(preset_box)
+        self.preset_buttons: dict[str, QPushButton] = {}
+        preset_labels = {
+            "q": "Preset 1: left test (Q)",
+            "w": "Preset 2: unconfigured (W)",
+            "e": "Preset 3: unconfigured (E)",
+        }
+        for key in ("q", "w", "e"):
+            button = self._button(
+                preset_labels[key], "run_preset", {"key": key}
+            )
+            button.setMinimumHeight(48)
+            button.setToolTip(
+                "Rebase the saved relative tool path at the current measured "
+                "end-effector pose, precheck every IK frame, then execute once."
+            )
+            self.preset_buttons[key] = button
+            preset_layout.addWidget(button)
+        stop_action = self._button("STOP PRESET", "stop_action")
+        stop_action.setMinimumHeight(48)
+        stop_action.setStyleSheet(
+            "background-color: #d47b22; color: white; font-weight: bold;"
+        )
+        stop_action.setToolTip("Interrupt preset execution and re-anchor GELLO")
+        preset_layout.addWidget(stop_action)
+        layout.addWidget(preset_box)
 
         shortcut_hint = QLabel(
             "Foot pedals: L left arm · Space left hand · R left home  |  "
@@ -242,7 +288,54 @@ class OperatorWindow(QMainWindow):
         self.connection_indicator = QLabel()
         self.connection_indicator.setContentsMargins(4, 0, 4, 0)
         self.statusBar().addPermanentWidget(self.connection_indicator)
-        self.resize(720, 760)
+        self.resize(980, 900)
+
+    def _confirm_capture_home(self, side: str) -> None:
+        """Confirm before overwriting one arm's persisted Home pose."""
+        current = self.capture_dialogs.get(side)
+        if current is not None:
+            current.raise_()
+            current.activateWindow()
+            return
+        message = QMessageBox(self)
+        self.capture_dialogs[side] = message
+        message.setIcon(QMessageBox.Warning)
+        message.setWindowTitle(f"Replace {side} arm Home?")
+        message.setText(
+            f"Record the {side} arm's current measured joint angles as its new Home?"
+        )
+        message.setInformativeText(
+            "The arm must be stopped. Recording does not move the robot; the "
+            "next Home command will move to this saved posture."
+        )
+        message.setStandardButtons(QMessageBox.Save | QMessageBox.Cancel)
+        message.setDefaultButton(QMessageBox.Cancel)
+        message.button(QMessageBox.Save).setText("Record Home")
+        message.finished.connect(
+            lambda result, selected=side, current=message: (
+                self._capture_home_dialog_finished(selected, current, result)
+            )
+        )
+        message.open()
+
+    def _capture_home_dialog_finished(
+        self, side: str, message: QMessageBox, result: int
+    ) -> None:
+        if self.capture_dialogs.get(side) is message:
+            del self.capture_dialogs[side]
+        if result == QMessageBox.Save:
+            self._record_current_home(side)
+        message.deleteLater()
+
+    def _record_current_home(self, side: str) -> None:
+        if self.connection_state != "connected":
+            return
+        if self.arm_engage_buttons[side].isChecked():
+            self.feedback.appendPlainText(
+                f"[capture_home] rejected: stop the {side} arm first"
+            )
+            return
+        self._send("capture_home", {"side": side})
 
     def _button(self, text: str, command: str, arguments=None) -> QPushButton:
         button = QPushButton(text)
@@ -273,6 +366,19 @@ class OperatorWindow(QMainWindow):
             shortcut.setAutoRepeat(False)
             shortcut.activated.connect(slot)
             self.shortcuts.append(shortcut)
+        self.preset_shortcuts = []
+        for key in PRESET_KEYS:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(
+                lambda selected=key.lower(): self._shortcut_preset(selected)
+            )
+            self.preset_shortcuts.append(shortcut)
+
+    def _shortcut_preset(self, key: str) -> None:
+        if self.connection_state == "connected":
+            self._send("run_preset", {"key": key})
 
     def _shortcut_toggle_engage(self, side: str, target: str = "arm") -> None:
         if self.connection_state != "connected":
@@ -375,6 +481,8 @@ class OperatorWindow(QMainWindow):
                 key_hint = "L" if side == "left" else "A"
                 button.setText(f"Start arm ({key_hint})")
                 button.blockSignals(False)
+        for button in getattr(self, "capture_home_buttons", {}).values():
+            button.setEnabled(ready)
         for side, button in self.hand_engage_buttons.items():
             button.setEnabled(ready)
             if not ready:
@@ -487,6 +595,7 @@ class OperatorWindow(QMainWindow):
                 else f"Start arm ({key_hint})"
             )
             button.blockSignals(False)
+            self.capture_home_buttons[side].setEnabled(not engaged)
         hand_active = status.get("hand_active", {})
         for side, button in self.hand_engage_buttons.items():
             engaged = bool(hand_active.get(side))

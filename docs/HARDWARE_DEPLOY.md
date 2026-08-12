@@ -18,7 +18,7 @@ Terminal 1:
 
 ```bash
 cd /home/descfly/llx/gello_upper_body_teleop/docker
-docker compose up franka-control teleop-control gello-bridge hand-control
+docker compose up franka-control teleop-control moveit-ik gello-bridge hand-control
 ```
 
 Terminal 2:
@@ -42,6 +42,13 @@ hand: `L`/`Space`/`R` control left arm/left hand/left home, while
 `A`/`B`/`C` control right arm/right hand/right home. `Home arm` moves only the
 selected arm and disengages all followers for reset ownership; `Open hand`
 stops only that hand's following and opens the selected hand.
+
+The normal stack now also starts `moveit-ik`. This is a read-only `move_group`
+process used by Q/W/E preset prechecks; it subscribes to measured joint states
+and exposes `/compute_ik`, but starts no controller manager and cannot publish
+the FR3 command bus. With hands enabled the normal internal services are
+`franka-control`, `teleop-control`, `moveit-ik`, `gello-bridge`, and
+`hand-control`; the host Operator backend/GUI remain outside Docker.
 
 ## Stop
 
@@ -121,6 +128,21 @@ docker compose run --rm tools ros2 service call /reset_to_initial_pose std_srvs/
 ```
 
 Per-side services are `/reset_to_initial_pose/left` and `/reset_to_initial_pose/right`. `/capture_initial_pose` replaces the saved home. Reset is joint interpolation, not collision planning.
+
+The GUI's per-side `Record current as Home` action calls
+`/capture_initial_pose/left` or `/capture_initial_pose/right`. It requires that
+arm's follower to be stopped, reads a fresh measured joint state, and atomically
+updates only that side of `config/initial_pose.yaml`; it does not move either
+arm. The legacy `/capture_initial_pose` service still captures both sides.
+After pulling this change, rebuild `franka_fr3_arm_controllers` and restart the
+Compose stack so the per-side ROS services are registered; no Docker image
+rebuild is required for this source-only change.
+
+```bash
+cd /home/descfly/llx/gello_upper_body_teleop/docker
+docker compose run --rm -T tools bash -lc \
+  'source /opt/ros/humble/setup.bash && source /opt/vendor_ws/install/setup.bash && cd ros_ws && colcon build --symlink-install --packages-select franka_fr3_arm_controllers --cmake-args -DCMAKE_BUILD_TYPE=Release'
+```
 
 ## Camera
 

@@ -71,13 +71,21 @@ def test_dispatch_maps_commands_onto_the_console():
         server.dispatch("open_hand", {})
         server.dispatch("home_arm", {"side": "left"})
         server.dispatch("home_arm", {})
+        server.dispatch("capture_home", {"side": "right"})
+        server.dispatch("run_preset", {"key": "q"})
+        server.dispatch("stop_action", {})
         requests = console.take_requests()
         assert requests["open_right_hand"] and requests["open_hands"]
         assert requests["reset_left"] and requests["reset"]
+        assert requests["capture_home_right"]
+        assert requests["preset_q"] and requests["stop_action"]
+        assert requests["abort_action"]
         with pytest.raises(ValueError):
             server.dispatch("open_hand", {"side": "middle"})
         with pytest.raises(ValueError):
             server.dispatch("engage", {"side": "middle"})
+        with pytest.raises(ValueError):
+            server.dispatch("run_preset", {"key": "r"})
         with pytest.raises(ValueError):
             server.dispatch("warp", {})
     finally:

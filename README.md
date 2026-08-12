@@ -158,7 +158,7 @@ cd /home/descfly/llx/gello_upper_body_teleop
 这是推荐且默认的入口。脚本依次启动：
 
 ```text
-franka-control + teleop-control + gello-bridge + hand-control
+franka-control + teleop-control + moveit-ik + gello-bridge + hand-control
                                      |
                                      +-> Operator 后端和 GUI
 ```
@@ -196,13 +196,26 @@ Operator GUI 支持6个键盘式脚踏输入，机械臂和手独立启停：
 Home 是单次操作，执行前会解除控制权；`DISENGAGE ALL` 仍可同时停止所有臂/手
 跟随。脚踏模拟普通键盘，使用时 Operator GUI 窗口需要获得键盘焦点。
 
+左右臂面板中的 `Record current as Home` 可以分别把该机械臂当前实测的 7 个
+关节角覆盖保存为新的 HomePose。记录前必须先停止对应机械臂；记录本身不会
+驱动机械臂，确认对话框也会提示下一次 Home 才会运动。
+
+Operator GUI 还提供三个相对末端预设动作槽：`Q`、`W`、`E`。当前 `Q` 配置为
+Arm UI 录制的左臂动作 `test`，以 50% 速度执行；`W`、`E` 保留待配置。执行前
+系统以当前真实末端姿态作为新原点，并通过与 Arm UI 相同的 MoveIt KDL
+`/compute_ik` 链路检查完整轨迹；任一帧不可达、碰撞或发生 IK 跳变都不会执行。
+动作完成、点击 `STOP PRESET` 或 GELLO 移动超过 0.08 rad 后会重新锚定增量
+映射。正常完成前还会确认末点误差进入 0.03 rad 并稳定 0.25 秒；末点 5 秒未
+收敛则保持停止。单键 `Q` 与退出菜单的 `Ctrl+Q` 不冲突。
+
 ## 仅启动 GELLO 双臂
 
 ```bash
 ./ops/run/run_gello_arms_only.sh
 ```
 
-该入口仅启动 `franka-control`、`teleop-control` 和 `gello-bridge`，并以
+该入口仅启动 `franka-control`、`teleop-control`、`moveit-ik` 和
+`gello-bridge`，并以
 `--hand-source none` 运行 Operator。它会先停止可能残留的 `hand-control`，
 避免旧会话继续控制 O30i/G20。
 
