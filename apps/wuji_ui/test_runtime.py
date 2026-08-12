@@ -5,7 +5,11 @@ import numpy as np
 import pytest
 
 import apps.wuji_ui.runtime as runtime_module
-from apps.wuji_ui.runtime import WujiUiRuntime
+from apps.wuji_ui.runtime import (
+    JointDiagnosticSnapshot,
+    WujiUiRuntime,
+    summarize_joint_hold_test,
+)
 
 
 class FakeBackend:
@@ -13,6 +17,11 @@ class FakeBackend:
         self.enabled = False
         self.sent = []
         self.on_send = on_send
+        self.gains = [(4.0, 0.1)] * 20
+
+    @property
+    def last_command_position(self):
+        return None if not self.sent else self.sent[-1].copy()
 
     def send(self, command) -> None:
         assert self.enabled
@@ -20,6 +29,16 @@ class FakeBackend:
         self.sent.append(values)
         if self.on_send is not None:
             self.on_send(values)
+
+    def mit_gains(self):
+        return tuple(self.gains)
+
+    def set_mit_gains(self, *, kp, kd, joint_index=None):
+        if joint_index is None:
+            self.gains = [(kp, kd)] * 20
+        else:
+            self.gains[joint_index] = (kp, kd)
+        return tuple(self.gains)
 
 
 class FakePipeline:
@@ -91,6 +110,36 @@ class FakePipeline:
         for side, enabled in active.items():
             if enabled:
                 self.backends[side].send(np.full(20, 0.3))
+
+    def joint_diagnostics(self, _side):
+        status = SimpleNamespace(
+            node_id=17,
+            current_a=0.2,
+            bus_voltage_v=24.0,
+            temperature_c=32.0,
+            error_code=0,
+            ext_state=2,
+            ext_state_name="Enabled",
+            position_limit_active=False,
+            velocity_limit_active=False,
+            current_limit_active=False,
+            comm_response_rate_pct=100,
+            comm_timeout_total=0,
+        )
+        result = {}
+        for index in range(20):
+            values = vars(status).copy()
+            values["node_id"] = (index // 4) * 5 + index % 4 + 1
+            result[index] = SimpleNamespace(**values)
+        return result
+
+    def mit_gains(self, side):
+        return self.backends[side].mit_gains()
+
+    def set_mit_gains(self, side, *, kp, kd, joint_index=None):
+        return self.backends[side].set_mit_gains(
+            kp=kp, kd=kd, joint_index=joint_index
+        )
 
     def close(self) -> None:
         self.closed = True
@@ -229,5 +278,77 @@ def test_runtime_jog_rejects_out_of_limit_target(monkeypatch) -> None:
         runtime.start_jog("left")
         with pytest.raises(ValueError, match="关节范围"):
             runtime.set_jog_target("left", [9.0] * 20)
+    finally:
+        runtime.close()
+
+
+def _diagnostic_sample(*, actual, current=0.2, limited=False, error_code=0):
+    return JointDiagnosticSnapshot(
+        side="left",
+        joint_index=13,
+        joint_name="l_ring_finger_mcp_abd",
+        node_id=17,
+        target_position=0.0,
+        actual_position=actual,
+        current_a=current,
+        bus_voltage_v=24.0,
+        temperature_c=35.0,
+        error_code=error_code,
+        ext_state=2,
+        ext_state_name="Enabled",
+        position_limit_active=False,
+        velocity_limit_active=False,
+        current_limit_active=limited,
+        comm_response_rate_pct=100,
+        comm_timeout_total=0,
+        received_at=time.monotonic(),
+    )
+
+
+def test_hold_summary_uses_operator_observation_for_mechanical_slip() -> None:
+    samples = [_diagnostic_sample(actual=0.001 * index) for index in range(6)]
+    result = summarize_joint_hold_test(samples, "feedback_static")
+    assert result["category"] == "mechanical_likely"
+
+
+def test_hold_summary_flags_current_limited_position_error() -> None:
+    samples = [
+        _diagnostic_sample(actual=0.05, current=0.9, limited=True)
+        for _ in range(6)
+    ]
+    result = summarize_joint_hold_test(samples, "feedback_moves")
+    assert result["category"] == "current_limited"
+
+
+def test_runtime_applies_gains_to_one_joint_and_holds(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "WujiHandPipeline", FakePipeline)
+    runtime = WujiUiRuntime(addresses={"left": "left:1", "right": "right:2"})
+    try:
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                runtime.snapshot("left")
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        gains = runtime.set_mit_gains(
+            "left", kp=5.0, kd=0.15, joint_index=13
+        )
+        assert gains[13] == (5.0, 0.15)
+        assert gains[12] == (4.0, 0.1)
+        assert runtime.mode("left") == "hold"
+        assert runtime.pipeline.backends["left"].enabled
+    finally:
+        runtime.close()
+
+
+def test_runtime_rejects_out_of_ui_range_gains(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "WujiHandPipeline", FakePipeline)
+    runtime = WujiUiRuntime(addresses={"left": "left:1", "right": "right:2"})
+    try:
+        with pytest.raises(ValueError, match="网页运行时调参范围"):
+            runtime.set_mit_gains("left", kp=100.0, kd=0.1, joint_index=13)
     finally:
         runtime.close()

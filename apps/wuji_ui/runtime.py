@@ -14,6 +14,10 @@ from adapters.wuji.pipeline import WujiHandPipeline, canonical_landmarks
 from .models import SIDES, manus_gesture_features
 
 
+MAX_RUNTIME_KP = 10.0
+MAX_RUNTIME_KD = 1.0
+
+
 @dataclass(frozen=True)
 class HandSnapshot:
     side: str
@@ -36,6 +40,111 @@ class PoseSequenceStatus:
     step_index: int
     step_count: int
     pose_name: str
+
+
+@dataclass(frozen=True)
+class JointDiagnosticSnapshot:
+    side: str
+    joint_index: int
+    joint_name: str
+    node_id: int
+    target_position: float | None
+    actual_position: float
+    current_a: float
+    bus_voltage_v: float
+    temperature_c: float
+    error_code: int
+    ext_state: int
+    ext_state_name: str
+    position_limit_active: bool
+    velocity_limit_active: bool
+    current_limit_active: bool
+    comm_response_rate_pct: int
+    comm_timeout_total: int
+    received_at: float
+
+    @property
+    def position_error(self) -> float | None:
+        if self.target_position is None:
+            return None
+        return self.target_position - self.actual_position
+
+
+def summarize_joint_hold_test(
+    samples: Sequence[JointDiagnosticSnapshot], physical_observation: str
+) -> dict[str, object]:
+    """Summarize a stationary hold test without pretending to see mechanics."""
+    if len(samples) < 5:
+        raise ValueError("保持测试至少需要5个新诊断帧")
+    errors = [
+        abs(sample.position_error)
+        for sample in samples
+        if sample.position_error is not None
+    ]
+    if not errors:
+        raise ValueError("保持测试没有有效目标位置；请先使能并保持")
+    actual = np.asarray([sample.actual_position for sample in samples])
+    max_error_rad = float(max(errors))
+    max_deflection_rad = float(np.max(np.abs(actual - actual[0])))
+    error_codes = sorted({sample.error_code for sample in samples if sample.error_code})
+    current_limit_seen = any(sample.current_limit_active for sample in samples)
+    result: dict[str, object] = {
+        "sample_count": len(samples),
+        "max_error_rad": max_error_rad,
+        "max_deflection_rad": max_deflection_rad,
+        "peak_abs_current_a": max(abs(sample.current_a) for sample in samples),
+        "max_temperature_c": max(sample.temperature_c for sample in samples),
+        "min_comm_response_rate_pct": min(
+            sample.comm_response_rate_pct for sample in samples
+        ),
+        "current_limit_seen": current_limit_seen,
+        "error_codes": error_codes,
+    }
+    two_degrees = np.deg2rad(2.0)
+    if error_codes:
+        conclusion = "驱动器报告非零错误码；先排查驱动/供电，不应提高增益。"
+        category = "driver_fault"
+    elif (
+        physical_observation == "feedback_static"
+        and max_deflection_rad < two_degrees
+    ):
+        conclusion = (
+            "实体关节移动但电机反馈基本不动，机械传动松脱或间隙过大的可能性高。"
+        )
+        category = "mechanical_likely"
+    elif physical_observation == "feedback_static":
+        conclusion = (
+            "人工观察称反馈基本不动，但采集到的反馈偏移已超过2°；"
+            "证据不一致，请重测并确认页面实际角。"
+        )
+        category = "inconclusive"
+    elif max_error_rad >= two_degrees and current_limit_seen:
+        conclusion = (
+            "反馈明显偏离固定目标且触发电流限幅：控制输出已到上限；"
+            "可能是限流偏低、负载过大或机械阻力/传动异常。"
+        )
+        category = "current_limited"
+    elif max_error_rad >= two_degrees:
+        conclusion = (
+            "反馈明显偏离固定目标但未见电流限幅：保持增益不足较可疑，"
+            "仍应与健康ABD关节对比后再改单关节参数。"
+        )
+        category = "gain_suspect"
+    elif physical_observation == "feedback_moves":
+        conclusion = (
+            "实体与反馈都移动，但本次目标误差较小；请更稳定地轻推重测，"
+            "并与健康ABD关节做同样力度对比。"
+        )
+        category = "inconclusive"
+    else:
+        conclusion = (
+            "电气数据未显示明显目标偏差。仅凭编码器数据无法排除编码器之后的"
+            "机械松脱，请补充实体与页面反馈是否同步。"
+        )
+        category = "mechanical_check_needed"
+    result["category"] = category
+    result["conclusion"] = conclusion
+    return result
 
 
 class WujiUiRuntime:
@@ -83,6 +192,12 @@ class WujiUiRuntime:
         self._snapshots: dict[str, HandSnapshot] = {}
         self._manus_gaps: dict[str, ManusGapSnapshot] = {}
         self._manus_sequences = {side: -1 for side in SIDES}
+        self._joint_diagnostics: dict[
+            tuple[str, int], JointDiagnosticSnapshot
+        ] = {}
+        self._diagnostic_errors = {
+            side: "等待关节诊断数据" for side in SIDES
+        }
         self._pose_commands: dict[str, np.ndarray | None] = {
             side: None for side in SIDES
         }
@@ -110,6 +225,22 @@ class WujiUiRuntime:
     def sequence_status(self, side: str) -> PoseSequenceStatus:
         with self._lock:
             return self._sequence_status[side]
+
+    def joint_diagnostic(
+        self, side: str, joint_index: int, *, require_fresh: bool = True
+    ) -> JointDiagnosticSnapshot:
+        if side not in SIDES or not 0 <= int(joint_index) < 20:
+            raise ValueError("关节诊断需要有效手侧和0..19关节索引")
+        key = (side, int(joint_index))
+        with self._lock:
+            snapshot = self._joint_diagnostics.get(key)
+            detail = self._diagnostic_errors[side]
+        if snapshot is None:
+            raise RuntimeError(detail or f"尚未收到{side}关节诊断数据")
+        age = time.monotonic() - snapshot.received_at
+        if require_fresh and age > self.feedback_timeout:
+            raise RuntimeError(f"{side}关节诊断已过期（{age:.2f}秒）")
+        return snapshot
 
     def snapshot(self, side: str, *, require_fresh: bool = True) -> HandSnapshot:
         with self._lock:
@@ -175,6 +306,66 @@ class WujiUiRuntime:
             if self._modes[side] != "jog":
                 raise RuntimeError(f"{side}不在滑块控制模式，无法更新目标")
             self._pose_targets[side] = target
+
+    def hold_current(self, side: str) -> None:
+        """Stop teleoperation and hold the freshly measured whole-hand pose."""
+        if self.sequence_status(side).running:
+            raise RuntimeError(f"{side}姿态序列正在运行")
+        snapshot = self.snapshot(side)
+        command = np.asarray(snapshot.qpos, dtype=np.float64)
+        with self._hardware_lock:
+            self.pipeline.set_enabled(side, True)
+            self.pipeline.backends[side].send(command)
+            with self._lock:
+                self._modes[side] = "hold"
+                self._pose_commands[side] = command.copy()
+                self._pose_targets[side] = None
+
+    def mit_gains(self, side: str) -> tuple[tuple[float, float], ...]:
+        with self._hardware_lock:
+            return tuple(self.pipeline.mit_gains(side))
+
+    def set_mit_gains(
+        self,
+        side: str,
+        *,
+        kp: float,
+        kd: float,
+        joint_index: int | None = None,
+    ) -> tuple[tuple[float, float], ...]:
+        """Hold the hand, then apply bounded runtime-only MIT gains."""
+        kp_value = float(kp)
+        kd_value = float(kd)
+        if (
+            not np.isfinite((kp_value, kd_value)).all()
+            or not 0.0 <= kp_value <= MAX_RUNTIME_KP
+            or not 0.0 <= kd_value <= MAX_RUNTIME_KD
+        ):
+            raise ValueError(
+                f"网页运行时调参范围：kp 0..{MAX_RUNTIME_KP:g}，"
+                f"kd 0..{MAX_RUNTIME_KD:g}"
+            )
+        if joint_index is not None and not 0 <= int(joint_index) < 20:
+            raise ValueError("关节索引必须在0..19")
+        if self.sequence_status(side).running:
+            raise RuntimeError(f"{side}姿态序列正在运行")
+        snapshot = self.snapshot(side)
+        command = np.asarray(snapshot.qpos, dtype=np.float64)
+        with self._hardware_lock:
+            self.pipeline.set_enabled(side, True)
+            self.pipeline.backends[side].send(command)
+            with self._lock:
+                self._modes[side] = "hold"
+                self._pose_commands[side] = command.copy()
+                self._pose_targets[side] = None
+            gains = self.pipeline.set_mit_gains(
+                side,
+                kp=kp_value,
+                kd=kd_value,
+                joint_index=joint_index,
+            )
+            self.pipeline.backends[side].send(command)
+        return tuple(gains)
 
     def move_to_pose(self, side: str, qpos: Sequence[float]) -> None:
         if self.sequence_status(side).running:
@@ -361,6 +552,47 @@ class WujiUiRuntime:
                     side, gaps, features, sequence, now
                 )
 
+    def _read_joint_diagnostics(self, now: float) -> None:
+        for side in SIDES:
+            try:
+                diagnostics = self.pipeline.joint_diagnostics(side)
+                if diagnostics is None:
+                    continue
+                backend = self.pipeline.backends[side]
+                command = backend.last_command_position
+                with self._lock:
+                    position = self._snapshots.get(side)
+                if position is None:
+                    continue
+                for index, entry in diagnostics.items():
+                    target = None if command is None else float(command[index])
+                    snapshot = JointDiagnosticSnapshot(
+                        side=side,
+                        joint_index=index,
+                        joint_name=self.joint_names[side][index],
+                        node_id=entry.node_id,
+                        target_position=target,
+                        actual_position=float(position.qpos[index]),
+                        current_a=entry.current_a,
+                        bus_voltage_v=entry.bus_voltage_v,
+                        temperature_c=entry.temperature_c,
+                        error_code=entry.error_code,
+                        ext_state=entry.ext_state,
+                        ext_state_name=entry.ext_state_name,
+                        position_limit_active=entry.position_limit_active,
+                        velocity_limit_active=entry.velocity_limit_active,
+                        current_limit_active=entry.current_limit_active,
+                        comm_response_rate_pct=entry.comm_response_rate_pct,
+                        comm_timeout_total=entry.comm_timeout_total,
+                        received_at=now,
+                    )
+                    with self._lock:
+                        self._joint_diagnostics[(side, index)] = snapshot
+                        self._diagnostic_errors[side] = ""
+            except Exception as error:
+                with self._lock:
+                    self._diagnostic_errors[side] = str(error)
+
     def _loop(self) -> None:
         previous = time.monotonic()
         while not self._stop.wait(0.01):
@@ -373,6 +605,7 @@ class WujiUiRuntime:
                             side: self._modes[side] == "teleop" for side in SIDES
                         }
                     self.pipeline.tick(now, active=active)
+                    self._read_joint_diagnostics(now)
                     self._read_manus_gaps(now)
                     with self._lock:
                         for side in SIDES:

@@ -22,7 +22,12 @@ from .models import (
     summarize_gap_samples,
     summarize_gesture_samples,
 )
-from .runtime import WujiUiRuntime
+from .runtime import (
+    MAX_RUNTIME_KD,
+    MAX_RUNTIME_KP,
+    WujiUiRuntime,
+    summarize_joint_hold_test,
+)
 
 
 SIDE_LABELS = {"left": "左手", "right": "右手"}
@@ -464,6 +469,360 @@ class WujiUiApplication:
                         save_button.on("click", _save)
                         delete_button.on("click", _delete)
                         move_button.on("click", move_dialog.open)
+
+            diagnostic_state = {
+                "sampling": False,
+                "ends_at": 0.0,
+                "last_received_at": None,
+                "samples": [],
+            }
+            with ui.card().classes("wuji-card w-full p-5"):
+                with ui.row().classes("w-full items-center"):
+                    ui.label("单关节保持诊断").classes("text-xl font-semibold")
+                    ui.label(
+                        "默认检查无名指 ABD（关节 13 / 节点 17）；测试只保持当前位置，"
+                        "不会自动提高增益或电流。"
+                    ).classes("text-sm text-slate-500")
+                with ui.row().classes("w-full items-end gap-3"):
+                    diagnostic_side = ui.toggle(SIDE_LABELS, value="left").props(
+                        "no-caps"
+                    )
+                    diagnostic_joint = ui.select(
+                        {
+                            index: f"{index} · {name}"
+                            for index, name in enumerate(
+                                self.runtime.joint_names["left"]
+                            )
+                        },
+                        value=13,
+                        label="诊断关节",
+                    ).classes("w-80")
+                    physical_observation = ui.select(
+                        {
+                            "not_checked": "尚未观察",
+                            "feedback_moves": "实体与页面反馈同步变化",
+                            "feedback_static": "实体动、页面反馈基本不动",
+                        },
+                        value="not_checked",
+                        label="轻推时的观察",
+                    ).classes("w-64")
+                    ui.space()
+                    diagnostic_start = ui.button(
+                        "开始 5 秒保持测试", icon="troubleshoot", color="warning"
+                    )
+                    diagnostic_stop = ui.button(
+                        "停止测试", icon="stop", color="negative"
+                    ).props("flat")
+
+                ui.label(
+                    "操作：清空手周围空间并保持急停可触达；启动后轻推该关节，"
+                    "力度以不疼、不硬掰为准。观察实体移动时页面实际角是否同步变化。"
+                ).classes("w-full rounded bg-amber-50 text-amber-900 p-3")
+                with ui.row().classes("w-full gap-5 flex-wrap"):
+                    diagnostic_position = ui.label(
+                        "目标 / 实际 / 误差：--"
+                    ).classes("font-mono")
+                    diagnostic_current = ui.label(
+                        "电流 / 限流：--"
+                    ).classes("font-mono")
+                    diagnostic_health = ui.label(
+                        "温度 / 电压 / 通信：--"
+                    ).classes("font-mono")
+                    diagnostic_driver = ui.label(
+                        "驱动状态 / 错误码：--"
+                    ).classes("font-mono")
+                diagnostic_status = ui.label("等待诊断数据").classes(
+                    "w-full rounded bg-slate-100 p-3"
+                )
+                diagnostic_result = ui.label("尚未进行保持测试").classes(
+                    "w-full rounded border border-slate-200 p-3"
+                )
+
+                ui.separator()
+                with ui.row().classes("w-full items-center"):
+                    ui.label("MIT 保持参数（运行时）").classes(
+                        "text-lg font-semibold"
+                    )
+                    ui.label(
+                        "推荐先只调整问题关节；重启后恢复启动命令中的 kp/kd。"
+                    ).classes("text-sm text-slate-500")
+                with ui.row().classes("w-full items-end gap-3"):
+                    gain_scope = ui.toggle(
+                        {"joint": "仅选中关节", "hand": "整只手"},
+                        value="joint",
+                    ).props("no-caps")
+                    gain_kp = ui.number(
+                        "kp",
+                        value=4.0,
+                        min=0.0,
+                        max=MAX_RUNTIME_KP,
+                        step=0.1,
+                        format="%.2f",
+                    ).classes("w-36")
+                    gain_kd = ui.number(
+                        "kd",
+                        value=0.1,
+                        min=0.0,
+                        max=MAX_RUNTIME_KD,
+                        step=0.01,
+                        format="%.3f",
+                    ).classes("w-36")
+                    gain_reload = ui.button(
+                        "读取当前参数", icon="refresh"
+                    ).props("outline")
+                    gain_apply = ui.button(
+                        "应用 kp / kd", icon="tune", color="warning"
+                    )
+                gain_status = ui.label("当前参数：--").classes(
+                    "w-full font-mono rounded bg-slate-100 p-3"
+                )
+                ui.label(
+                    f"网页保护范围：kp 0–{MAX_RUNTIME_KP:g}，"
+                    f"kd 0–{MAX_RUNTIME_KD:g}。提高后请先重复 5 秒保持测试，"
+                    "观察振荡、电流、温度和错误码；参数越大不代表越安全。"
+                ).classes("text-sm text-amber-900")
+
+                def _update_diagnostic_joint_options() -> None:
+                    options = {
+                        index: f"{index} · {name}"
+                        for index, name in enumerate(
+                            self.runtime.joint_names[diagnostic_side.value]
+                        )
+                    }
+                    diagnostic_joint.options = options
+                    if diagnostic_joint.value not in options:
+                        diagnostic_joint.value = 13
+                    diagnostic_joint.update()
+
+                def _load_gains(*, update_inputs: bool = True) -> None:
+                    try:
+                        gains = self.runtime.mit_gains(diagnostic_side.value)
+                        index = int(diagnostic_joint.value)
+                        kp_value, kd_value = gains[index]
+                        uniform = len(set(gains)) == 1
+                        gain_status.text = (
+                            f"当前关节 {index}：kp={kp_value:.3f}, "
+                            f"kd={kd_value:.3f}｜整手参数"
+                            f"{'一致' if uniform else '不一致（逐关节）'}"
+                        )
+                        if update_inputs:
+                            gain_kp.value = kp_value
+                            gain_kd.value = kd_value
+                    except Exception as error:
+                        gain_status.text = f"读取参数失败：{error}"
+
+                async def _apply_gains() -> None:
+                    try:
+                        scope_index = (
+                            int(diagnostic_joint.value)
+                            if gain_scope.value == "joint"
+                            else None
+                        )
+                        gains = await run.io_bound(
+                            self.runtime.set_mit_gains,
+                            diagnostic_side.value,
+                            kp=float(gain_kp.value),
+                            kd=float(gain_kd.value),
+                            joint_index=scope_index,
+                        )
+                        index = int(diagnostic_joint.value)
+                        kp_value, kd_value = gains[index]
+                        gain_status.text = (
+                            f"已应用：关节 {index} kp={kp_value:.3f}, "
+                            f"kd={kd_value:.3f}；当前为保持模式"
+                        )
+                        ui.notify(
+                            "MIT参数已应用；请进行保持测试并监测温度/电流",
+                            color="positive",
+                        )
+                    except Exception as error:
+                        ui.notify(str(error), color="negative", timeout=10)
+
+                def _finish_diagnostic() -> None:
+                    diagnostic_state["sampling"] = False
+                    try:
+                        result = summarize_joint_hold_test(
+                            diagnostic_state["samples"],
+                            physical_observation.value,
+                        )
+                        codes = result["error_codes"] or [0]
+                        diagnostic_result.text = (
+                            f"结论：{result['conclusion']}｜"
+                            f"样本 {result['sample_count']}｜最大误差 "
+                            f"{_degrees(result['max_error_rad']):.2f}°｜最大反馈偏移 "
+                            f"{_degrees(result['max_deflection_rad']):.2f}°｜峰值电流 "
+                            f"{result['peak_abs_current_a']:.3f} A｜最高温度 "
+                            f"{result['max_temperature_c']:.1f} °C｜错误码 {codes}"
+                        )
+                        diagnostic_status.text = "测试完成，电机继续保持当前位置"
+                    except Exception as error:
+                        diagnostic_result.text = f"测试无效：{error}"
+                        diagnostic_status.text = "测试停止"
+
+                async def _start_diagnostic() -> None:
+                    if diagnostic_state["sampling"]:
+                        return
+                    try:
+                        side = diagnostic_side.value
+                        await run.io_bound(self.runtime.hold_current, side)
+                        diagnostic_state["samples"] = []
+                        diagnostic_state["last_received_at"] = None
+                        diagnostic_state["ends_at"] = time.monotonic() + 5.0
+                        diagnostic_state["sampling"] = True
+                        diagnostic_status.text = (
+                            "采集中：请轻推目标关节，并观察实体与反馈是否同步…"
+                        )
+                        diagnostic_result.text = "正在收集新诊断帧"
+                    except Exception as error:
+                        ui.notify(str(error), color="negative", timeout=8)
+
+                def _stop_diagnostic() -> None:
+                    if diagnostic_state["sampling"]:
+                        _finish_diagnostic()
+                    else:
+                        ui.notify("当前没有运行中的保持测试")
+
+                def _refresh_joint_diagnostic() -> None:
+                    try:
+                        snapshot = self.runtime.joint_diagnostic(
+                            diagnostic_side.value, int(diagnostic_joint.value)
+                        )
+                        target_text = (
+                            "--"
+                            if snapshot.target_position is None
+                            else f"{_degrees(snapshot.target_position):.2f}°"
+                        )
+                        error_text = (
+                            "--"
+                            if snapshot.position_error is None
+                            else f"{_degrees(snapshot.position_error):+.2f}°"
+                        )
+                        diagnostic_position.text = (
+                            f"目标 / 实际 / 误差：{target_text} / "
+                            f"{_degrees(snapshot.actual_position):.2f}° / {error_text}"
+                        )
+                        diagnostic_current.text = (
+                            f"电流 / 限流：{snapshot.current_a:+.3f} A / "
+                            f"{'是' if snapshot.current_limit_active else '否'}"
+                        )
+                        diagnostic_health.text = (
+                            f"温度 / 电压 / 通信：{snapshot.temperature_c:.1f} °C / "
+                            f"{snapshot.bus_voltage_v:.2f} V / "
+                            f"{snapshot.comm_response_rate_pct}%"
+                        )
+                        diagnostic_driver.text = (
+                            f"驱动状态 / 错误码：{snapshot.ext_state_name}"
+                            f"({snapshot.ext_state}) / {snapshot.error_code}"
+                        )
+                        if diagnostic_state["sampling"]:
+                            if (
+                                snapshot.received_at
+                                != diagnostic_state["last_received_at"]
+                            ):
+                                diagnostic_state["last_received_at"] = (
+                                    snapshot.received_at
+                                )
+                                diagnostic_state["samples"].append(snapshot)
+                            remaining = max(
+                                0.0,
+                                diagnostic_state["ends_at"] - time.monotonic(),
+                            )
+                            diagnostic_status.text = (
+                                f"采集中：剩余 {remaining:.1f} 秒，已收 "
+                                f"{len(diagnostic_state['samples'])} 帧"
+                            )
+                            if remaining <= 0.0:
+                                _finish_diagnostic()
+                        else:
+                            diagnostic_status.text = (
+                                f"诊断数据正常：关节 {snapshot.joint_index} / "
+                                f"节点 {snapshot.node_id}"
+                            )
+                    except Exception as error:
+                        diagnostic_status.text = str(error)
+
+                with ui.dialog() as diagnostic_dialog, ui.card().classes("max-w-lg"):
+                    ui.label("确认开始单关节保持测试").classes(
+                        "text-lg font-semibold"
+                    )
+                    ui.label(
+                        "该侧将退出 MANUS 遥操并使能保持当前位置 5 秒。"
+                        "请清空周围空间，测试中只可轻推目标关节。"
+                    )
+                    with ui.row().classes("w-full justify-end"):
+                        ui.button("取消", on_click=diagnostic_dialog.close).props("flat")
+                        ui.button(
+                            "确认开始",
+                            color="warning",
+                            on_click=lambda: (
+                                diagnostic_dialog.close(),
+                                asyncio.create_task(_start_diagnostic()),
+                            ),
+                        )
+
+                with ui.dialog() as gain_dialog, ui.card().classes("max-w-lg"):
+                    gain_dialog_title = ui.label("确认应用 MIT 参数").classes(
+                        "text-lg font-semibold"
+                    )
+                    gain_dialog_detail = ui.label()
+                    ui.label(
+                        "该侧会退出 MANUS 遥操并保持当前位置。修改仅在当前进程有效，"
+                        "不会写入姿态 JSON 或固化到设备。"
+                    ).classes("text-sm text-amber-900")
+                    with ui.row().classes("w-full justify-end"):
+                        ui.button("取消", on_click=gain_dialog.close).props("flat")
+                        ui.button(
+                            "确认应用",
+                            color="warning",
+                            on_click=lambda: (
+                                gain_dialog.close(),
+                                asyncio.create_task(_apply_gains()),
+                            ),
+                        )
+
+                def _open_gain_dialog() -> None:
+                    try:
+                        kp_value = float(gain_kp.value)
+                        kd_value = float(gain_kd.value)
+                        if not 0.0 <= kp_value <= MAX_RUNTIME_KP:
+                            raise ValueError("kp超出网页运行时保护范围")
+                        if not 0.0 <= kd_value <= MAX_RUNTIME_KD:
+                            raise ValueError("kd超出网页运行时保护范围")
+                        scope_text = (
+                            f"关节 {int(diagnostic_joint.value)}"
+                            if gain_scope.value == "joint"
+                            else "整只手 20 个关节"
+                        )
+                        gain_dialog_title.text = (
+                            f"确认调整{SIDE_LABELS[diagnostic_side.value]} "
+                            f"{scope_text}"
+                        )
+                        gain_dialog_detail.text = (
+                            f"目标参数：kp={kp_value:.3f}，kd={kd_value:.3f}"
+                        )
+                        gain_dialog.open()
+                    except (TypeError, ValueError) as error:
+                        ui.notify(str(error), color="negative")
+
+                def _change_diagnostic_selection() -> None:
+                    if diagnostic_state["sampling"]:
+                        diagnostic_state["sampling"] = False
+                        diagnostic_status.text = "切换关节，测试已取消"
+                    _update_diagnostic_joint_options()
+                    _load_gains()
+
+                diagnostic_side.on_value_change(
+                    lambda _event: _change_diagnostic_selection()
+                )
+                diagnostic_joint.on_value_change(
+                    lambda _event: _load_gains()
+                )
+                diagnostic_start.on("click", diagnostic_dialog.open)
+                diagnostic_stop.on("click", _stop_diagnostic)
+                gain_reload.on("click", lambda: _load_gains())
+                gain_apply.on("click", _open_gain_dialog)
+                _load_gains()
+                ui.timer(0.1, _refresh_joint_diagnostic)
 
             trigger_state = {
                 "sampling": False,
