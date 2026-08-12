@@ -145,7 +145,7 @@ class DualFr3HardwareTeleop:
             self._notify("hands: not running, start with --hand-source")
             return
         for side in selected:
-            self.operator.deny(side, "opening hand")
+            self.operator.deny_hand(side, "opening hand")
         self.hands.request_open(sides=selected)
         self._notify("hands: opening " + "/".join(selected))
 
@@ -268,7 +268,6 @@ class DualFr3HardwareTeleop:
                 }
                 if open_sides:
                     self._open_hands(tuple(open_sides))
-                    sample = disengage_sample_sides(sample, open_sides)
                 if requests.get("reset"):
                     self._start_reset()
                 elif requests.get("reset_left"):
@@ -371,13 +370,10 @@ class DualFr3HardwareTeleop:
                 # Only copy engagement into the independent hand worker here;
                 # arm timing never waits for hand I/O or retargeting.
                 if self.hands is not None:
-                    self.hands.set_active(
-                        (
-                            {side: False for side in SIDES}
-                            if sample is None
-                            else sample.activations
-                        )
+                    hand_activation_reader = getattr(
+                        self.operator, "poll_hands", self.operator.poll
                     )
+                    self.hands.set_active(hand_activation_reader())
                 now = time.monotonic()
                 if now >= next_status_report:
                     input_summary = (

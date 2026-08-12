@@ -76,7 +76,7 @@ def test_open_hand_disengages_only_selected_side_before_opening():
     teleop.operator = type(
         "Operator",
         (),
-        {"deny": lambda _self, side, reason: denied.append((side, reason))},
+        {"deny_hand": lambda _self, side, reason: denied.append((side, reason))},
     )()
     teleop.hands = type(
         "Hands",

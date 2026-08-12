@@ -105,11 +105,29 @@ ops/run/run_teleop.sh
 
 Then start the existing operator GUI. The backend starts disengaged.
 
+The full Operator GUI accepts six USB foot-pedal keys. Arm and MANUS/hand
+following are independent; a start pedal toggles only its named target:
+
+| Pedal key | Action |
+|---|---|
+| `L` | Toggle left GELLO → left FR3 arm |
+| `Space` | Toggle left MANUS → left hand |
+| `R` | Home the left FR3 arm |
+| `A` | Toggle right GELLO → right FR3 arm |
+| `B` | Toggle right MANUS → right hand |
+| `C` | Home the right FR3 arm |
+
+Pedal auto-repeat is disabled. Home is a one-shot request and disengages both
+arm and hand followers while the reset trajectory owns the command path.
+`DISENGAGE ALL` remains the common software stop for every follower. The GUI
+window must have keyboard focus for these ordinary keyboard-emulating pedals;
+hardware emergency stopping remains separate.
+
 For first hardware motion:
 
 1. Keep the emergency stop reachable and clear both workspaces.
 2. Hold both GELLO units still.
-3. Engage only one side.
+3. Start only one arm; keep both hands stopped for the first arm smoke test.
 4. Make one small known motion as a smoke test of the reused mapping.
 5. Disengage before moving the leader to another comfortable pose.
 6. Smoke-test the other side, then test both sides.

@@ -185,6 +185,17 @@ franka-control + teleop-control + gello-bridge + hand-control
 确认 `franka-control` 已接受碰撞阈值、`teleop-control` 显示 contact torque
 gating active，且 GUI 状态正常后再 Engage。
 
+Operator GUI 支持6个键盘式脚踏输入，机械臂和手独立启停：
+
+| 按键 | 功能 | 按键 | 功能 |
+|---|---|---|---|
+| `L` | 左臂启动/停止 | `A` | 右臂启动/停止 |
+| `Space` | 左手启动/停止 | `B` | 右手启动/停止 |
+| `R` | 左臂 Home | `C` | 右臂 Home |
+
+Home 是单次操作，执行前会解除控制权；`DISENGAGE ALL` 仍可同时停止所有臂/手
+跟随。脚踏模拟普通键盘，使用时 Operator GUI 窗口需要获得键盘焦点。
+
 ## 仅启动 GELLO 双臂
 
 ```bash

@@ -19,7 +19,52 @@ from pico_bimanual_franka_teleop.control_server import (
     OperatorConsole,
     OperatorControlServer,
 )
-from apps.operator_gui.operator_gui import OperatorWindow
+from apps.operator_gui.operator_gui import PEDAL_BINDINGS, OperatorWindow
+
+
+def test_six_pedal_bindings_match_the_workcell_layout():
+    assert PEDAL_BINDINGS == {
+        "L": ("toggle", "arm", "left"),
+        "Space": ("toggle", "hand", "left"),
+        "R": ("home", "arm", "left"),
+        "A": ("toggle", "arm", "right"),
+        "B": ("toggle", "hand", "right"),
+        "C": ("home", "arm", "right"),
+    }
+
+
+def test_six_shortcuts_send_independent_arm_hand_and_home_commands(tmp_path):
+    QSettings.setPath(
+        QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
+    )
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    sent = []
+    try:
+        window.socket.abort()
+        window.reconnect_timer.stop()
+        window.connection_state = "connected"
+        window._send = lambda command, arguments=None: sent.append(
+            (command, arguments or {})
+        )
+        for shortcut in window.shortcuts:
+            shortcut.activated.emit()
+            application.processEvents()
+    finally:
+        window.poll_timer.stop()
+        window.health_timer.stop()
+        window.reconnect_timer.stop()
+        window.socket.abort()
+        window.close()
+
+    assert sent == [
+        ("engage_arm", {"side": "left"}),
+        ("engage_hand", {"side": "left"}),
+        ("home_arm", {"side": "left"}),
+        ("engage_arm", {"side": "right"}),
+        ("engage_hand", {"side": "right"}),
+        ("home_arm", {"side": "right"}),
+    ]
 
 
 def _unused_port() -> int:
@@ -67,6 +112,17 @@ def test_backend_crash_displays_disconnect_and_reconnects_safely(tmp_path):
                 and window.engage_buttons["left"].isChecked()
             ),
         )
+        status_before_hand = window.last_status_at
+        window.hand_engage_buttons["left"].click()
+        _wait(
+            application,
+            lambda: (
+                window.last_status_at is not None
+                and window.last_status_at != status_before_hand
+                and window.hand_engage_buttons["left"].isChecked()
+                and window.arm_engage_buttons["left"].isChecked()
+            ),
+        )
 
         backend.terminate()
         backend.join(timeout=2.0)
@@ -81,6 +137,8 @@ def test_backend_crash_displays_disconnect_and_reconnects_safely(tmp_path):
         assert window.connect_action.isEnabled()
         assert not window.engage_buttons["left"].isChecked()
         assert not window.engage_buttons["left"].isEnabled()
+        assert not window.hand_engage_buttons["left"].isChecked()
+        assert not window.hand_engage_buttons["left"].isEnabled()
 
         reconnect_port = _unused_port()
         backend = context.Process(
