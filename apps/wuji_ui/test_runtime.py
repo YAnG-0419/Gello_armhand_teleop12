@@ -9,13 +9,17 @@ from apps.wuji_ui.runtime import WujiUiRuntime
 
 
 class FakeBackend:
-    def __init__(self) -> None:
+    def __init__(self, on_send=None) -> None:
         self.enabled = False
         self.sent = []
+        self.on_send = on_send
 
     def send(self, command) -> None:
         assert self.enabled
-        self.sent.append(np.asarray(command).copy())
+        values = np.asarray(command).copy()
+        self.sent.append(values)
+        if self.on_send is not None:
+            self.on_send(values)
 
 
 class FakePipeline:
@@ -29,7 +33,18 @@ class FakePipeline:
             side: tuple((-1.0, 1.5) for _ in range(20))
             for side in ("left", "right")
         }
-        self.backends = {side: FakeBackend() for side in ("left", "right")}
+        self.positions = {
+            "left": np.full(20, 0.1),
+            "right": np.full(20, 0.2),
+        }
+        self.backends = {
+            side: FakeBackend(
+                lambda values, side=side: self.positions.__setitem__(
+                    side, values.copy()
+                )
+            )
+            for side in ("left", "right")
+        }
         canonical = np.asarray(
             [
                 [0.00, 0.00, 0.00],
@@ -70,7 +85,7 @@ class FakePipeline:
         self.backends[side].enabled = enabled
 
     def feedback_position(self, side):
-        return np.full(20, 0.1 if side == "left" else 0.2)
+        return self.positions[side].copy()
 
     def tick(self, _now, active) -> None:
         for side, enabled in active.items():
@@ -124,3 +139,33 @@ def test_runtime_starts_manual_and_switches_each_side_independently(monkeypatch)
         pipeline = runtime.pipeline
         runtime.close()
     assert pipeline.closed
+
+
+def test_pose_sequence_runs_in_order_and_can_be_stopped(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "WujiHandPipeline", FakePipeline)
+    runtime = WujiUiRuntime(
+        addresses={"left": "left:1", "right": "right:2"},
+        pose_speed_rad_s=10.0,
+    )
+    try:
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                runtime.snapshot("left")
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        runtime.execute_pose_sequence(
+            "left",
+            [("first", [0.2] * 20), ("second", [0.4] * 20)],
+            hold_seconds=0.0,
+        )
+        assert runtime.mode("left") == "hold"
+        assert not runtime.sequence_status("left").running
+        np.testing.assert_allclose(
+            runtime.pipeline.backends["left"].sent[-1], [0.4] * 20
+        )
+    finally:
+        runtime.close()

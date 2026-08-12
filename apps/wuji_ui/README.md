@@ -66,6 +66,22 @@ Saved composite mappings live under `manus_gesture_triggers` in the same JSON.
 They are calibration/validation data only: this version still does not execute
 the mapped hardware pose automatically.
 
+## Pose sequence preview
+
+Use **姿态串联预览** to inspect several saved poses as one motion. Select one
+side, add at least two poses, and reorder or remove steps with the row buttons.
+Configure the per-step hold time and measured-position tolerance, then confirm
+execution.
+
+Each segment uses the global `--pose-speed` limit. The runtime waits for both
+the command interpolation and fresh motor feedback to reach the target before
+starting the hold and next segment. A timeout aborts the remaining sequence.
+`STOP` cancels remaining steps and holds the current command; use manual mode
+or the top-level dual-disable button if the motors should be disabled.
+
+Sequences are intentionally temporary previews and are not stored in JSON yet.
+Left and right sequences are edited and executed independently.
+
 Only fresh, complete 20-joint motor feedback can be recorded. JSON stores
 radians in firmware/device command order and includes all joint names so later
 gesture-triggered policies can reorder by name rather than assuming indices.

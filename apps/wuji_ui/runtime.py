@@ -30,6 +30,14 @@ class ManusGapSnapshot:
     received_at: float
 
 
+@dataclass(frozen=True)
+class PoseSequenceStatus:
+    running: bool
+    step_index: int
+    step_count: int
+    pose_name: str
+
+
 class WujiUiRuntime:
     """Own both hands, MANUS retargeting, feedback, and bounded pose motion."""
 
@@ -82,6 +90,10 @@ class WujiUiRuntime:
             side: None for side in SIDES
         }
         self._errors = {side: "等待真实关节反馈" for side in SIDES}
+        self._sequence_stop = {side: threading.Event() for side in SIDES}
+        self._sequence_status = {
+            side: PoseSequenceStatus(False, 0, 0, "") for side in SIDES
+        }
         self._thread = threading.Thread(
             target=self._loop, name="wuji-ui-hardware", daemon=True
         )
@@ -94,6 +106,10 @@ class WujiUiRuntime:
     def error(self, side: str) -> str:
         with self._lock:
             return self._errors[side]
+
+    def sequence_status(self, side: str) -> PoseSequenceStatus:
+        with self._lock:
+            return self._sequence_status[side]
 
     def snapshot(self, side: str, *, require_fresh: bool = True) -> HandSnapshot:
         with self._lock:
@@ -118,6 +134,7 @@ class WujiUiRuntime:
         return snapshot
 
     def set_manual(self, side: str) -> None:
+        self._sequence_stop[side].set()
         with self._hardware_lock:
             with self._lock:
                 self._modes[side] = "manual"
@@ -126,6 +143,8 @@ class WujiUiRuntime:
             self.pipeline.set_enabled(side, False)
 
     def start_teleop(self, side: str) -> None:
+        if self.sequence_status(side).running:
+            raise RuntimeError(f"{side}姿态序列正在运行")
         snapshot = self.snapshot(side)
         with self._hardware_lock:
             self.pipeline.set_enabled(side, True)
@@ -137,6 +156,13 @@ class WujiUiRuntime:
                 self._pose_targets[side] = None
 
     def move_to_pose(self, side: str, qpos: Sequence[float]) -> None:
+        if self.sequence_status(side).running:
+            raise RuntimeError(f"{side}姿态序列正在运行")
+        self._set_pose_target(side, qpos, mode="pose")
+
+    def _set_pose_target(
+        self, side: str, qpos: Sequence[float], *, mode: str
+    ) -> None:
         target = np.asarray(qpos, dtype=np.float64)
         if target.shape != (20,) or not np.isfinite(target).all():
             raise ValueError("目标姿态必须包含20个有限关节角")
@@ -153,7 +179,87 @@ class WujiUiRuntime:
             with self._lock:
                 self._pose_commands[side] = current
                 self._pose_targets[side] = target.copy()
-                self._modes[side] = "pose"
+                self._modes[side] = mode
+
+    def execute_pose_sequence(
+        self,
+        side: str,
+        poses: Sequence[tuple[str, Sequence[float]]],
+        *,
+        hold_seconds: float = 0.5,
+        position_tolerance_rad: float = 0.08,
+    ) -> None:
+        """Execute named poses serially and wait for measured settling per step."""
+        if not poses:
+            raise ValueError("姿态序列不能为空")
+        hold = float(hold_seconds)
+        tolerance = float(position_tolerance_rad)
+        if not np.isfinite(hold) or hold < 0.0:
+            raise ValueError("姿态停留时间不能为负数")
+        if not np.isfinite(tolerance) or tolerance <= 0.0:
+            raise ValueError("姿态到位容差必须为正数")
+        validated = []
+        limits = np.asarray(self.joint_limits[side], dtype=np.float64)
+        for name, values in poses:
+            target = np.asarray(values, dtype=np.float64)
+            if target.shape != (20,) or not np.isfinite(target).all():
+                raise ValueError(f"姿态{name}必须包含20个有限关节角")
+            if np.any(target < limits[:, 0] - 1e-6) or np.any(
+                target > limits[:, 1] + 1e-6
+            ):
+                raise ValueError(f"姿态{name}超出Wuji Hand 2模型关节范围")
+            validated.append((str(name), target.copy()))
+
+        with self._lock:
+            if self._sequence_status[side].running:
+                raise RuntimeError(f"{side}姿态序列已经在运行")
+            self._sequence_status[side] = PoseSequenceStatus(
+                True, 0, len(validated), ""
+            )
+        stop = self._sequence_stop[side]
+        stop.clear()
+        try:
+            for index, (name, target) in enumerate(validated, start=1):
+                if stop.is_set() or self._stop.is_set():
+                    raise InterruptedError("姿态序列已停止")
+                with self._lock:
+                    self._sequence_status[side] = PoseSequenceStatus(
+                        True, index, len(validated), name
+                    )
+                start = np.asarray(self.snapshot(side).qpos, dtype=np.float64)
+                expected_motion = float(np.max(np.abs(target - start))) / (
+                    self.pose_speed_rad_s
+                )
+                deadline = time.monotonic() + expected_motion + 5.0
+                self._set_pose_target(side, target, mode="sequence")
+                while True:
+                    if stop.wait(0.02) or self._stop.is_set():
+                        raise InterruptedError("姿态序列已停止")
+                    with self._lock:
+                        command_done = self._pose_targets[side] is None
+                    if command_done:
+                        measured = np.asarray(self.snapshot(side).qpos)
+                        if np.max(np.abs(target - measured)) <= tolerance:
+                            break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"姿态{name}未在限定时间内到位")
+                if hold > 0.0 and stop.wait(hold):
+                    raise InterruptedError("姿态序列已停止")
+            with self._lock:
+                self._modes[side] = "hold"
+        finally:
+            with self._lock:
+                self._sequence_status[side] = PoseSequenceStatus(
+                    False, 0, 0, ""
+                )
+                if self._modes[side] == "sequence":
+                    self._modes[side] = "hold"
+                self._pose_targets[side] = None
+
+    def stop_pose_sequence(self, side: str) -> bool:
+        running = self.sequence_status(side).running
+        self._sequence_stop[side].set()
+        return running
 
     def _read_feedback(self, now: float) -> None:
         for side in SIDES:
@@ -174,7 +280,7 @@ class WujiUiRuntime:
     def _advance_poses(self, dt: float) -> None:
         for side in SIDES:
             with self._lock:
-                if self._modes[side] != "pose":
+                if self._modes[side] not in {"pose", "sequence"}:
                     continue
                 command = self._pose_commands[side]
                 target = self._pose_targets[side]
@@ -187,7 +293,8 @@ class WujiUiRuntime:
             with self._lock:
                 self._pose_commands[side] = next_command
                 if reached:
-                    self._modes[side] = "hold"
+                    if self._modes[side] == "pose":
+                        self._modes[side] = "hold"
                     self._pose_targets[side] = None
 
     def _read_manus_gaps(self, now: float) -> None:
@@ -246,6 +353,8 @@ class WujiUiRuntime:
 
     def close(self) -> None:
         self._stop.set()
+        for stop in self._sequence_stop.values():
+            stop.set()
         if self._thread.is_alive():
             self._thread.join(timeout=2.0)
         with self._hardware_lock:
