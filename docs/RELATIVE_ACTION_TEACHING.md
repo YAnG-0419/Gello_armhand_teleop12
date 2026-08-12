@@ -27,7 +27,7 @@
 ### 2.0 Operator GUI 遥操接入
 
 Operator GUI 现有 `Q`、`W`、`E` 三个预设动作槽，配置文件为
-`config/preset_actions.yaml`。当前 Q 对应左臂 `test`、速度 50%，W/E 暂未配置。
+`config/preset_actions.yaml`。当前 Q 对应左臂 `kuai1`、速度 50%，W/E 暂未配置。
 触发时使用当前真实 link8 位姿作为相对动作新原点，调用与 Arm UI 一致的
 MoveIt KDL `/compute_ik` 对完整轨迹逐帧预检；只有全部通过才由现有遥操 UDP
 安全网关执行。动作结束或中断后会重置 GELLO 增量映射并按动作前状态恢复。

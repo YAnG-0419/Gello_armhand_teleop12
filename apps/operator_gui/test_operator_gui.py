@@ -22,19 +22,18 @@ from pico_bimanual_franka_teleop.control_server import (
 from apps.operator_gui.operator_gui import PEDAL_BINDINGS, PRESET_KEYS, OperatorWindow
 
 
-def test_six_pedal_bindings_match_the_workcell_layout():
+def test_five_pedal_bindings_match_the_workcell_layout():
     assert PEDAL_BINDINGS == {
         "L": ("toggle", "arm", "left"),
-        "Space": ("toggle", "hand", "left"),
-        "R": ("home", "arm", "left"),
+        "R": ("toggle", "hand", "left"),
+        "Space": ("home", "arm", "both"),
         "A": ("toggle", "arm", "right"),
         "B": ("toggle", "hand", "right"),
-        "C": ("home", "arm", "right"),
     }
     assert PRESET_KEYS == ("Q", "W", "E")
 
 
-def test_six_shortcuts_send_independent_arm_hand_and_home_commands(tmp_path):
+def test_shortcuts_send_independent_arm_hand_and_home_both_commands(tmp_path):
     QSettings.setPath(
         QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
     )
@@ -61,10 +60,9 @@ def test_six_shortcuts_send_independent_arm_hand_and_home_commands(tmp_path):
     assert sent == [
         ("engage_arm", {"side": "left"}),
         ("engage_hand", {"side": "left"}),
-        ("home_arm", {"side": "left"}),
+        ("home_arm", {"side": "both"}),
         ("engage_arm", {"side": "right"}),
         ("engage_hand", {"side": "right"}),
-        ("home_arm", {"side": "right"}),
     ]
 
 

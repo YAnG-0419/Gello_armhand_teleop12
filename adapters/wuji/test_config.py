@@ -116,12 +116,16 @@ def test_real_hand2_tick_sends_reordered_command(monkeypatch, side):
     real_retargeter = Retargeter.from_yaml(str(config_path), side)
     source_qpos = np.arange(20, dtype=np.float64)
     sent = []
+    resets = []
 
     class FakeRetargeter:
         optimizer = real_retargeter.optimizer
 
         def retarget(self, _landmarks):
             return source_qpos.copy()
+
+        def reset(self):
+            resets.append(side)
 
     class FakeBridge:
         def __init__(self, _library):
@@ -163,10 +167,12 @@ def test_real_hand2_tick_sends_reordered_command(monkeypatch, side):
     )
     try:
         pipeline.tick(now=1.0, active={side: True})
+        pipeline.tick(now=1.1, active={side: False})
     finally:
         pipeline.close()
 
     assert len(sent) == 1
+    assert resets == [side]
     np.testing.assert_array_equal(
         sent[0], source_qpos[HAND2_DEVICE_PERMUTATION]
     )

@@ -2,9 +2,9 @@
 # ${TELEOP_DATA_ROOT}/arm_ui/actions as <side>__<action>.yaml.
 slots:
   q:
-    label: "Preset 1: left test"
+    label: "Preset 1: left kuai1"
     side: left
-    action: test
+    action: kuai1
     speed_scale: 0.50
   w: null
   e: null

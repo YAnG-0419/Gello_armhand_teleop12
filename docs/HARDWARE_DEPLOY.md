@@ -38,9 +38,9 @@ python apps/operator_gui/operator_gui.py
 
 The backend starts disengaged and writes a fresh diagnostics directory. GUI
 loss disengages all sides. The Operator GUI independently gates each arm and
-hand: `L`/`Space`/`R` control left arm/left hand/left home, while
-`A`/`B`/`C` control right arm/right hand/right home. `Home arm` moves only the
-selected arm and disengages all followers for reset ownership; `Open hand`
+hand: `L`/`R` control left arm/left hand, `A`/`B` control right arm/right
+hand, and `Space` homes both arms. `Home both arms` moves both arms and
+disengages all followers for reset ownership; `Open hand`
 stops only that hand's following and opens the selected hand.
 
 The normal stack now also starts `moveit-ik`. This is a read-only `move_group`
@@ -120,7 +120,10 @@ The hands-only controls are `L`/`R`, `Space`, `X`, `O`, and `Q`. The left G20 us
 
 ## Arm home and hand open
 
-Use the GUI for independent per-side `Home arm` and `Open hand` actions. There is deliberately no combined arm-and-hand home action; request both actions explicitly when both are wanted. The arm service equivalent is:
+Use the GUI `Home both arms (Space)` control to reset both arms together, and
+the per-side `Open hand` actions independently. There is deliberately no
+combined arm-and-hand home action; request both actions explicitly when both
+are wanted. The arm service equivalent is:
 
 ```bash
 cd /home/descfly/llx/gello_upper_body_teleop/docker

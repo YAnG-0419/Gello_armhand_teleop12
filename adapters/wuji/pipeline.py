@@ -110,6 +110,8 @@ class WujiHandPipeline:
         self.last_frame_at = {side: None for side in self.sides}
         self.next_due = {side: 0.0 for side in self.sides}
         self.open_until = {side: 0.0 for side in self.sides}
+        self.was_following = {side: False for side in self.sides}
+        self.was_opening = {side: False for side in self.sides}
         self._debug = None
         self.bridge = None
 
@@ -259,6 +261,15 @@ class WujiHandPipeline:
 
             following = bool(enabled.get(side, False))
             opening = moment < self.open_until[side]
+            if (
+                (self.was_following[side] and not following)
+                or (opening and not self.was_opening[side])
+            ):
+                reset = getattr(self.retargeters[side], "reset", None)
+                if reset is not None:
+                    reset()
+            self.was_following[side] = following
+            self.was_opening[side] = opening
             if not following and not opening:
                 status.sending = False
                 status.fault = "disengaged"
@@ -276,6 +287,9 @@ class WujiHandPipeline:
                         else moment - self.last_frame_at[side]
                     )
                     if self.last_frames[side] is None or age > self.stale_timeout:
+                        reset = getattr(self.retargeters[side], "reset", None)
+                        if reset is not None:
+                            reset()
                         status.sending = False
                         status.fault = "MANUS skeleton stale"
                         continue

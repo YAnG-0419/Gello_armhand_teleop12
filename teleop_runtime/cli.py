@@ -223,6 +223,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--wuji-hand-strategy-config",
+        type=Path,
+        default=None,
+        help=(
+            "enable an optional MANUS-to-saved-pose Wuji strategy using this "
+            "task policy JSON"
+        ),
+    )
+    parser.add_argument(
         "--wuji-sides",
         choices=("left", "right", "both"),
         default="both",
@@ -266,6 +275,10 @@ def main() -> None:
     if args.right_hand_strategy_config and args.hand_source != "manus":
         parser.error(
             "--right-hand-strategy-config requires --hand-source manus"
+        )
+    if args.wuji_hand_strategy_config and args.hand_source != "wuji":
+        parser.error(
+            "--wuji-hand-strategy-config requires --hand-source wuji"
         )
     if args.hand_source != "wuji" and any(
         (
@@ -444,6 +457,19 @@ def main() -> None:
             sys.path.insert(0, str(REPO_ROOT))
             from adapters.wuji import WujiHandPipeline
 
+            wuji_task_config = None
+            if args.wuji_hand_strategy_config is not None:
+                from tasks.wuji_pose_switching.strategy import (
+                    load_config as load_wuji_task_config,
+                )
+
+                try:
+                    wuji_task_config = load_wuji_task_config(
+                        args.wuji_hand_strategy_config
+                    )
+                except (OSError, KeyError, TypeError, ValueError) as error:
+                    parser.error(f"invalid Wuji hand strategy config: {error}")
+
             sides = selected_wuji_sides
             models = {
                 side: getattr(args, f"wuji_{side}_model") for side in sides
@@ -465,6 +491,20 @@ def main() -> None:
                 current_limit=args.wuji_current_limit,
                 debug_log=args.hand_debug_log,
             )
+            if wuji_task_config is not None:
+                from tasks.wuji_pose_switching.strategy import (
+                    install_on_wuji_pipeline,
+                )
+
+                try:
+                    install_on_wuji_pipeline(hand_pipeline, wuji_task_config)
+                except (OSError, KeyError, TypeError, ValueError):
+                    hand_pipeline.close()
+                    raise
+                print(
+                    "Wuji hand strategy -> two-stage pose switching "
+                    f"({args.wuji_hand_strategy_config})"
+                )
         if defer_gello_until_hands:
             from adapters.gello import DualGelloJointInput, load_gello_config
 

@@ -105,17 +105,16 @@ ops/run/run_teleop.sh
 
 Then start the existing operator GUI. The backend starts disengaged.
 
-The full Operator GUI accepts six USB foot-pedal keys. Arm and MANUS/hand
+The full Operator GUI accepts five USB foot-pedal keys. Arm and MANUS/hand
 following are independent; a start pedal toggles only its named target:
 
 | Pedal key | Action |
 |---|---|
 | `L` | Toggle left GELLO → left FR3 arm |
-| `Space` | Toggle left MANUS → left hand |
-| `R` | Home the left FR3 arm |
+| `R` | Toggle left MANUS → left hand |
+| `Space` | Home both FR3 arms |
 | `A` | Toggle right GELLO → right FR3 arm |
 | `B` | Toggle right MANUS → right hand |
-| `C` | Home the right FR3 arm |
 
 Pedal auto-repeat is disabled. Home is a one-shot request and disengages both
 arm and hand followers while the reset trajectory owns the command path.
@@ -127,7 +126,7 @@ hardware emergency stopping remains separate.
 
 The Operator GUI exposes preset slots `Q`, `W`, and `E`. Slot configuration is
 in `config/preset_actions.yaml`; `Q` currently resolves the Arm UI recording
-`left__test.yaml` at 50% speed, while `W` and `E` are intentionally empty. A
+`left__kuai1.yaml` at 50% speed, while `W` and `E` are intentionally empty. A
 missing or empty slot reports in the event log and sends no arm command.
 
 On trigger, the selected arm temporarily disengages from GELLO. The read-only

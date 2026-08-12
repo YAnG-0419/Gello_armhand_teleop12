@@ -185,13 +185,13 @@ franka-control + teleop-control + moveit-ik + gello-bridge + hand-control
 确认 `franka-control` 已接受碰撞阈值、`teleop-control` 显示 contact torque
 gating active，且 GUI 状态正常后再 Engage。
 
-Operator GUI 支持6个键盘式脚踏输入，机械臂和手独立启停：
+Operator GUI 支持5个键盘式脚踏输入，机械臂和手独立启停：
 
 | 按键 | 功能 | 按键 | 功能 |
 |---|---|---|---|
 | `L` | 左臂启动/停止 | `A` | 右臂启动/停止 |
-| `Space` | 左手启动/停止 | `B` | 右手启动/停止 |
-| `R` | 左臂 Home | `C` | 右臂 Home |
+| `R` | 左手启动/停止 | `B` | 右手启动/停止 |
+| `Space` | 双臂同时 Home |  |  |
 
 Home 是单次操作，执行前会解除控制权；`DISENGAGE ALL` 仍可同时停止所有臂/手
 跟随。脚踏模拟普通键盘，使用时 Operator GUI 窗口需要获得键盘焦点。
@@ -201,7 +201,7 @@ Home 是单次操作，执行前会解除控制权；`DISENGAGE ALL` 仍可同�
 驱动机械臂，确认对话框也会提示下一次 Home 才会运动。
 
 Operator GUI 还提供三个相对末端预设动作槽：`Q`、`W`、`E`。当前 `Q` 配置为
-Arm UI 录制的左臂动作 `test`，以 50% 速度执行；`W`、`E` 保留待配置。执行前
+Arm UI 录制的左臂动作 `kuai1`，以 50% 速度执行；`W`、`E` 保留待配置。执行前
 系统以当前真实末端姿态作为新原点，并通过与 Arm UI 相同的 MoveIt KDL
 `/compute_ik` 链路检查完整轨迹；任一帧不可达、碰撞或发生 IK 跳变都不会执行。
 动作完成、点击 `STOP PRESET` 或 GELLO 移动超过 0.08 rad 后会重新锚定增量

@@ -44,13 +44,13 @@ STATUS_TIMEOUT_SECONDS = 3.0
 SIDES = ("left", "right")
 PEDAL_BINDINGS = {
     "L": ("toggle", "arm", "left"),
-    "Space": ("toggle", "hand", "left"),
-    "R": ("home", "arm", "left"),
+    "R": ("toggle", "hand", "left"),
+    "Space": ("home", "arm", "both"),
     "A": ("toggle", "arm", "right"),
     "B": ("toggle", "hand", "right"),
-    "C": ("home", "arm", "right"),
 }
 PRESET_KEYS = ("Q", "W", "E")
+HAND_KEY_HINTS = {"left": "R", "right": "B"}
 
 
 class ConnectionDialog(QDialog):
@@ -164,8 +164,8 @@ class OperatorWindow(QMainWindow):
         # Compatibility alias used by existing integrations and tests.
         self.engage_buttons = self.arm_engage_buttons
         pedal_keys = {
-            "left": {"arm": "L", "hand": "Space", "home": "R"},
-            "right": {"arm": "A", "hand": "B", "home": "C"},
+            "left": {"arm": "L", "hand": HAND_KEY_HINTS["left"]},
+            "right": {"arm": "A", "hand": HAND_KEY_HINTS["right"]},
         }
         for side in SIDES:
             box = QGroupBox(side.capitalize())
@@ -202,12 +202,6 @@ class OperatorWindow(QMainWindow):
             self.hand_engage_buttons[side] = hand_engage
             grid.addWidget(hand_engage, 1, 0)
 
-            home = self._button(
-                f"Home arm ({keys['home']})", "home_arm", {"side": side}
-            )
-            home.setToolTip(f"Pedal/shortcut: {keys['home']} homes this arm")
-            grid.addWidget(home, 2, 0)
-
             capture_home = QPushButton("Record current as Home")
             capture_home.setFocusPolicy(Qt.NoFocus)
             capture_home.setToolTip(
@@ -220,10 +214,10 @@ class OperatorWindow(QMainWindow):
             self.capture_home_buttons[side] = capture_home
             self.action_buttons = getattr(self, "action_buttons", [])
             self.action_buttons.append(capture_home)
-            grid.addWidget(capture_home, 3, 0)
+            grid.addWidget(capture_home, 2, 0)
 
             grid.addWidget(
-                self._button("Open hand", "open_hand", {"side": side}), 4, 0
+                self._button("Open hand", "open_hand", {"side": side}), 3, 0
             )
             sides_row.addWidget(box)
         layout.addLayout(sides_row)
@@ -238,7 +232,12 @@ class OperatorWindow(QMainWindow):
         actions.addWidget(
             self._button("Open both hands", "open_hand", {"side": "both"})
         )
-        home_both = self._button("Home both arms", "home_arm", {"side": "both"})
+        home_both = self._button(
+            "Home both arms (Space)", "home_arm", {"side": "both"}
+        )
+        home_both.setToolTip(
+            "Pedal/shortcut: Space homes both arms and disengages followers"
+        )
         actions.addWidget(home_both)
         layout.addLayout(actions)
 
@@ -246,7 +245,7 @@ class OperatorWindow(QMainWindow):
         preset_layout = QHBoxLayout(preset_box)
         self.preset_buttons: dict[str, QPushButton] = {}
         preset_labels = {
-            "q": "Preset 1: left test (Q)",
+            "q": "Preset 1: left kuai1 (Q)",
             "w": "Preset 2: unconfigured (W)",
             "e": "Preset 3: unconfigured (E)",
         }
@@ -271,8 +270,8 @@ class OperatorWindow(QMainWindow):
         layout.addWidget(preset_box)
 
         shortcut_hint = QLabel(
-            "Foot pedals: L left arm · Space left hand · R left home  |  "
-            "A right arm · B right hand · C right home"
+            "Foot pedals: L left arm · R left hand · Space home both  |  "
+            "A right arm · B right hand"
         )
         shortcut_hint.setStyleSheet("color: #666;")
         layout.addWidget(shortcut_hint)
@@ -350,9 +349,9 @@ class OperatorWindow(QMainWindow):
         return button
 
     def _install_shortcuts(self) -> None:
-        # Six independent foot pedals appear as ordinary keyboard keys. Each
-        # press toggles one follower or requests one arm home; auto-repeat is
-        # disabled so holding a pedal cannot retrigger an action.
+        # Foot pedals appear as ordinary keyboard keys. Each press toggles one
+        # follower or homes both arms; auto-repeat is disabled so holding a
+        # pedal cannot retrigger an action.
         self.shortcuts = []
         for key, (action, target, side) in PEDAL_BINDINGS.items():
             if action == "toggle":
@@ -488,7 +487,7 @@ class OperatorWindow(QMainWindow):
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
-                key_hint = "Space" if side == "left" else "B"
+                key_hint = HAND_KEY_HINTS[side]
                 button.setText(f"Start hand ({key_hint})")
                 button.blockSignals(False)
         self.connect_action.setEnabled(state != "connected")
@@ -601,7 +600,7 @@ class OperatorWindow(QMainWindow):
             engaged = bool(hand_active.get(side))
             button.blockSignals(True)
             button.setChecked(engaged)
-            key_hint = "Space" if side == "left" else "B"
+            key_hint = HAND_KEY_HINTS[side]
             button.setText(
                 f"Hand running ({key_hint})"
                 if engaged
