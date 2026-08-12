@@ -793,13 +793,6 @@ class ArmUiApplication:
                 side_toggle.value = state["side"]
                 ui.notify("运行或切换控制器期间不能更换机械臂", color="warning")
                 return
-            if self.runtime.controller_mode(state["side"]) == "teach":
-                side_toggle.value = state["side"]
-                ui.notify(
-                    "请先让当前机械臂退出拖动并保持，再切换另一侧",
-                    color="warning",
-                )
-                return
             state["side"] = side
             state["selected"] = None
             state["sequence"] = []
@@ -890,6 +883,7 @@ class ArmUiApplication:
             ui.label(
                 "切换后机械臂将依靠本体重力补偿。请先托住机械臂，"
                 "确认负载和质心配置正确，并确保硬件停止手段可触达。"
+                "允许左右臂同时处于拖动模式；切换另一侧前请确保当前臂状态稳定。"
             )
             with ui.row().classes("w-full justify-end"):
                 ui.button("取消", on_click=teach_dialog.close).props("flat")

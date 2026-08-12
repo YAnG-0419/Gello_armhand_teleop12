@@ -902,11 +902,6 @@ class ArmRosRuntime:
             raise RuntimeError("轨迹正在执行，不能切换控制器")
         if self.recording_status()["active"]:
             raise RuntimeError("动作正在录制，请先停止并保存或放弃录制")
-        other_side = "right" if side == "left" else "left"
-        if mode == "teach" and self._graph_controller_mode(other_side) == "teach":
-            raise RuntimeError(
-                f"{other_side}机械臂仍在拖动模式，请先让它退出拖动并保持"
-            )
         self._switch_mode_unchecked(side, mode)
 
     def _switch_mode_unchecked(self, side: str, mode: str) -> None:

@@ -1,6 +1,31 @@
+from unittest.mock import Mock
+
 import pytest
 
 from apps.arm_ui.runtime import ArmRosRuntime
+
+
+def test_switch_mode_allows_both_arms_in_teach_mode() -> None:
+    runtime = Mock(spec=ArmRosRuntime)
+    runtime.is_running.return_value = False
+    runtime.recording_status.return_value = {"active": False}
+    runtime._graph_controller_mode.return_value = "teach"
+
+    ArmRosRuntime.switch_mode(runtime, "right", "teach")
+
+    runtime._switch_mode_unchecked.assert_called_once_with("right", "teach")
+    runtime._graph_controller_mode.assert_not_called()
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_switch_mode_still_rejects_changes_during_execution(side: str) -> None:
+    runtime = Mock(spec=ArmRosRuntime)
+    runtime.is_running.return_value = True
+
+    with pytest.raises(RuntimeError, match="轨迹正在执行"):
+        ArmRosRuntime.switch_mode(runtime, side, "teach")
+
+    runtime._switch_mode_unchecked.assert_not_called()
 
 
 def test_finite_difference_velocities_keep_endpoints_at_rest() -> None:

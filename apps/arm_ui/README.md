@@ -94,9 +94,11 @@ launching is not wanted.
 The real configuration uses one controller manager per arm. The teach and arm
 controllers claim the same seven effort interfaces and therefore can never be
 active together. The runtime uses strict controller switches and refuses a
-mode switch while a trajectory action is active. The UI also permits only one
-arm in zero-effort mode at a time; exit hand guiding and hold that arm before
-selecting the other side or starting a task.
+mode switch while a trajectory action is active. Because the two arms use
+independent controller managers and disjoint effort interfaces, both arms may
+be placed in zero-effort mode at the same time. Support each arm while switching
+it and keep the workspace clear. Before starting a task or action preview, exit
+zero-effort mode on the other arm; the runtime rejects execution otherwise.
 
 Intermediate points use the configured Pilz blend radius. A non-zero radius
 means continuous motion passes near the intermediate target instead of
