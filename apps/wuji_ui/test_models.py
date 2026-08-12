@@ -1,13 +1,20 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from apps.wuji_ui.models import (
+    GESTURE_FEATURES,
+    GestureRangeGate,
     HandPose,
+    ManusGestureTrigger,
     ManusTrigger,
     WujiPoseRepository,
+    gesture_match_fraction,
+    manus_gesture_features,
     summarize_gap_samples,
+    summarize_gesture_samples,
 )
 
 
@@ -83,3 +90,74 @@ def test_gap_summary_uses_robust_percentiles_and_hysteresis() -> None:
     assert stats["sample_count"] == 20
     assert stats["recommended_enter_max_m"] > stats["p95_m"]
     assert stats["recommended_exit_min_m"] > stats["recommended_enter_max_m"]
+
+
+def test_composite_gesture_summary_match_and_round_trip(tmp_path: Path) -> None:
+    samples = [
+        {name: 0.5 + index * 0.001 for name in GESTURE_FEATURES}
+        for index in range(60)
+    ]
+    model = summarize_gesture_samples(samples)
+    score, matches = gesture_match_fraction(samples[30], model["feature_ranges"])
+    assert score == pytest.approx(1.0)
+    assert all(matches.values())
+
+    path = tmp_path / "poses.json"
+    poses = repository(path)
+    poses.save(HandPose.create("bottle", "left", [0.1] * 20))
+    poses.save_gesture_trigger(
+        ManusGestureTrigger.create(
+            "bottle_grasp",
+            "left",
+            "bottle",
+            model["feature_ranges"],
+            sample_count=model["sample_count"],
+        )
+    )
+    loaded = repository(path).gesture_triggers("left")[0]
+    assert loaded.pose_name == "bottle"
+    assert loaded.sample_count == 60
+
+
+def test_composite_features_are_translation_rotation_and_scale_invariant() -> None:
+    points = np.asarray(
+        [
+            [0.00, 0.00, 0.00],
+            [0.02, 0.00, 0.00], [0.04, 0.00, 0.00],
+            [0.06, 0.01, 0.00], [0.07, 0.03, 0.00],
+            [0.03, 0.04, 0.00], [0.03, 0.06, 0.00],
+            [0.025, 0.075, 0.00], [0.015, 0.085, 0.00],
+            [0.00, 0.05, 0.00], [0.00, 0.075, 0.00],
+            [-0.005, 0.095, 0.00], [-0.015, 0.11, 0.00],
+            [-0.03, 0.04, 0.00], [-0.03, 0.06, 0.00],
+            [-0.035, 0.075, 0.00], [-0.045, 0.085, 0.00],
+            [-0.06, 0.03, 0.00], [-0.06, 0.05, 0.00],
+            [-0.065, 0.065, 0.00], [-0.075, 0.075, 0.00],
+        ],
+        dtype=float,
+    )
+    angle = np.deg2rad(37.0)
+    rotation = np.asarray(
+        [[np.cos(angle), -np.sin(angle), 0.0],
+         [np.sin(angle), np.cos(angle), 0.0],
+         [0.0, 0.0, 1.0]]
+    )
+    original = manus_gesture_features(points)
+    transformed = manus_gesture_features((points @ rotation.T) * 1.7 + 0.3)
+    assert transformed == pytest.approx(original)
+
+
+def test_composite_gate_applies_dwell_and_exit_hysteresis() -> None:
+    gate = GestureRangeGate(
+        enter_match_fraction=0.8,
+        exit_match_fraction=0.6,
+        dwell_seconds=0.2,
+    )
+    assert not gate.update(1.0, 0.9)
+    assert gate.phase == "candidate"
+    assert not gate.update(1.1, 0.9)
+    assert gate.update(1.21, 0.9)
+    assert gate.phase == "active"
+    assert gate.update(1.3, 0.7)
+    assert not gate.update(1.4, 0.5)
+    assert gate.phase == "inactive"

@@ -30,13 +30,29 @@ class FakePipeline:
             for side in ("left", "right")
         }
         self.backends = {side: FakeBackend() for side in ("left", "right")}
+        canonical = np.asarray(
+            [
+                [0.00, 0.00, 0.00],
+                [0.02, 0.00, 0.00], [0.04, 0.00, 0.00],
+                [0.06, 0.00, 0.00], [0.08, 0.00, 0.00],
+                [0.03, 0.04, 0.00], [0.03, 0.06, 0.00],
+                [0.03, 0.08, 0.00], [0.03, 0.10, 0.00],
+                [0.00, 0.05, 0.00], [0.00, 0.075, 0.00],
+                [0.00, 0.10, 0.00], [0.00, 0.125, 0.00],
+                [-0.03, 0.04, 0.00], [-0.03, 0.06, 0.00],
+                [-0.03, 0.08, 0.00], [-0.03, 0.10, 0.00],
+                [-0.06, 0.03, 0.00], [-0.06, 0.05, 0.00],
+                [-0.06, 0.07, 0.00], [-0.06, 0.09, 0.00],
+            ]
+        )
+        raw = np.zeros((25, 3), dtype=float)
+        raw[[0, 1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14,
+             16, 17, 18, 19, 21, 22, 23, 24]] = canonical
         points = [
             SimpleNamespace(
-                position_x=index * 0.001,
-                position_y=0.0,
-                position_z=0.0,
+                position_x=point[0], position_y=point[1], position_z=point[2]
             )
-            for index in range(25)
+            for point in raw
         ]
         self.last_frames = {
             side: SimpleNamespace(sequence=1, keypoints=points)
@@ -87,7 +103,9 @@ def test_runtime_starts_manual_and_switches_each_side_independently(monkeypatch)
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.01)
-        assert gaps.gaps_m["index"] == pytest.approx(0.005)
+        assert gaps.gaps_m["index"] == pytest.approx(np.hypot(0.05, 0.10))
+        assert len(gaps.features) == 12
+        assert "index_curl_rad" in gaps.features
 
         runtime.start_teleop("left")
         assert runtime.mode("left") == "teleop"

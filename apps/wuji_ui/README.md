@@ -48,6 +48,24 @@ This version records and validates the mapping but deliberately does not yet
 execute a saved pose automatically when the gesture occurs. Gesture-triggered
 hardware execution remains the separate next step.
 
+## Composite gesture learning
+
+For bottle grasps and other whole-hand shapes, use **MANUS 复合手势学习**.
+Select a side and saved pose, start learning, then repeat the intended gesture
+3–5 times while naturally varying the aperture. At least 30 distinct frames
+are required.
+
+The model uses five finger-curl features and seven fingertip-distance features.
+Distances are divided by palm width, and all features are independent of hand
+translation and wrist orientation. Each learned p05–p95 interval receives a
+small margin. Live validation reports how many of the 12 ranges match; default
+entry requires 80%, release occurs below 60%, and dwell defaults to 0.20 s.
+These percentages remain editable before saving.
+
+Saved composite mappings live under `manus_gesture_triggers` in the same JSON.
+They are calibration/validation data only: this version still does not execute
+the mapped hardware pose automatically.
+
 Only fresh, complete 20-joint motor feedback can be recorded. JSON stores
 radians in firmware/device command order and includes all joint names so later
 gesture-triggered policies can reorder by name rather than assuming indices.
