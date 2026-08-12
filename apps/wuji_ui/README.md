@@ -24,12 +24,16 @@ automatic browser opening. The default pose file is
 1. Both hands start in **manual** mode with motors disabled. Move either hand
    by hand, click **读取当前位置**, enter an independent name, and save it.
    Each pending angle can be adjusted with a model-bounded slider or its linked
-   numeric degree field; editing these controls never commands hardware.
-2. To teach from MANUS, confirm **启动 MANUS 遥操** for either side. Return to
+   numeric degree field; editing these controls never commands hardware unless
+   that side is in **滑块实时控制**.
+2. To jog from the UI, confirm **滑块实时控制** for either side. Sliders and
+   degree fields then become rate-limited joint targets (`--pose-speed`). Return
+   to **手动 / 失能** before touching or repositioning that hand directly.
+3. To teach from MANUS, confirm **启动 MANUS 遥操** for either side. Return to
    **手动 / 失能** before touching or repositioning that hand directly.
-3. Clicking a saved pose only selects it and shows its 20 angles. **移动到选中姿态**
+4. Clicking a saved pose only selects it and shows its 20 angles. **移动到选中姿态**
    requires a separate confirmation and moves at the configured bounded speed.
-4. Closing the server disables and disconnects both hands.
+5. Closing the server disables and disconnects both hands.
 
 ## MANUS threshold capture
 

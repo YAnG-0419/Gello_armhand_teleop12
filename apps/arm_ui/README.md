@@ -34,8 +34,10 @@ motion for actions such as a wrist scooping gesture:
    **当前位置验证 IK**. MoveIt sequentially solves the relative end-effector
    path from that pose and checks for IK branch jumps. This validation never
    sends a motion command.
-5. Set **低速试运行速度** between 5% and 30% (15% by default), then click the
-   saved action's **低速试运行** button. After confirmation, the backend solves
+5. Set **试运行速度** between 5% and 100% (15% by default), then click the
+   saved action's **动作试运行** button. **设为原速 100%** only fills in the
+   requested speed; execution still requires confirmation and all trajectory
+   safety checks. After confirmation, the backend solves
    every frame again, rejects movement during solving, switches the selected
    arm to trajectory control, and submits one time-scaled spline trajectory.
 6. **停止试运行** cancels the active controller goal and holds the current
@@ -49,7 +51,7 @@ Recording uses `lychee_root` as the fixed URDF base and the selected arm's
 reachability, and continuity checks enabled. The two arms are not coordinated
 or moved by this feature.
 
-Low-speed preview is deliberately restricted to one execution, 5%–30% speed,
+Preview is deliberately restricted to one execution, 5%–100% speed,
 at most 2,000 recorded frames, and at most 120 seconds after scaling. The first
 IK point must remain within 0.05 rad of the current joints, and movement greater
 than 0.03 rad while IK is being solved aborts before controller switching.

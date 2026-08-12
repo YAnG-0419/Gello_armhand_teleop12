@@ -135,7 +135,38 @@ class WujiUiRuntime:
                 self._pose_commands[side] = None
                 self._pose_targets[side] = None
 
+    def start_jog(self, side: str) -> None:
+        """Enable motors and follow UI joint targets at pose_speed_rad_s."""
+        snapshot = self.snapshot(side)
+        current = np.asarray(snapshot.qpos, dtype=np.float64)
+        with self._hardware_lock:
+            self.pipeline.set_enabled(side, True)
+            self.pipeline.backends[side].send(current)
+            with self._lock:
+                self._pose_commands[side] = current.copy()
+                self._pose_targets[side] = current.copy()
+                self._modes[side] = "jog"
+
+    def set_jog_target(self, side: str, qpos: Sequence[float]) -> None:
+        target = self._validated_target(side, qpos)
+        with self._lock:
+            if self._modes[side] != "jog":
+                raise RuntimeError(f"{side}不在滑块控制模式，无法更新目标")
+            self._pose_targets[side] = target
+
     def move_to_pose(self, side: str, qpos: Sequence[float]) -> None:
+        target = self._validated_target(side, qpos)
+        snapshot = self.snapshot(side)
+        current = np.asarray(snapshot.qpos, dtype=np.float64)
+        with self._hardware_lock:
+            self.pipeline.set_enabled(side, True)
+            self.pipeline.backends[side].send(current)
+            with self._lock:
+                self._pose_commands[side] = current
+                self._pose_targets[side] = target
+                self._modes[side] = "pose"
+
+    def _validated_target(self, side: str, qpos: Sequence[float]) -> np.ndarray:
         target = np.asarray(qpos, dtype=np.float64)
         if target.shape != (20,) or not np.isfinite(target).all():
             raise ValueError("目标姿态必须包含20个有限关节角")
@@ -144,15 +175,7 @@ class WujiUiRuntime:
             target > limits[:, 1] + 1e-6
         ):
             raise ValueError("目标姿态超出Wuji Hand 2模型关节范围")
-        snapshot = self.snapshot(side)
-        current = np.asarray(snapshot.qpos, dtype=np.float64)
-        with self._hardware_lock:
-            self.pipeline.set_enabled(side, True)
-            self.pipeline.backends[side].send(current)
-            with self._lock:
-                self._pose_commands[side] = current
-                self._pose_targets[side] = target.copy()
-                self._modes[side] = "pose"
+        return target.copy()
 
     def _read_feedback(self, now: float) -> None:
         for side in SIDES:
@@ -173,7 +196,8 @@ class WujiUiRuntime:
     def _advance_poses(self, dt: float) -> None:
         for side in SIDES:
             with self._lock:
-                if self._modes[side] != "pose":
+                mode = self._modes[side]
+                if mode not in {"pose", "jog"}:
                     continue
                 command = self._pose_commands[side]
                 target = self._pose_targets[side]
@@ -185,7 +209,7 @@ class WujiUiRuntime:
             reached = bool(np.max(np.abs(target - next_command)) < 1e-6)
             with self._lock:
                 self._pose_commands[side] = next_command
-                if reached:
+                if mode == "pose" and reached:
                     self._modes[side] = "hold"
                     self._pose_targets[side] = None
 

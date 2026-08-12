@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import math
 from pathlib import Path
 
@@ -30,6 +29,7 @@ FINGER_LABELS = {
 MODE_LABELS = {
     "manual": "手动（电机失能）",
     "teleop": "MANUS 遥操",
+    "jog": "滑块实时控制",
     "pose": "移动到保存姿态",
     "hold": "保持姿态",
 }
@@ -50,7 +50,13 @@ class WujiUiApplication:
 
     def build_page(self) -> None:
         states = {
-            side: {"selected": None, "busy": False, "fields": [], "labels": []}
+            side: {
+                "selected": None,
+                "busy": False,
+                "suppress_jog": False,
+                "fields": [],
+                "labels": [],
+            }
             for side in SIDES
         }
         status_labels = {}
@@ -58,14 +64,43 @@ class WujiUiApplication:
         name_inputs = {}
         pose_refreshers = {}
 
+        def _set_pending_angles(side: str, qpos) -> None:
+            states[side]["suppress_jog"] = True
+            try:
+                for field, value in zip(
+                    states[side]["fields"], qpos, strict=True
+                ):
+                    field.set_value(_degrees(value))
+            finally:
+                states[side]["suppress_jog"] = False
+
+        def _notify(message: str, **kwargs) -> None:
+            try:
+                ui.notify(message, **kwargs)
+            except RuntimeError:
+                print(f"ui.notify failed: {message}", flush=True)
+
+        def _push_jog(side: str) -> None:
+            if states[side]["suppress_jog"] or self.runtime.mode(side) != "jog":
+                return
+            try:
+                qpos = []
+                for field in states[side]["fields"]:
+                    if field.value is None:
+                        return
+                    qpos.append(_radians(field.value))
+                self.runtime.set_jog_target(side, qpos)
+            except Exception as error:
+                print(f"jog target update failed ({side}): {error}", flush=True)
+                _notify(str(error), color="negative", timeout=5)
+
         def _select_pose(side: str, pose: HandPose, refresh) -> None:
             states[side]["selected"] = pose.name
             name_inputs[side].value = pose.name
-            for field, value in zip(
-                states[side]["fields"], pose.qpos, strict=True
-            ):
-                field.value = _degrees(value)
+            _set_pending_angles(side, pose.qpos)
             refresh()
+            if self.runtime.mode(side) == "jog":
+                _push_jog(side)
 
         ui.add_head_html(
             """
@@ -92,7 +127,8 @@ class WujiUiApplication:
 
         with ui.column().classes("w-full max-w-[1780px] mx-auto p-5 gap-5"):
             ui.label(
-                "手动模式下电机失能，可直接摆手；遥操和姿态回放会使能电机。"
+                "手动模式下电机失能，可直接摆手；遥操、滑块控制和姿态回放会使能电机。"
+                "未进入滑块控制时，拖动滑块只改待保存角度，不会驱动真机。"
                 "记录始终读取电机实际位置。"
             ).classes("rounded-lg bg-blue-50 text-blue-900 p-3 w-full")
             with ui.row().classes("w-full items-start gap-5 flex-nowrap"):
@@ -108,6 +144,9 @@ class WujiUiApplication:
                         with ui.row().classes("w-full gap-2"):
                             manual_button = ui.button(
                                 "手动 / 失能", icon="pan_tool"
+                            ).props("outline")
+                            jog_button = ui.button(
+                                "滑块实时控制", icon="tune", color="warning"
                             ).props("outline")
                             teleop_button = ui.button(
                                 "启动 MANUS 遥操", icon="back_hand", color="positive"
@@ -146,12 +185,23 @@ class WujiUiApplication:
                                     ).props(
                                         "dense outlined suffix=°"
                                     ).classes("joint-value w-[105px] shrink-0")
-                                    ui.slider(
-                                        min=_degrees(lower),
-                                        max=_degrees(upper),
-                                        step=0.1,
-                                        value=0.0,
-                                    ).props("label").classes("grow").bind_value(field)
+                                    slider = (
+                                        ui.slider(
+                                            min=_degrees(lower),
+                                            max=_degrees(upper),
+                                            step=0.1,
+                                            value=0.0,
+                                        )
+                                        .props("label")
+                                        .classes("grow")
+                                        .bind_value(field)
+                                    )
+                                    field.on_value_change(
+                                        lambda _event, side=side: _push_jog(side)
+                                    )
+                                    slider.on_value_change(
+                                        lambda _event, side=side: _push_jog(side)
+                                    )
                                 states[side]["labels"].append(current_label)
                                 states[side]["fields"].append(field)
 
@@ -205,9 +255,29 @@ class WujiUiApplication:
                             states[side]["busy"] = True
                             try:
                                 await run.io_bound(self.runtime.set_manual, side)
-                                ui.notify(f"{SIDE_LABELS[side]}电机已失能，可手动摆姿态")
+                                _notify(f"{SIDE_LABELS[side]}电机已失能，可手动摆姿态")
                             except Exception as error:
-                                ui.notify(str(error), color="negative", timeout=8)
+                                print(f"manual mode failed ({side}): {error}", flush=True)
+                                _notify(str(error), color="negative", timeout=8)
+                            finally:
+                                states[side]["busy"] = False
+
+                        async def _jog(side: str = side) -> None:
+                            if states[side]["busy"]:
+                                return
+                            states[side]["busy"] = True
+                            try:
+                                await run.io_bound(self.runtime.start_jog, side)
+                                snapshot = self.runtime.snapshot(side)
+                                _set_pending_angles(side, snapshot.qpos)
+                                _notify(
+                                    f"{SIDE_LABELS[side]}滑块实时控制已启动"
+                                    "（限速跟随待保存角度）",
+                                    color="warning",
+                                )
+                            except Exception as error:
+                                print(f"start jog failed ({side}): {error}", flush=True)
+                                _notify(str(error), color="negative", timeout=8)
                             finally:
                                 states[side]["busy"] = False
 
@@ -217,12 +287,13 @@ class WujiUiApplication:
                             states[side]["busy"] = True
                             try:
                                 await run.io_bound(self.runtime.start_teleop, side)
-                                ui.notify(
+                                _notify(
                                     f"{SIDE_LABELS[side]} MANUS遥操已启动",
                                     color="positive",
                                 )
                             except Exception as error:
-                                ui.notify(str(error), color="negative", timeout=8)
+                                print(f"teleop failed ({side}): {error}", flush=True)
+                                _notify(str(error), color="negative", timeout=8)
                             finally:
                                 states[side]["busy"] = False
 
@@ -236,14 +307,13 @@ class WujiUiApplication:
                                         f"pose_{len(self.repository.poses(side)) + 1}"
                                     )
                                 states[side]["selected"] = None
-                                for field, value in zip(
-                                    states[side]["fields"], snapshot.qpos, strict=True
-                                ):
-                                    field.value = _degrees(value)
+                                _set_pending_angles(side, snapshot.qpos)
+                                if self.runtime.mode(side) == "jog":
+                                    _push_jog(side)
                                 refresh()
-                                ui.notify("已读取实际关节反馈；请确认名称后保存")
+                                _notify("已读取实际关节反馈；请确认名称后保存")
                             except Exception as error:
-                                ui.notify(str(error), color="negative", timeout=8)
+                                _notify(str(error), color="negative", timeout=8)
 
                         def _save(
                             side: str = side, refresh=refresh_pose_list
@@ -259,9 +329,9 @@ class WujiUiApplication:
                                 )
                                 states[side]["selected"] = pose.name
                                 refresh()
-                                ui.notify(f"姿态“{pose.name}”已保存", color="positive")
+                                _notify(f"姿态“{pose.name}”已保存", color="positive")
                             except Exception as error:
-                                ui.notify(str(error), color="negative", timeout=8)
+                                _notify(str(error), color="negative", timeout=8)
 
                         def _delete(
                             side: str = side, refresh=refresh_pose_list
@@ -274,9 +344,9 @@ class WujiUiApplication:
                                 states[side]["selected"] = None
                                 name_inputs[side].value = ""
                                 refresh()
-                                ui.notify(f"姿态“{name}”已删除")
+                                _notify(f"姿态“{name}”已删除")
                             except Exception as error:
-                                ui.notify(str(error), color="negative")
+                                _notify(str(error), color="negative")
 
                         async def _move(side: str = side) -> None:
                             if states[side]["busy"]:
@@ -290,12 +360,13 @@ class WujiUiApplication:
                                 await run.io_bound(
                                     self.runtime.move_to_pose, side, pose.qpos
                                 )
-                                ui.notify(
+                                _notify(
                                     f"{SIDE_LABELS[side]}开始平滑移动到“{name}”",
                                     color="warning",
                                 )
                             except Exception as error:
-                                ui.notify(str(error), color="negative", timeout=8)
+                                print(f"move to pose failed ({side}): {error}", flush=True)
+                                _notify(str(error), color="negative", timeout=8)
                             finally:
                                 states[side]["busy"] = False
 
@@ -306,12 +377,40 @@ class WujiUiApplication:
                             ui.label("电机将使能并跟随手套。请确认手周围无障碍物。")
                             with ui.row().classes("w-full justify-end"):
                                 ui.button("取消", on_click=teleop_dialog.close).props("flat")
+
+                                async def _confirm_teleop(
+                                    dialog=teleop_dialog, action=_teleop
+                                ) -> None:
+                                    dialog.close()
+                                    await action()
+
                                 ui.button(
                                     "确认启动",
                                     color="positive",
-                                    on_click=lambda dialog=teleop_dialog, action=_teleop: (
-                                        dialog.close(), asyncio.create_task(action())
-                                    ),
+                                    on_click=_confirm_teleop,
+                                )
+
+                        with ui.dialog() as jog_dialog, ui.card().classes("max-w-lg"):
+                            ui.label(f"确认启动{SIDE_LABELS[side]}滑块实时控制").classes(
+                                "text-lg font-semibold"
+                            )
+                            ui.label(
+                                "电机将使能，并以受限速度跟随滑块/数字框目标。"
+                                "请确认手周围无障碍物；结束后请点「手动 / 失能」。"
+                            )
+                            with ui.row().classes("w-full justify-end"):
+                                ui.button("取消", on_click=jog_dialog.close).props("flat")
+
+                                async def _confirm_jog(
+                                    dialog=jog_dialog, action=_jog
+                                ) -> None:
+                                    dialog.close()
+                                    await action()
+
+                                ui.button(
+                                    "确认启动",
+                                    color="warning",
+                                    on_click=_confirm_jog,
                                 )
 
                         with ui.dialog() as move_dialog, ui.card().classes("max-w-lg"):
@@ -324,17 +423,21 @@ class WujiUiApplication:
                             )
                             with ui.row().classes("w-full justify-end"):
                                 ui.button("取消", on_click=move_dialog.close).props("flat")
+
+                                async def _confirm_move(
+                                    dialog=move_dialog, action=_move
+                                ) -> None:
+                                    dialog.close()
+                                    await action()
+
                                 ui.button(
                                     "确认移动",
                                     color="warning",
-                                    on_click=lambda dialog=move_dialog, action=_move: (
-                                        dialog.close(), asyncio.create_task(action())
-                                    ),
+                                    on_click=_confirm_move,
                                 )
 
-                        manual_button.on(
-                            "click", lambda action=_manual: asyncio.create_task(action())
-                        )
+                        manual_button.on("click", _manual)
+                        jog_button.on("click", jog_dialog.open)
                         teleop_button.on("click", teleop_dialog.open)
                         record_button.on("click", _record)
                         save_button.on("click", _save)
@@ -658,13 +761,12 @@ class WujiUiApplication:
             try:
                 for side in SIDES:
                     await run.io_bound(self.runtime.set_manual, side)
-                ui.notify("左右手电机均已失能", color="positive")
+                _notify("左右手电机均已失能", color="positive")
             except Exception as error:
-                ui.notify(str(error), color="negative", timeout=8)
+                print(f"disable all failed: {error}", flush=True)
+                _notify(str(error), color="negative", timeout=8)
 
-        disable_all_button.on(
-            "click", lambda: asyncio.create_task(_disable_all())
-        )
+        disable_all_button.on("click", _disable_all)
         ui.timer(0.2, _refresh_feedback)
 
 

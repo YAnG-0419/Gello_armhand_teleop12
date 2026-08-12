@@ -5,8 +5,10 @@ import pytest
 from apps.arm_ui.recording import (
     ActionStore,
     MotionSample,
+    RelativeMotionFrame,
     build_recorded_action,
     compose_pose,
+    smooth_relative_frames,
 )
 
 
@@ -102,3 +104,43 @@ def test_rejects_stationary_capture() -> None:
             tool_frame="left_fr3_link8",
             samples=[_sample(0.0, 0.0, 0.0), _sample(0.1, 0.0, 0.0), _sample(0.2, 0.0, 0.0)],
         )
+
+
+def test_smooth_relative_frames_reduces_jitter_and_resamples() -> None:
+    frames = tuple(
+        RelativeMotionFrame(
+            time_sec=index / 100.0,
+            joint_delta=(0.0,) * 7,
+            position=(index / 100.0 + (0.01 if index % 2 else -0.01), 0.0, 0.0),
+            orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+        )
+        for index in range(101)
+    )
+
+    result = smooth_relative_frames(frames)
+
+    assert len(result) == 31
+    assert result[0] == frames[0]
+    assert result[-1] == frames[-1]
+    assert result[15].position[0] == pytest.approx(0.5, abs=0.002)
+    assert result[15].time_sec == pytest.approx(0.5)
+
+
+def test_smooth_relative_frames_aligns_quaternion_signs() -> None:
+    frames = tuple(
+        RelativeMotionFrame(
+            time_sec=index / 100.0,
+            joint_delta=(0.0,) * 7,
+            position=(0.0, 0.0, 0.0),
+            orientation_xyzw=(
+                (0.0, 0.0, 0.0, 1.0)
+                if index % 2 == 0
+                else (0.0, 0.0, 0.0, -1.0)
+            ),
+        )
+        for index in range(11)
+    )
+
+    result = smooth_relative_frames(frames, target_rate_hz=10.0)
+
+    assert all(abs(frame.orientation_xyzw[3]) == pytest.approx(1.0) for frame in result)

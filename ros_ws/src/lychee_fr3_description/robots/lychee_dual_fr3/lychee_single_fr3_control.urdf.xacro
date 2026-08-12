@@ -13,18 +13,16 @@
   <xacro:arg name="thread_priority" default="50"/>
 
   <xacro:include filename="$(find franka_description)/robots/$(arg robot_type)/$(arg robot_type).urdf.xacro"/>
-  <xacro:include filename="$(find franka_hardware)/ros2_control/franka_arm.ros2_control.xacro"/>
+  <xacro:include filename="$(find franka_description)/robots/common/franka_arm.ros2_control.xacro"/>
 
   <xacro:franka_arm_ros2_control
-    robot_type="$(arg robot_type)"
+    arm_id="$(arg robot_type)"
     robot_ip="$(arg robot_ip)"
     use_fake_hardware="$(arg use_fake_hardware)"
     fake_sensor_commands="$(arg fake_sensor_commands)"
     gazebo="$(arg gazebo)"
     hand="$(arg hand)"
     gazebo_effort="$(arg gazebo_effort)"
-    arm_prefix="${modified_prefix}"
-    is_async="$(arg is_async)"
-    thread_priority="$(arg thread_priority)"/>
+    arm_prefix="${modified_prefix}"/>
 
 </robot>

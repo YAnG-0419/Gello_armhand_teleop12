@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
@@ -65,6 +66,31 @@ def _dot(left: Sequence[float], right: Sequence[float]) -> float:
     return sum(a * b for a, b in zip(left, right, strict=True))
 
 
+def _quaternion_slerp(
+    start: Sequence[float], end: Sequence[float], fraction: float
+) -> tuple[float, float, float, float]:
+    left = _normalize_quaternion(start)
+    right = _normalize_quaternion(end)
+    cosine = _dot(left, right)
+    if cosine < 0.0:
+        right = tuple(-value for value in right)
+        cosine = -cosine
+    cosine = max(-1.0, min(1.0, cosine))
+    if cosine > 0.9995:
+        return _normalize_quaternion(
+            left[index] + fraction * (right[index] - left[index])
+            for index in range(4)
+        )
+    angle = math.acos(cosine)
+    sine = math.sin(angle)
+    left_weight = math.sin((1.0 - fraction) * angle) / sine
+    right_weight = math.sin(fraction * angle) / sine
+    return _normalize_quaternion(
+        left_weight * left[index] + right_weight * right[index]
+        for index in range(4)
+    )
+
+
 @dataclass(frozen=True)
 class MotionSample:
     time_sec: float
@@ -114,6 +140,110 @@ class RecordedAction:
     @property
     def duration_sec(self) -> float:
         return self.relative_frames[-1].time_sec
+
+
+def smooth_relative_frames(
+    frames: Sequence[RelativeMotionFrame],
+    *,
+    window_sec: float = 0.12,
+    target_rate_hz: float = 30.0,
+) -> tuple[RelativeMotionFrame, ...]:
+    """Low-pass and uniformly resample an offline tool-relative path.
+
+    The raw recording remains untouched. A symmetric triangular window avoids
+    phase lag, quaternion signs are aligned before their weighted normalized
+    average, and SLERP is used when resampling orientations.
+    """
+    source = tuple(frames)
+    if len(source) < 3:
+        raise ValueError("相对动作至少需要3帧")
+    times = tuple(frame.time_sec for frame in source)
+    if any(times[index] <= times[index - 1] for index in range(1, len(times))):
+        raise ValueError("相对动作时间必须严格递增")
+    window_sec = float(window_sec)
+    target_rate_hz = float(target_rate_hz)
+    if not math.isfinite(window_sec) or window_sec <= 0.0:
+        raise ValueError("平滑窗口必须为正数")
+    if not math.isfinite(target_rate_hz) or target_rate_hz <= 0.0:
+        raise ValueError("重采样频率必须为正数")
+
+    intervals = sorted(times[index] - times[index - 1] for index in range(1, len(times)))
+    median_interval = intervals[len(intervals) // 2]
+    radius = max(1, min(25, round(window_sec / (2.0 * median_interval))))
+    smoothed: list[RelativeMotionFrame] = []
+    for index, frame in enumerate(source):
+        if index in {0, len(source) - 1}:
+            smoothed.append(frame)
+            continue
+        first = max(0, index - radius)
+        last = min(len(source), index + radius + 1)
+        weighted_position = [0.0, 0.0, 0.0]
+        weighted_joint_delta = [0.0] * len(frame.joint_delta)
+        reference = frame.orientation_xyzw
+        weighted_orientation = [0.0, 0.0, 0.0, 0.0]
+        total_weight = 0.0
+        for sample_index in range(first, last):
+            weight = float(radius + 1 - abs(sample_index - index))
+            sample = source[sample_index]
+            total_weight += weight
+            for axis in range(3):
+                weighted_position[axis] += weight * sample.position[axis]
+            for joint in range(len(weighted_joint_delta)):
+                weighted_joint_delta[joint] += weight * sample.joint_delta[joint]
+            orientation = sample.orientation_xyzw
+            if _dot(reference, orientation) < 0.0:
+                orientation = tuple(-value for value in orientation)
+            for component in range(4):
+                weighted_orientation[component] += weight * orientation[component]
+        smoothed.append(
+            RelativeMotionFrame(
+                time_sec=frame.time_sec,
+                joint_delta=tuple(value / total_weight for value in weighted_joint_delta),
+                position=tuple(value / total_weight for value in weighted_position),  # type: ignore[arg-type]
+                orientation_xyzw=_normalize_quaternion(weighted_orientation),
+            )
+        )
+
+    duration = times[-1] - times[0]
+    target_count = min(
+        len(smoothed), max(3, int(math.ceil(duration * target_rate_hz)) + 1)
+    )
+    output_times = tuple(
+        times[0] + duration * index / (target_count - 1)
+        for index in range(target_count)
+    )
+    smoothed_times = tuple(frame.time_sec for frame in smoothed)
+    output: list[RelativeMotionFrame] = []
+    for timestamp in output_times:
+        if timestamp <= smoothed_times[0]:
+            output.append(smoothed[0])
+            continue
+        if timestamp >= smoothed_times[-1]:
+            output.append(smoothed[-1])
+            continue
+        right_index = bisect_right(smoothed_times, timestamp)
+        left = smoothed[right_index - 1]
+        right = smoothed[right_index]
+        fraction = (timestamp - left.time_sec) / (right.time_sec - left.time_sec)
+        output.append(
+            RelativeMotionFrame(
+                time_sec=timestamp,
+                joint_delta=tuple(
+                    start + fraction * (end - start)
+                    for start, end in zip(
+                        left.joint_delta, right.joint_delta, strict=True
+                    )
+                ),
+                position=tuple(
+                    start + fraction * (end - start)
+                    for start, end in zip(left.position, right.position, strict=True)
+                ),  # type: ignore[arg-type]
+                orientation_xyzw=_quaternion_slerp(
+                    left.orientation_xyzw, right.orientation_xyzw, fraction
+                ),
+            )
+        )
+    return tuple(output)
 
 
 def compose_pose(

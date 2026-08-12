@@ -19,3 +19,26 @@ def test_finite_difference_velocities_reject_non_increasing_time() -> None:
         ArmRosRuntime._finite_difference_velocities(
             (0.1, 0.1), ((0.0,), (0.2,))
         )
+
+
+def test_cubic_extrema_detect_position_spike_hidden_by_central_difference() -> None:
+    times = (0.0, 1.0, 2.0)
+    positions = ((0.0,), (1.0,), (0.0,))
+    velocities = ArmRosRuntime._finite_difference_velocities(times, positions)
+
+    maximum_velocity, maximum_acceleration = (
+        ArmRosRuntime._cubic_trajectory_extrema(times, positions, velocities)
+    )
+
+    assert velocities == ((0.0,), (0.0,), (0.0,))
+    assert maximum_velocity == pytest.approx((1.5,))
+    assert maximum_acceleration == pytest.approx((6.0,))
+
+
+def test_cubic_extrema_reject_non_increasing_time() -> None:
+    with pytest.raises(ValueError, match="严格递增"):
+        ArmRosRuntime._cubic_trajectory_extrema(
+            (0.0, 0.0),
+            ((0.0,), (0.1,)),
+            ((0.0,), (0.0,)),
+        )

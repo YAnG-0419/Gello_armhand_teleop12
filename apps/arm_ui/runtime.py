@@ -13,7 +13,12 @@ import time
 from typing import Callable, Sequence
 
 from .models import Routine, SIDES, Waypoint
-from .recording import MotionSample, RecordedAction, compose_pose
+from .recording import (
+    MotionSample,
+    RecordedAction,
+    compose_pose,
+    smooth_relative_frames,
+)
 
 
 @dataclass(frozen=True)
@@ -434,7 +439,7 @@ class ArmRosRuntime:
             float(transform.rotation.z),
             float(transform.rotation.w),
         )
-        frames = action.relative_frames
+        frames = smooth_relative_frames(action.relative_frames)
         if max_frames is None and len(frames) > 2000:
             raise RuntimeError("动作超过2000帧，请缩短录制后再低速试运行")
         if max_frames is None or len(frames) <= max_frames:
@@ -546,6 +551,62 @@ class ArmRosRuntime:
         velocities.append((0.0,) * width)
         return tuple(velocities)
 
+    @staticmethod
+    def _cubic_trajectory_extrema(
+        times: Sequence[float],
+        positions: Sequence[Sequence[float]],
+        velocities: Sequence[Sequence[float]],
+    ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        if len(times) != len(positions) or len(times) != len(velocities):
+            raise ValueError("轨迹位置、速度和时间数量不匹配")
+        if len(times) < 2:
+            raise ValueError("轨迹至少需要两个点")
+        width = len(positions[0])
+        if width == 0 or any(
+            len(values) != width for values in (*positions, *velocities)
+        ):
+            raise ValueError("轨迹关节数量不一致")
+        maximum_velocity = [0.0] * width
+        maximum_acceleration = [0.0] * width
+        for index in range(len(times) - 1):
+            duration = times[index + 1] - times[index]
+            if duration <= 0.0:
+                raise ValueError("轨迹时间必须严格递增")
+            for joint in range(width):
+                delta = positions[index + 1][joint] - positions[index][joint]
+                start_velocity = velocities[index][joint]
+                end_velocity = velocities[index + 1][joint]
+                quadratic = (
+                    3.0 * delta / (duration * duration)
+                    - (2.0 * start_velocity + end_velocity) / duration
+                )
+                cubic = (
+                    -2.0 * delta / (duration * duration * duration)
+                    + (start_velocity + end_velocity) / (duration * duration)
+                )
+                velocity_candidates = [abs(start_velocity), abs(end_velocity)]
+                if abs(cubic) > 1e-12:
+                    stationary_time = -quadratic / (3.0 * cubic)
+                    if 0.0 < stationary_time < duration:
+                        velocity_candidates.append(
+                            abs(
+                                start_velocity
+                                + 2.0 * quadratic * stationary_time
+                                + 3.0 * cubic * stationary_time * stationary_time
+                            )
+                        )
+                acceleration_candidates = (
+                    abs(2.0 * quadratic),
+                    abs(2.0 * quadratic + 6.0 * cubic * duration),
+                )
+                maximum_velocity[joint] = max(
+                    maximum_velocity[joint], *velocity_candidates
+                )
+                maximum_acceleration[joint] = max(
+                    maximum_acceleration[joint], *acceleration_candidates
+                )
+        return tuple(maximum_velocity), tuple(maximum_acceleration)
+
     def execute_relative_action(
         self, action: RecordedAction, *, speed_scale: float = 0.15
     ) -> IkValidation:
@@ -553,8 +614,8 @@ class ArmRosRuntime:
         if action.side not in SIDES:
             raise ValueError(f"未知机械臂: {action.side}")
         speed_scale = float(speed_scale)
-        if not math.isfinite(speed_scale) or not 0.05 <= speed_scale <= 0.30:
-            raise ValueError("低速试运行速度必须在5%到30%之间")
+        if not math.isfinite(speed_scale) or not 0.05 <= speed_scale <= 1.0:
+            raise ValueError("试运行速度必须在5%到100%之间")
         if self.recording_status()["active"]:
             raise RuntimeError("动作正在录制，不能低速试运行")
         if not self._execution_lock.acquire(blocking=False):
@@ -573,7 +634,7 @@ class ArmRosRuntime:
             if mode not in {"teach", "trajectory"}:
                 raise RuntimeError("所选机械臂控制器未处于拖动或保持模式")
 
-            self._notify(side, "正在从当前姿态求解完整IK轨迹")
+            self._notify(side, "正在消抖并从当前姿态求解完整IK轨迹")
             solution = self._solve_relative_action(
                 action, max_frames=None, allow_running=True
             )
@@ -697,12 +758,22 @@ class ArmRosRuntime:
         )
         velocities = self._finite_difference_velocities(times, positions)
         velocity_limits = (2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61)
-        for velocity in velocities:
-            for joint, value in enumerate(velocity):
-                if abs(value) > velocity_limits[joint] * 0.8:
-                    raise RuntimeError(
-                        f"J{joint + 1}试运行速度超限: {math.degrees(abs(value)):.1f}°/s"
-                    )
+        acceleration_limits = (3.75, 1.875, 2.5, 3.125, 3.75, 5.0, 5.0)
+        maximum_velocities, maximum_accelerations = self._cubic_trajectory_extrema(
+            times, positions, velocities
+        )
+        for joint, value in enumerate(maximum_velocities):
+            if value > velocity_limits[joint] * 0.8:
+                raise RuntimeError(
+                    f"J{joint + 1}三次样条速度超限: "
+                    f"{math.degrees(value):.1f}°/s"
+                )
+        for joint, value in enumerate(maximum_accelerations):
+            if value > acceleration_limits[joint] * 0.6:
+                raise RuntimeError(
+                    f"J{joint + 1}三次样条加速度超限: "
+                    f"{math.degrees(value):.1f}°/s²"
+                )
 
         goal = self.ros["FollowJointTrajectory"].Goal()
         goal.trajectory.joint_names = list(solution.joint_names)

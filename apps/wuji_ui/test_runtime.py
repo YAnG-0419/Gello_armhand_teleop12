@@ -106,3 +106,65 @@ def test_runtime_starts_manual_and_switches_each_side_independently(monkeypatch)
         pipeline = runtime.pipeline
         runtime.close()
     assert pipeline.closed
+
+
+def test_runtime_jog_follows_slider_target_with_rate_limit(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "WujiHandPipeline", FakePipeline)
+    runtime = WujiUiRuntime(
+        addresses={"left": "left:1", "right": "right:2"},
+        pose_speed_rad_s=10.0,
+    )
+    try:
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                runtime.snapshot("right")
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+
+        with pytest.raises(RuntimeError, match="不在滑块控制模式"):
+            runtime.set_jog_target("right", [0.5] * 20)
+
+        runtime.start_jog("right")
+        assert runtime.mode("right") == "jog"
+        assert runtime.pipeline.backends["right"].enabled
+        runtime.set_jog_target("right", [0.5] * 20)
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            sent = runtime.pipeline.backends["right"].sent
+            if sent and np.allclose(sent[-1], 0.5):
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("jog target was not reached")
+        assert runtime.mode("right") == "jog"
+
+        runtime.set_manual("right")
+        assert runtime.mode("right") == "manual"
+        assert not runtime.pipeline.backends["right"].enabled
+    finally:
+        runtime.close()
+
+
+def test_runtime_jog_rejects_out_of_limit_target(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "WujiHandPipeline", FakePipeline)
+    runtime = WujiUiRuntime(addresses={"left": "left:1", "right": "right:2"})
+    try:
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                runtime.snapshot("left")
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        runtime.start_jog("left")
+        with pytest.raises(ValueError, match="关节范围"):
+            runtime.set_jog_target("left", [9.0] * 20)
+    finally:
+        runtime.close()

@@ -382,13 +382,18 @@ class ArmUiApplication:
 
                 with ui.row().classes("w-full items-end gap-3"):
                     preview_speed = ui.number(
-                        "低速试运行速度", value=15, min=5, max=30, step=5
+                        "试运行速度", value=15, min=5, max=100, step=5
                     ).props("outlined suffix=%").classes("w-48")
+                    ui.button(
+                        "设为原速 100%", icon="speed", color="negative"
+                    ).props("outline").on(
+                        "click", lambda: preview_speed.set_value(100)
+                    )
                     preview_stop_button = ui.button(
                         "停止试运行", icon="stop", color="negative"
                     ).classes("h-12")
                     preview_status_label = ui.label(
-                        "先将机械臂拖到新起点，验证 IK 后再低速试运行"
+                        "先将机械臂拖到新起点，验证 IK 后再试运行"
                     ).classes("grow rounded bg-amber-50 p-3 font-mono")
 
                 @ui.refreshable
@@ -437,7 +442,7 @@ class ArmUiApplication:
                                         "click", validate_selected_action
                                     )
                                     ui.button(
-                                        "低速试运行", icon="slow_motion_video",
+                                        "动作试运行", icon="slow_motion_video",
                                         color="warning",
                                     ).on("click", open_selected_preview)
                                     ui.button(
@@ -735,6 +740,16 @@ class ArmUiApplication:
                 return
             state["preview_action"] = name
             preview_dialog_action.text = f"动作：{name}"
+            speed_percent = float(preview_speed.value)
+            preview_dialog_speed.text = f"执行速度：{speed_percent:.0f}%"
+            if speed_percent > 30.0:
+                preview_dialog_warning.text = (
+                    "高于30%属于高速真机执行。仅在该动作已逐级完成低速验证、"
+                    "工作区清空且硬件停止手段可触达时继续。"
+                )
+                preview_dialog_warning.set_visibility(True)
+            else:
+                preview_dialog_warning.set_visibility(False)
             preview_dialog.open()
 
         async def _preview_action() -> None:
@@ -742,7 +757,7 @@ class ArmUiApplication:
             if not name or state["busy"]:
                 return
             state["busy"] = True
-            preview_status_label.text = f"正在从当前姿态求解动作“{name}”…"
+            preview_status_label.text = f"正在消抖并从当前姿态求解动作“{name}”…"
             try:
                 action = await run.io_bound(
                     self.action_store.load, state["side"], str(name)
@@ -899,20 +914,24 @@ class ArmUiApplication:
                 )
 
         with ui.dialog() as preview_dialog, ui.card().classes("max-w-xl"):
-            ui.label("确认低速试运行相对动作").classes(
+            ui.label("确认试运行相对动作").classes(
                 "text-lg font-semibold"
             )
             preview_dialog_action = ui.label("动作：").classes("font-mono")
+            preview_dialog_speed = ui.label("执行速度：").classes("font-mono")
+            preview_dialog_warning = ui.label("").classes(
+                "rounded bg-red-100 p-3 font-semibold text-red-900"
+            )
             ui.label(
-                "系统会从当前真实末端姿态重新求解完整IK轨迹，验证通过后自动退出"
-                "零力矩拖动并驱动机械臂。请松开机械臂、清空周围空间，并确保STOP"
-                "和硬件停止手段可触达。"
+                "系统会先对末端轨迹做零相位消抖并重采样到最高30Hz，再从当前真实"
+                "末端姿态重新求解完整IK轨迹。验证通过后自动退出零力矩拖动并驱动"
+                "机械臂。请松开机械臂、清空周围空间，并确保STOP和硬件停止手段可触达。"
             )
             ui.label("试运行结束后机械臂保持在动作末点。")
             with ui.row().classes("w-full justify-end"):
                 ui.button("取消", on_click=preview_dialog.close).props("flat")
                 ui.button(
-                    "确认低速试运行",
+                    "确认试运行",
                     on_click=_confirm_preview,
                     color="warning",
                 )

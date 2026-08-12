@@ -159,7 +159,7 @@ services:
       - lychee_fr3_moveit_config
       - moveit.launch.py
       - robot_types:=['fr3','fr3']
-      - robot_ips:=['172.16.0.3','172.16.0.2']
+      - robot_ips:=['172.16.0.2','172.16.1.2']
       - use_fake_hardware:=true
       - fake_sensor_commands:=true
       - use_rviz:=true
@@ -188,7 +188,7 @@ services:
       - lychee_fr3_moveit_config
       - moveit.launch.py
       - robot_types:=['fr3','fr3']
-      - robot_ips:=['172.16.0.3','172.16.0.2']
+      - robot_ips:=['172.16.0.2','172.16.1.2']
       - use_fake_hardware:=false
       - fake_sensor_commands:=false
       - separate_controller_managers:=true

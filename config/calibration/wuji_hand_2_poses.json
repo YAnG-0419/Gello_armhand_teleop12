@@ -1,0 +1,106 @@
+{
+  "format": "wuji-hand-2-hardcoded-poses",
+  "version": 1,
+  "units": "rad",
+  "joint_order": "device",
+  "joint_names": {
+    "left": [
+      "l_thumb_cmc_flex",
+      "l_thumb_cmc_abd",
+      "l_thumb_mcp",
+      "l_thumb_ip",
+      "l_index_finger_mcp_flex",
+      "l_index_finger_mcp_abd",
+      "l_index_finger_pip",
+      "l_index_finger_dip",
+      "l_middle_finger_mcp_flex",
+      "l_middle_finger_mcp_abd",
+      "l_middle_finger_pip",
+      "l_middle_finger_dip",
+      "l_ring_finger_mcp_flex",
+      "l_ring_finger_mcp_abd",
+      "l_ring_finger_pip",
+      "l_ring_finger_dip",
+      "l_pinky_mcp_flex",
+      "l_pinky_mcp_abd",
+      "l_pinky_pip",
+      "l_pinky_dip"
+    ],
+    "right": [
+      "r_thumb_cmc_flex",
+      "r_thumb_cmc_abd",
+      "r_thumb_mcp",
+      "r_thumb_ip",
+      "r_index_finger_mcp_flex",
+      "r_index_finger_mcp_abd",
+      "r_index_finger_pip",
+      "r_index_finger_dip",
+      "r_middle_finger_mcp_flex",
+      "r_middle_finger_mcp_abd",
+      "r_middle_finger_pip",
+      "r_middle_finger_dip",
+      "r_ring_finger_mcp_flex",
+      "r_ring_finger_mcp_abd",
+      "r_ring_finger_pip",
+      "r_ring_finger_dip",
+      "r_pinky_mcp_flex",
+      "r_pinky_mcp_abd",
+      "r_pinky_pip",
+      "r_pinky_dip"
+    ]
+  },
+  "poses": {
+    "left": {
+      "抓开瓶器": [
+        0.7839654226144861,
+        -0.498067401168425,
+        0.16461910598225477,
+        0.2582361235982778,
+        0.5222718017680076,
+        0.22280175099258812,
+        0.9232699240599648,
+        0.23550268649227604,
+        0.553960348733067,
+        0.19525068155230643,
+        0.9772941475944964,
+        0.04405385564958887,
+        0.3156150444880678,
+        0.3947529851624711,
+        0.7945969212200844,
+        0.383250916325978,
+        0.13048116394494647,
+        0.4168090599857738,
+        0.3371820780549617,
+        0.048120472806735655
+      ]
+    },
+    "right": {
+      "pose_1": [
+        1.0716691617046605,
+        -0.25373439585860885,
+        -0.02109300214205227,
+        0.3639788161925315,
+        0.6525686589439434,
+        -0.14254941759078646,
+        1.5932819271471153,
+        1.5096836230363153,
+        0.9646289913444744,
+        -0.11442692735340185,
+        1.4882820466825102,
+        1.5035761923848114,
+        0.8248600577850401,
+        -0.09961065280029678,
+        1.533174183971832,
+        1.5446774745388014,
+        0.6418249356674419,
+        -0.0679303088827217,
+        0.7123489783515524,
+        1.5314349633722197
+      ]
+    }
+  },
+  "manus_triggers": {
+    "left": {},
+    "right": {}
+  }
+}
