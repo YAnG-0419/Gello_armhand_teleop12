@@ -36,7 +36,12 @@ conda activate base
 python apps/operator_gui/operator_gui.py
 ```
 
-The backend starts disengaged and writes a fresh diagnostics directory. GUI loss disengages all sides. Engage gates each arm and its hand together. `Home arm` moves only the selected arm; `Open hand` first stops that side following and then opens only the selected hand. Each action supports left, right, or both.
+The backend starts disengaged and writes a fresh diagnostics directory. GUI
+loss disengages all sides. The Operator GUI independently gates each arm and
+hand: `L`/`Space`/`R` control left arm/left hand/left home, while
+`A`/`B`/`C` control right arm/right hand/right home. `Home arm` moves only the
+selected arm and disengages all followers for reset ownership; `Open hand`
+stops only that hand's following and opens the selected hand.
 
 ## Stop
 

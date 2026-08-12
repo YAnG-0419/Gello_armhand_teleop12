@@ -13,14 +13,18 @@ from pico_bimanual_franka_teleop.control_server import (
 def test_console_matches_the_input_source_contract():
     console = OperatorConsole()
     assert console.poll() == {"left": False, "right": False}
+    assert console.poll_hands() == {"left": False, "right": False}
     console.active["left"] = True
+    console.hand_active["left"] = True
     assert console.poll()["left"] is True
     console.deny("left", "tracker missing")
     assert console.poll()["left"] is False
+    assert console.poll_hands()["left"] is True
     console.disable_all("robot state missing")
     console.set_status("STATE | trackers: ok")
     snapshot = console.snapshot()
     assert snapshot["status_line"] == "STATE | trackers: ok"
+    assert snapshot["hand_active"] == {"left": False, "right": False}
     assert any("tracker missing" in line for line in snapshot["feedback"])
     assert any("robot state missing" in line for line in snapshot["feedback"])
 
@@ -44,11 +48,25 @@ def test_dispatch_maps_commands_onto_the_console():
     try:
         server.dispatch("engage", {"side": "left"})
         assert console.active["left"] is True
+        assert console.hand_active["left"] is True
         server.dispatch("disengage", {"side": "left"})
         assert console.active["left"] is False
+        assert console.hand_active["left"] is False
+        server.dispatch("engage_arm", {"side": "left"})
+        assert console.active["left"] is True
+        assert console.hand_active["left"] is False
+        server.dispatch("engage_hand", {"side": "left"})
+        assert console.active["left"] is True
+        assert console.hand_active["left"] is True
+        server.dispatch("disengage_arm", {"side": "left"})
+        assert console.active["left"] is False
+        assert console.hand_active["left"] is True
+        server.dispatch("disengage_hand", {"side": "left"})
+        assert console.hand_active["left"] is False
         server.dispatch("engage", {"side": "right"})
         server.dispatch("disengage_all", {})
         assert console.active == {"left": False, "right": False}
+        assert console.hand_active == {"left": False, "right": False}
         server.dispatch("open_hand", {"side": "right"})
         server.dispatch("open_hand", {})
         server.dispatch("home_arm", {"side": "left"})
