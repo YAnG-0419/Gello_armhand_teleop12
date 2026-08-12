@@ -94,7 +94,7 @@ After the ordinary Docker build and GELLO preflight:
 
 ```bash
 cd docker
-docker compose up franka-control teleop-control gello-bridge hand-control
+docker compose up franka-control teleop-control moveit-ik gello-bridge hand-control
 ```
 
 In another terminal:
@@ -122,6 +122,31 @@ arm and hand followers while the reset trajectory owns the command path.
 `DISENGAGE ALL` remains the common software stop for every follower. The GUI
 window must have keyboard focus for these ordinary keyboard-emulating pedals;
 hardware emergency stopping remains separate.
+
+### Preset relative actions
+
+The Operator GUI exposes preset slots `Q`, `W`, and `E`. Slot configuration is
+in `config/preset_actions.yaml`; `Q` currently resolves the Arm UI recording
+`left__test.yaml` at 50% speed, while `W` and `E` are intentionally empty. A
+missing or empty slot reports in the event log and sends no arm command.
+
+On trigger, the selected arm temporarily disengages from GELLO. The read-only
+`moveit-ik` service rebases the recorded tool-relative path at the current
+measured `link8` pose, then Arm UI's MoveIt KDL `/compute_ik` path checks every
+frame with collision checking and sequential seeds. Only a complete successful
+solution enters the existing 100 Hz UDP teleop/safety-gateway command path; no
+second controller owns the arm. `moveit-ik` starts no ros2_control node.
+
+Completion, `STOP PRESET`, `DISENGAGE ALL`, GUI loss, or at least 0.08 rad of
+GELLO movement interrupts ownership and resets the relative mapper. If that arm
+was following before the trigger it is immediately enabled again and anchors
+the current GELLO joints to the current measured robot joints on the next tick;
+otherwise it remains stopped. `Q` does not conflict with the existing
+`Ctrl+Q` window-close shortcut.
+
+Normal completion holds the last target until measured joint error is within
+0.03 rad for 0.25 s. Failure to settle within 5 s stops the arm and does not
+automatically restore following.
 
 Each arm panel also has `Record current as Home`. Stop that arm, place it at
 the desired start posture, click the button, and confirm the overwrite. The

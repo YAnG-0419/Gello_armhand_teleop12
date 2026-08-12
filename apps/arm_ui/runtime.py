@@ -401,6 +401,10 @@ class ArmRosRuntime:
         """Check a recorded relative path from the current pose without moving."""
         return self._solve_relative_action(action, max_frames=max_frames).validation
 
+    def solve_relative_action(self, action: RecordedAction) -> RelativeIkSolution:
+        """Solve every frame from the current measured pose without moving."""
+        return self._solve_relative_action(action, max_frames=None)
+
     def _solve_relative_action(
         self,
         action: RecordedAction,

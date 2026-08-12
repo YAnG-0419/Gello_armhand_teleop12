@@ -47,6 +47,11 @@ class OperatorConsole:
             "reset_right": False,
             "capture_home_left": False,
             "capture_home_right": False,
+            "preset_q": False,
+            "preset_w": False,
+            "preset_e": False,
+            "stop_action": False,
+            "abort_action": False,
         }
         self._status_line = "starting..."
         self._feedback: list[str] = []
@@ -197,6 +202,7 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
         self.shutdown()
         self.server_close()
         self.keyboard.disable_all("operator server stopped")
+        self.keyboard.request("abort_action")
 
     def client_connected(self) -> None:
         with self._clients_lock:
@@ -208,8 +214,13 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
             last_client = self._clients == 0
         if last_client:
             self.keyboard.disable_all("operator frontend disconnected")
+            self.keyboard.request("abort_action")
 
     # -- commands ---------------------------------------------------------
+
+    def _disengage_all(self) -> None:
+        self.keyboard.disable_all("operator frontend")
+        self.keyboard.request("abort_action")
 
     def _scoped_request(
         self,
@@ -250,9 +261,7 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
             "disengage_hand": lambda: self.keyboard.set_active(
                 _require_side(arguments), False, target="hand"
             ),
-            "disengage_all": lambda: self.keyboard.disable_all(
-                "operator frontend"
-            ),
+            "disengage_all": self._disengage_all,
             "open_hand": lambda: self._scoped_request(
                 arguments,
                 both="open_hands",
@@ -268,9 +277,20 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
             "capture_home": lambda: self.keyboard.request(
                 f"capture_home_{_require_side(arguments)}"
             ),
+            "run_preset": lambda: self.keyboard.request(
+                f"preset_{_require_preset(arguments)}"
+            ),
+            "stop_action": lambda: self.keyboard.request("stop_action"),
         }
         handler = commands.get(command)
         if handler is None:
             raise ValueError(f"Unknown command: {command}")
         result = handler()
         return {} if result is None else result
+
+
+def _require_preset(arguments) -> str:
+    key = str(arguments.get("key", "")).lower()
+    if key not in ("q", "w", "e"):
+        raise ValueError("preset key must be q, w, or e")
+    return key

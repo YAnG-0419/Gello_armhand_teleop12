@@ -64,6 +64,8 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$TELEOP_CONDA_ENV"
 exec python -m teleop_runtime.cli \
   --config config/modes/pico.yaml "${ARM_ARGS[@]}" \
+  --preset-config config/preset_actions.yaml \
+  --preset-data-root "$DATA_ROOT" \
   "${HAND_ARGS[@]}" \
   --debug-log "$RUN_DIR/ee_jitter.jsonl" \
   "$@"

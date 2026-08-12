@@ -18,7 +18,7 @@ Terminal 1:
 
 ```bash
 cd /home/descfly/llx/gello_upper_body_teleop/docker
-docker compose up franka-control teleop-control gello-bridge hand-control
+docker compose up franka-control teleop-control moveit-ik gello-bridge hand-control
 ```
 
 Terminal 2:
@@ -42,6 +42,13 @@ hand: `L`/`Space`/`R` control left arm/left hand/left home, while
 `A`/`B`/`C` control right arm/right hand/right home. `Home arm` moves only the
 selected arm and disengages all followers for reset ownership; `Open hand`
 stops only that hand's following and opens the selected hand.
+
+The normal stack now also starts `moveit-ik`. This is a read-only `move_group`
+process used by Q/W/E preset prechecks; it subscribes to measured joint states
+and exposes `/compute_ik`, but starts no controller manager and cannot publish
+the FR3 command bus. With hands enabled the normal internal services are
+`franka-control`, `teleop-control`, `moveit-ik`, `gello-bridge`, and
+`hand-control`; the host Operator backend/GUI remain outside Docker.
 
 ## Stop
 

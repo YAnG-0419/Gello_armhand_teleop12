@@ -50,6 +50,7 @@ PEDAL_BINDINGS = {
     "B": ("toggle", "hand", "right"),
     "C": ("home", "arm", "right"),
 }
+PRESET_KEYS = ("Q", "W", "E")
 
 
 class ConnectionDialog(QDialog):
@@ -241,6 +242,34 @@ class OperatorWindow(QMainWindow):
         actions.addWidget(home_both)
         layout.addLayout(actions)
 
+        preset_box = QGroupBox("Preset relative actions — 50% speed")
+        preset_layout = QHBoxLayout(preset_box)
+        self.preset_buttons: dict[str, QPushButton] = {}
+        preset_labels = {
+            "q": "Preset 1: left test (Q)",
+            "w": "Preset 2: unconfigured (W)",
+            "e": "Preset 3: unconfigured (E)",
+        }
+        for key in ("q", "w", "e"):
+            button = self._button(
+                preset_labels[key], "run_preset", {"key": key}
+            )
+            button.setMinimumHeight(48)
+            button.setToolTip(
+                "Rebase the saved relative tool path at the current measured "
+                "end-effector pose, precheck every IK frame, then execute once."
+            )
+            self.preset_buttons[key] = button
+            preset_layout.addWidget(button)
+        stop_action = self._button("STOP PRESET", "stop_action")
+        stop_action.setMinimumHeight(48)
+        stop_action.setStyleSheet(
+            "background-color: #d47b22; color: white; font-weight: bold;"
+        )
+        stop_action.setToolTip("Interrupt preset execution and re-anchor GELLO")
+        preset_layout.addWidget(stop_action)
+        layout.addWidget(preset_box)
+
         shortcut_hint = QLabel(
             "Foot pedals: L left arm · Space left hand · R left home  |  "
             "A right arm · B right hand · C right home"
@@ -259,7 +288,7 @@ class OperatorWindow(QMainWindow):
         self.connection_indicator = QLabel()
         self.connection_indicator.setContentsMargins(4, 0, 4, 0)
         self.statusBar().addPermanentWidget(self.connection_indicator)
-        self.resize(720, 760)
+        self.resize(980, 900)
 
     def _confirm_capture_home(self, side: str) -> None:
         """Confirm before overwriting one arm's persisted Home pose."""
@@ -337,6 +366,19 @@ class OperatorWindow(QMainWindow):
             shortcut.setAutoRepeat(False)
             shortcut.activated.connect(slot)
             self.shortcuts.append(shortcut)
+        self.preset_shortcuts = []
+        for key in PRESET_KEYS:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(
+                lambda selected=key.lower(): self._shortcut_preset(selected)
+            )
+            self.preset_shortcuts.append(shortcut)
+
+    def _shortcut_preset(self, key: str) -> None:
+        if self.connection_state == "connected":
+            self._send("run_preset", {"key": key})
 
     def _shortcut_toggle_engage(self, side: str, target: str = "arm") -> None:
         if self.connection_state != "connected":

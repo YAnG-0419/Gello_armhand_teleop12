@@ -19,7 +19,7 @@ from pico_bimanual_franka_teleop.control_server import (
     OperatorConsole,
     OperatorControlServer,
 )
-from apps.operator_gui.operator_gui import PEDAL_BINDINGS, OperatorWindow
+from apps.operator_gui.operator_gui import PEDAL_BINDINGS, PRESET_KEYS, OperatorWindow
 
 
 def test_six_pedal_bindings_match_the_workcell_layout():
@@ -31,6 +31,7 @@ def test_six_pedal_bindings_match_the_workcell_layout():
         "B": ("toggle", "hand", "right"),
         "C": ("home", "arm", "right"),
     }
+    assert PRESET_KEYS == ("Q", "W", "E")
 
 
 def test_six_shortcuts_send_independent_arm_hand_and_home_commands(tmp_path):
@@ -95,6 +96,37 @@ def test_record_home_sends_per_side_command_only_while_arm_is_stopped(tmp_path):
 
     assert sent == [("capture_home", {"side": "left"})]
     assert "stop the right arm first" in window.feedback.toPlainText()
+
+
+def test_preset_shortcuts_send_q_w_e_slots(tmp_path):
+    QSettings.setPath(
+        QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
+    )
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    sent = []
+    try:
+        window.socket.abort()
+        window.reconnect_timer.stop()
+        window.connection_state = "connected"
+        window._send = lambda command, arguments=None: sent.append(
+            (command, arguments or {})
+        )
+        for shortcut in window.preset_shortcuts:
+            shortcut.activated.emit()
+            application.processEvents()
+    finally:
+        window.poll_timer.stop()
+        window.health_timer.stop()
+        window.reconnect_timer.stop()
+        window.socket.abort()
+        window.close()
+
+    assert sent == [
+        ("run_preset", {"key": "q"}),
+        ("run_preset", {"key": "w"}),
+        ("run_preset", {"key": "e"}),
+    ]
 
 
 def _unused_port() -> int:

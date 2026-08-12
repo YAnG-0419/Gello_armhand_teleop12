@@ -20,6 +20,7 @@ from pico_bimanual_franka_teleop.hardware import (
 )
 from pico_bimanual_franka_teleop.ik import BimanualPinkIK, classify_step
 from pico_bimanual_franka_teleop.pose_mapping import RelativePoseMapper
+from pico_bimanual_franka_teleop.relative_action import SolvedRelativeAction
 from pico_bimanual_franka_teleop.types import Pose, TeleopSample
 
 # A captured hardware home (2026-07-25). The live initial_pose.yaml may be
@@ -177,6 +178,48 @@ def test_capture_home_records_only_the_selected_stopped_arm():
         "left: recording current measured joints as Home",
         "left Home capture done: saved",
     ]
+
+
+def test_finishing_preset_resumes_through_a_fresh_gello_anchor():
+    changes = []
+    notifications = []
+    mapper = type(
+        "Mapper", (), {"reset": lambda self: setattr(self, "reset_called", True)}
+    )()
+    mapper.reset_called = False
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.operator = type(
+        "Operator",
+        (),
+        {
+            "set_active": lambda _self, side, active, *, target: changes.append(
+                (side, active, target)
+            )
+        },
+    )()
+    teleop.mappers = {"left": mapper}
+    teleop._notify = notifications.append
+    teleop.active_preset = SolvedRelativeAction.from_dict(
+        {
+            "name": "test",
+            "side": "left",
+            "time_sec": [0.0, 0.5, 1.0],
+            "positions": [[0.0] * 7] * 3,
+            "start_q": [0.0] * 14,
+            "speed_scale": 0.5,
+        }
+    )
+    teleop.preset_pending = None
+    teleop.preset_started_at = 1.0
+    teleop.preset_leader_anchor = np.zeros(7)
+    teleop.preset_cancelled = False
+    teleop.preset_resume_active = True
+
+    teleop._finish_preset("completed", resume=True)
+
+    assert mapper.reset_called
+    assert changes == [("left", True, "arm")]
+    assert notifications == ["preset completed; left GELLO re-anchoring now"]
 
 
 def test_open_hand_removes_stale_same_tick_activation():
