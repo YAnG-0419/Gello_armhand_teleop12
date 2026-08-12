@@ -50,6 +50,7 @@ class DualFr3HardwareTeleop:
         hands: HandController | None = None,
         debug_logger=None,
         reset_invoker=None,
+        capture_home_invoker=None,
     ) -> None:
         self.arm_source = arm_source
         self.operator = operator
@@ -110,6 +111,10 @@ class DualFr3HardwareTeleop:
         self.reset_invoker = reset_invoker
         self.reset_thread: threading.Thread | None = None
         self.reset_outcome: list[tuple[bool, str]] = []
+        self.capture_home_invoker = capture_home_invoker
+        self.capture_thread: threading.Thread | None = None
+        self.capture_side: str | None = None
+        self.capture_outcome: list[tuple[bool, str]] = []
 
     def _start_reset(self, side: str | None = None) -> None:
         """Home both arms, or only `side`. Either way the whole session
@@ -119,8 +124,11 @@ class DualFr3HardwareTeleop:
         if self.reset_invoker is None:
             self._notify("reset requested, but no reset command is configured")
             return
-        if self.reset_thread is not None:
-            self._notify("reset already in progress")
+        if (
+            self.reset_thread is not None
+            or getattr(self, "capture_thread", None) is not None
+        ):
+            self._notify("Home reset/capture is already in progress")
             return
         self.operator.disable_all("resetting to initial pose")
         for mapper in self.mappers.values():
@@ -148,6 +156,50 @@ class DualFr3HardwareTeleop:
             self.operator.deny_hand(side, "opening hand")
         self.hands.request_open(sides=selected)
         self._notify("hands: opening " + "/".join(selected))
+
+    def _start_capture_home(self, side: str) -> None:
+        """Persist one stopped arm's current measured joints as its Home."""
+        if self.capture_home_invoker is None:
+            self._notify(
+                "Home capture requested, but no capture command is configured"
+            )
+            return
+        if self.reset_thread is not None or self.capture_thread is not None:
+            self._notify("Home reset/capture is already in progress")
+            return
+        if self.operator.poll().get(side, False):
+            self._notify(f"{side} Home capture rejected: stop that arm first")
+            return
+        self.operator.set_active(side, False, target="arm")
+        self.mappers[side].reset()
+        self.capture_side = side
+        self._notify(f"{side}: recording current measured joints as Home")
+
+        def worker() -> None:
+            try:
+                outcome = self.capture_home_invoker(side)
+            except Exception as error:  # noqa: BLE001 - report, never crash loop
+                outcome = (False, str(error))
+            self.capture_outcome.append(outcome)
+
+        self.capture_thread = threading.Thread(target=worker, daemon=True)
+        self.capture_thread.start()
+
+    def _service_capture_home(self) -> None:
+        if self.capture_thread is None or self.capture_thread.is_alive():
+            return
+        self.capture_thread.join()
+        self.capture_thread = None
+        side = self.capture_side
+        self.capture_side = None
+        succeeded, message = (
+            self.capture_outcome.pop()
+            if self.capture_outcome
+            else (False, "no result")
+        )
+        self._notify(
+            f"{side} Home capture {'done' if succeeded else 'FAILED'}: {message}"
+        )
 
     def _service_reset(self) -> None:
         """Fold a finished reset back into the loop, on the control thread."""
@@ -210,6 +262,7 @@ class DualFr3HardwareTeleop:
             while True:
                 started_at = time.monotonic()
                 self._service_reset()
+                self._service_capture_home()
                 q = self.robot.receive_state()
                 if q is None:
                     self.operator.disable_all("robot state missing or stale")
@@ -260,11 +313,20 @@ class DualFr3HardwareTeleop:
                     self._start_reset("left")
                 elif requests.get("reset_right"):
                     self._start_reset("right")
+                elif requests.get("capture_home_left"):
+                    self._start_capture_home("left")
+                elif requests.get("capture_home_right"):
+                    self._start_capture_home("right")
                 if self.reset_thread is not None:
                     # The reset trajectory owns the arms; nothing may engage,
                     # and this tick's sample must not act on stale activations.
                     self.operator.disable_all("reset in progress")
                     sample = None
+                if self.capture_thread is not None and self.capture_side is not None:
+                    self.operator.set_active(
+                        self.capture_side, False, target="arm"
+                    )
+                    sample = disengage_sample_sides(sample, (self.capture_side,))
                 if self.reset_thread is None:
                     activations = (
                         {side: False for side in SIDES}

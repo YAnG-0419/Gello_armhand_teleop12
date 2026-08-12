@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 SCRIPT_PATH = (
@@ -45,3 +46,18 @@ def test_reset_duration_scales_with_large_move() -> None:
 def test_reset_duration_rejects_invalid_limits(arguments: tuple[float, ...]) -> None:
     with pytest.raises(ValueError):
         RESET.reset_duration(*arguments)
+
+
+def test_write_targets_round_trips_atomically(tmp_path: Path) -> None:
+    path = tmp_path / "initial_pose.yaml"
+    targets = {
+        "left": [float(index) for index in range(7)],
+        "right": [float(-index) for index in range(7)],
+    }
+
+    RESET.write_targets(path, targets)
+
+    assert RESET.load_targets(path) == targets
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert document["captured_utc"]
+    assert not tuple(tmp_path.glob(".initial_pose.*.tmp"))

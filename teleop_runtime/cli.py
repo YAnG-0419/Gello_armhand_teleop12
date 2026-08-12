@@ -43,6 +43,26 @@ def invoke_reset(side: str | None = None) -> tuple[bool, str]:
     return succeeded, output[-400:]
 
 
+def invoke_capture_home(side: str) -> tuple[bool, str]:
+    """Persist one arm's current measured joints through its ROS service."""
+    if side not in ("left", "right"):
+        raise ValueError(f"invalid Home capture side: {side}")
+    completed = subprocess.run(
+        [
+            "docker", "compose", "run", "--rm", "tools",
+            "ros2", "service", "call",
+            f"/capture_initial_pose/{side}", "std_srvs/srv/Trigger", "{}",
+        ],
+        cwd=REPO_ROOT / "docker",
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+    )
+    output = (completed.stdout + completed.stderr).strip()
+    succeeded = completed.returncode == 0 and "success=True" in completed.stdout
+    return succeeded, output[-400:]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -411,6 +431,7 @@ def main() -> None:
             hands=hands,
             debug_logger=debug_logger,
             reset_invoker=invoke_reset,
+            capture_home_invoker=invoke_capture_home,
         )
         # The keyboard's `q` (and Ctrl-C) surface as KeyboardInterrupt; run()'s
         # finally block has already closed hands, robot, and input by the time

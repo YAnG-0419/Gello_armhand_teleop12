@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import math
 import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -91,6 +92,44 @@ def reset_duration(
     return max(min_duration, velocity_duration, acceleration_duration)
 
 
+def capture_document(targets):
+    return {
+        "captured_utc": datetime.now(timezone.utc).isoformat(),
+        "initial_pose": {
+            side: {
+                "joint_names": [
+                    f"{side}_fr3_joint{index}"
+                    for index in range(1, JOINT_COUNT + 1)
+                ],
+                "positions": list(targets[side]),
+            }
+            for side in SIDES
+        },
+    }
+
+
+def write_targets(path, targets):
+    """Atomically replace the persisted Home pose."""
+    directory = os.path.dirname(os.path.realpath(path))
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".initial_pose.", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as config_file:
+            yaml.safe_dump(
+                capture_document(targets), config_file, sort_keys=False
+            )
+            config_file.flush()
+            os.fsync(config_file.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 class InitialPoseReset(Node):
     def __init__(self, config_path, targets):
         super().__init__("reset_to_initial_pose")
@@ -149,6 +188,15 @@ class InitialPoseReset(Node):
             self._capture,
             callback_group=callbacks,
         )
+        for side in SIDES:
+            self.create_service(
+                Trigger,
+                f"/capture_initial_pose/{side}",
+                lambda request, response, selected=side: self._capture(
+                    request, response, sides=(selected,)
+                ),
+                callback_group=callbacks,
+            )
 
     def _state(self, side, message):
         positions = dict(zip(message.name, message.position))
@@ -298,32 +346,23 @@ class InitialPoseReset(Node):
             self.lock.release()
         return response
 
-    def _capture(self, _request, response):
+    def _capture(self, _request, response, sides=SIDES):
         if not self.lock.acquire(blocking=False):
             response.success = False
             response.message = "Reset or capture is already running."
             return response
         try:
-            self._wait_for_fresh_states()
-            targets = {side: list(self.states[side]) for side in SIDES}
-            document = {
-                "captured_utc": datetime.now(timezone.utc).isoformat(),
-                "initial_pose": {
-                    side: {
-                        "joint_names": [
-                            f"{side}_fr3_joint{index}"
-                            for index in range(1, JOINT_COUNT + 1)
-                        ],
-                        "positions": targets[side],
-                    }
-                    for side in SIDES
-                },
-            }
-            with open(self.config_path, "w", encoding="utf-8") as config_file:
-                yaml.safe_dump(document, config_file, sort_keys=False)
+            self._wait_for_fresh_states(sides)
+            targets = {side: list(self.targets[side]) for side in SIDES}
+            for side in sides:
+                targets[side] = list(self.states[side])
+            write_targets(self.config_path, targets)
             self.targets = targets
             response.success = True
-            response.message = f"Measured pose saved to {self.config_path}."
+            response.message = (
+                f"Measured Home pose saved for {', '.join(sides)} to "
+                f"{self.config_path}."
+            )
         except (OSError, RuntimeError) as exception:
             self.get_logger().error(str(exception))
             response.success = False

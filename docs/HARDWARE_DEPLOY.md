@@ -122,6 +122,21 @@ docker compose run --rm tools ros2 service call /reset_to_initial_pose std_srvs/
 
 Per-side services are `/reset_to_initial_pose/left` and `/reset_to_initial_pose/right`. `/capture_initial_pose` replaces the saved home. Reset is joint interpolation, not collision planning.
 
+The GUI's per-side `Record current as Home` action calls
+`/capture_initial_pose/left` or `/capture_initial_pose/right`. It requires that
+arm's follower to be stopped, reads a fresh measured joint state, and atomically
+updates only that side of `config/initial_pose.yaml`; it does not move either
+arm. The legacy `/capture_initial_pose` service still captures both sides.
+After pulling this change, rebuild `franka_fr3_arm_controllers` and restart the
+Compose stack so the per-side ROS services are registered; no Docker image
+rebuild is required for this source-only change.
+
+```bash
+cd /home/descfly/llx/gello_upper_body_teleop/docker
+docker compose run --rm -T tools bash -lc \
+  'source /opt/ros/humble/setup.bash && source /opt/vendor_ws/install/setup.bash && cd ros_ws && colcon build --symlink-install --packages-select franka_fr3_arm_controllers --cmake-args -DCMAKE_BUILD_TYPE=Release'
+```
+
 ## Camera
 
 The default Compose stack includes Orbbec. For camera-only diagnosis:

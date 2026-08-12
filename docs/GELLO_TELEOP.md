@@ -123,6 +123,14 @@ arm and hand followers while the reset trajectory owns the command path.
 window must have keyboard focus for these ordinary keyboard-emulating pedals;
 hardware emergency stopping remains separate.
 
+Each arm panel also has `Record current as Home`. Stop that arm, place it at
+the desired start posture, click the button, and confirm the overwrite. The
+backend reads a fresh measured seven-joint state and updates only that side in
+`ros_ws/src/franka_fr3_arm_controllers/config/initial_pose.yaml`; the other
+arm's Home is preserved. Recording causes no motion. Use `Home arm` later to
+test the saved posture at the reset service's limited speed, with the physical
+emergency stop ready.
+
 For first hardware motion:
 
 1. Keep the emergency stop reachable and clear both workspaces.

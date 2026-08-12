@@ -45,6 +45,8 @@ class OperatorConsole:
             "reset": False,
             "reset_left": False,
             "reset_right": False,
+            "capture_home_left": False,
+            "capture_home_right": False,
         }
         self._status_line = "starting..."
         self._feedback: list[str] = []
@@ -262,6 +264,9 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
                 both="reset",
                 left="reset_left",
                 right="reset_right",
+            ),
+            "capture_home": lambda: self.keyboard.request(
+                f"capture_home_{_require_side(arguments)}"
             ),
         }
         handler = commands.get(command)

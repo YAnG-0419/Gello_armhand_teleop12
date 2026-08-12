@@ -119,6 +119,66 @@ def test_home_arm_does_not_also_open_the_hand():
     assert opened == []
 
 
+def _capture_test_teleop(active: bool, invoker):
+    notifications = []
+    activation_changes = []
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.operator = type(
+        "Operator",
+        (),
+        {
+            "poll": lambda _self: {"left": active, "right": False},
+            "set_active": lambda _self, side, engaged, *, target: (
+                activation_changes.append((side, engaged, target))
+            ),
+        },
+    )()
+    teleop.mappers = {
+        side: type("Mapper", (), {"reset": lambda _self: None})()
+        for side in ("left", "right")
+    }
+    teleop.reset_thread = None
+    teleop.capture_home_invoker = invoker
+    teleop.capture_thread = None
+    teleop.capture_side = None
+    teleop.capture_outcome = []
+    teleop._notify = notifications.append
+    return teleop, notifications, activation_changes
+
+
+def test_capture_home_rejects_an_arm_that_is_still_following():
+    invoked = []
+    teleop, notifications, activation_changes = _capture_test_teleop(
+        True, lambda side: invoked.append(side)
+    )
+
+    teleop._start_capture_home("left")
+
+    assert invoked == []
+    assert activation_changes == []
+    assert teleop.capture_thread is None
+    assert notifications == ["left Home capture rejected: stop that arm first"]
+
+
+def test_capture_home_records_only_the_selected_stopped_arm():
+    invoked = []
+    teleop, notifications, activation_changes = _capture_test_teleop(
+        False, lambda side: (invoked.append(side) or (True, "saved"))
+    )
+
+    teleop._start_capture_home("left")
+    teleop.capture_thread.join(timeout=1.0)
+    teleop._service_capture_home()
+
+    assert invoked == ["left"]
+    assert activation_changes == [("left", False, "arm")]
+    assert teleop.capture_thread is None
+    assert notifications == [
+        "left: recording current measured joints as Home",
+        "left Home capture done: saved",
+    ]
+
+
 def test_open_hand_removes_stale_same_tick_activation():
     sample = TeleopSample(
         poses={

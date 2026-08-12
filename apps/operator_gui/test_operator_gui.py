@@ -67,6 +67,36 @@ def test_six_shortcuts_send_independent_arm_hand_and_home_commands(tmp_path):
     ]
 
 
+def test_record_home_sends_per_side_command_only_while_arm_is_stopped(tmp_path):
+    QSettings.setPath(
+        QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
+    )
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    sent = []
+    try:
+        window.socket.abort()
+        window.reconnect_timer.stop()
+        window.connection_state = "connected"
+        window._send = lambda command, arguments=None: sent.append(
+            (command, arguments or {})
+        )
+
+        window._record_current_home("left")
+        window.arm_engage_buttons["right"].setChecked(True)
+        window._record_current_home("right")
+        application.processEvents()
+    finally:
+        window.poll_timer.stop()
+        window.health_timer.stop()
+        window.reconnect_timer.stop()
+        window.socket.abort()
+        window.close()
+
+    assert sent == [("capture_home", {"side": "left"})]
+    assert "stop the right arm first" in window.feedback.toPlainText()
+
+
 def _unused_port() -> int:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
