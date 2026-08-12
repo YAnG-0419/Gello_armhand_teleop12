@@ -2,10 +2,67 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 from typing import Any
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class WujiHand2JointDiagnostic:
+    """One Hand 2 diagnostic entry normalized to device joint index."""
+
+    joint_index: int
+    node_id: int
+    current_a: float
+    bus_voltage_v: float
+    temperature_c: float
+    error_code: int
+    ext_state: int
+    ext_state_name: str
+    position_limit_active: bool
+    velocity_limit_active: bool
+    current_limit_active: bool
+    comm_response_rate_pct: int
+    comm_timeout_total: int
+
+
+def _hand2_joint_index(node_id: int) -> int:
+    finger, joint = divmod(int(node_id) - 1, 5)
+    if node_id <= 0 or finger >= 5 or joint >= 4:
+        raise ValueError(f"Wuji Hand 2 reported invalid joint id {node_id}")
+    return finger * 4 + joint
+
+
+def _hand2_diagnostics(frame: Any) -> dict[int, WujiHand2JointDiagnostic]:
+    """Normalize a possibly unordered diagnostic frame by device joint index."""
+    entries = tuple(frame.joints)
+    if int(frame.num_joints) != len(entries):
+        raise ValueError("Wuji Hand 2 diagnostic count does not match its entries")
+    diagnostics: dict[int, WujiHand2JointDiagnostic] = {}
+    for entry in entries:
+        node_id = int(entry.nid)
+        index = _hand2_joint_index(node_id)
+        if index in diagnostics:
+            raise ValueError(f"Wuji Hand 2 reported duplicate joint id {node_id}")
+        status = entry.status_word
+        diagnostics[index] = WujiHand2JointDiagnostic(
+            joint_index=index,
+            node_id=node_id,
+            current_a=float(entry.current),
+            bus_voltage_v=float(entry.vbus_v_fb),
+            temperature_c=float(entry.mcu_temp_c_fb),
+            error_code=int(entry.error_code_current),
+            ext_state=int(status.ext_state),
+            ext_state_name=str(status.ext_state_name),
+            position_limit_active=bool(status.position_limit_active),
+            velocity_limit_active=bool(status.velocity_limit_active),
+            current_limit_active=bool(status.current_limit_active),
+            comm_response_rate_pct=int(entry.comm_response_rate_pct),
+            comm_timeout_total=int(entry.comm_timeout_total),
+        )
+    return diagnostics
 
 
 class WujiHandBackend:
@@ -67,10 +124,7 @@ def _hand2_feedback_positions(frame: Any) -> np.ndarray:
     positions: dict[int, float] = {}
     for entry in entries:
         node_id = int(entry.nid)
-        finger, joint = divmod(node_id - 1, 5)
-        if node_id <= 0 or finger >= 5 or joint >= 4:
-            raise ValueError(f"Wuji Hand 2 reported invalid joint id {node_id}")
-        index = finger * 4 + joint
+        index = _hand2_joint_index(node_id)
         if index in positions:
             raise ValueError(f"Wuji Hand 2 reported duplicate joint id {node_id}")
         positions[index] = float(entry.position)
@@ -115,9 +169,11 @@ class WujiHand2Backend:
         )
         self._publisher: Any = None
         self._state_subscription: Any = None
+        self._diagnostic_subscription: Any = None
         self._enabled = False
-        self._kp = float(kp)
-        self._kd = float(kd)
+        self._last_command_position: np.ndarray | None = None
+        self._kp_values = np.full(20, float(kp), dtype=np.float64)
+        self._kd_values = np.full(20, float(kd), dtype=np.float64)
         self._current_limit = float(current_limit)
         try:
             reported_side = str(self._hand.handedness().get()).lower()
@@ -133,6 +189,9 @@ class WujiHand2Backend:
             time.sleep(0.5)
             self._JointCommand = wuji_sdk.JointCommand
             self._state_subscription = self._hand.joint_states().subscribe()
+            self._diagnostic_subscription = (
+                self._hand.joint_diagnostics().subscribe()
+            )
             if auto_enable:
                 self.enable()
             else:
@@ -154,7 +213,8 @@ class WujiHand2Backend:
             lambda: self._hand.effort_limit().set(self._current_limit),
         )
         _set_with_retry(
-            "mit_params", lambda: self._hand.mit_params().set((self._kp, self._kd))
+            "mit_params",
+            lambda: self._hand.mit_params().set(list(self.mit_gains())),
         )
         self._hand.enable()
         self._wait_until_enabled()
@@ -163,29 +223,73 @@ class WujiHand2Backend:
         self._enabled = True
         print(
             "Wuji Hand 2 enabled: "
-            f"kp={self._kp:g}, kd={self._kd:g}, "
+            f"kp={self._format_parameter(self._kp_values)}, "
+            f"kd={self._format_parameter(self._kd_values)}, "
             f"current_limit={self._current_limit:g}A"
         )
+
+    @staticmethod
+    def _format_parameter(values: np.ndarray) -> str:
+        if np.allclose(values, values[0]):
+            return f"{values[0]:g}"
+        return "per-joint"
+
+    def mit_gains(self) -> tuple[tuple[float, float], ...]:
+        return tuple(
+            (float(kp), float(kd))
+            for kp, kd in zip(self._kp_values, self._kd_values, strict=True)
+        )
+
+    def set_mit_gains(
+        self, *, kp: float, kd: float, joint_index: int | None = None
+    ) -> tuple[tuple[float, float], ...]:
+        kp_value = float(kp)
+        kd_value = float(kd)
+        if (
+            not np.isfinite((kp_value, kd_value)).all()
+            or kp_value < 0.0
+            or kd_value < 0.0
+        ):
+            raise ValueError("Wuji Hand 2 MIT gains must be finite and non-negative")
+        kp_values = self._kp_values.copy()
+        kd_values = self._kd_values.copy()
+        if joint_index is None:
+            kp_values.fill(kp_value)
+            kd_values.fill(kd_value)
+        else:
+            index = int(joint_index)
+            if not 0 <= index < 20:
+                raise ValueError("Wuji Hand 2 joint index must be in 0..19")
+            kp_values[index] = kp_value
+            kd_values[index] = kd_value
+        params = [
+            (float(kp_item), float(kd_item))
+            for kp_item, kd_item in zip(kp_values, kd_values, strict=True)
+        ]
+        _set_with_retry(
+            "mit_params", lambda: self._hand.mit_params().set(params)
+        )
+        self._kp_values = kp_values
+        self._kd_values = kd_values
+        return self.mit_gains()
 
     def disable(self) -> None:
         if getattr(self, "_hand", None) is not None:
             self._hand.disable()
         self._enabled = False
+        self._last_command_position = None
 
     def _wait_until_enabled(self) -> None:
         deadline = time.monotonic() + 5.0
-        subscription = self._hand.joint_diagnostics().subscribe()
-        try:
-            while time.monotonic() < deadline:
-                time.sleep(0.2)
-                frame = subscription.recv()
-                if frame is None:
-                    continue
-                live = [entry for entry in frame.joints if entry.vbus_v_fb > 0.5]
-                if live and all(entry.status_word.ext_state == 2 for entry in live):
-                    return
-        finally:
-            subscription.close()
+        subscription = self._diagnostic_subscription
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            frame = subscription.recv()
+            if frame is None:
+                continue
+            live = [entry for entry in frame.joints if entry.vbus_v_fb > 0.5]
+            if live and all(entry.status_word.ext_state == 2 for entry in live):
+                return
         self._hand.disable()
         raise RuntimeError("Wuji Hand 2 did not reach Enabled state within 5 s")
 
@@ -200,6 +304,12 @@ class WujiHand2Backend:
             for position in values
         ]
         self._publisher.send(commands)
+        self._last_command_position = values.copy()
+
+    @property
+    def last_command_position(self) -> np.ndarray | None:
+        command = self._last_command_position
+        return None if command is None else command.copy()
 
     def read_position(self) -> np.ndarray | None:
         """Drain feedback and return the newest complete actual-position frame."""
@@ -211,7 +321,24 @@ class WujiHand2Backend:
             latest = _hand2_feedback_positions(frame)
         return latest
 
+    def read_diagnostics(self) -> dict[int, WujiHand2JointDiagnostic] | None:
+        """Drain diagnostics and return the newest frame indexed by joint."""
+        subscription = self._diagnostic_subscription
+        if subscription is None:
+            return None
+        latest = None
+        while (frame := subscription.recv()) is not None:
+            latest = _hand2_diagnostics(frame)
+        return latest
+
     def close(self) -> None:
+        diagnostic_subscription = getattr(self, "_diagnostic_subscription", None)
+        if diagnostic_subscription is not None:
+            try:
+                diagnostic_subscription.close()
+            except Exception:
+                pass
+            self._diagnostic_subscription = None
         subscription = getattr(self, "_state_subscription", None)
         if subscription is not None:
             try:

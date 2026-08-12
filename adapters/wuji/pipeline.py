@@ -192,6 +192,38 @@ class WujiHandPipeline:
             )
         return reader()
 
+    def joint_diagnostics(self, side: str):
+        if side not in self.sides:
+            raise ValueError(f"Wuji side is not configured: {side}")
+        reader = getattr(self.backends[side], "read_diagnostics", None)
+        if reader is None:
+            raise RuntimeError(
+                f"joint diagnostics are unavailable for {self.models[side]}"
+            )
+        return reader()
+
+    def mit_gains(self, side: str):
+        if side not in self.sides:
+            raise ValueError(f"Wuji side is not configured: {side}")
+        reader = getattr(self.backends[side], "mit_gains", None)
+        if reader is None:
+            raise RuntimeError(
+                f"MIT gain access is unavailable for {self.models[side]}"
+            )
+        return reader()
+
+    def set_mit_gains(
+        self, side: str, *, kp: float, kd: float, joint_index: int | None = None
+    ):
+        if side not in self.sides:
+            raise ValueError(f"Wuji side is not configured: {side}")
+        setter = getattr(self.backends[side], "set_mit_gains", None)
+        if setter is None:
+            raise RuntimeError(
+                f"MIT gain tuning is unavailable for {self.models[side]}"
+            )
+        return setter(kp=kp, kd=kd, joint_index=joint_index)
+
     def request_open(
         self,
         now: float | None = None,

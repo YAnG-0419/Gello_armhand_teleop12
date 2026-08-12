@@ -82,6 +82,30 @@ or the top-level dual-disable button if the motors should be disabled.
 Sequences are intentionally temporary previews and are not stored in JSON yet.
 Left and right sequences are edited and executed independently.
 
+## Single-joint hold diagnostics
+
+The **单关节保持诊断** card reads the Hand 2 diagnostic stream and defaults to
+the ring-finger ABD joint (device index 13, node 17). It shows the last command,
+actual position, position error, motor current, current-limit flag, controller
+temperature, bus voltage, communication response rate, drive state, and error
+code.
+
+The five-second test leaves MANUS teleoperation and holds the freshly measured
+whole-hand pose. Gently perturb only the selected joint and record whether the
+physical link and displayed feedback angle move together. If the physical link
+moves while feedback stays nearly fixed, downstream mechanical play or a loose
+transmission is likely. If feedback departs from the fixed target, the result
+uses current limiting and drive errors to distinguish insufficient control
+authority from a drive fault. The test never changes gains or current limits.
+
+The same card provides runtime MIT `kp`/`kd` tuning. It reads the current
+per-joint values and can apply a new pair either to the selected joint or all 20
+joints on one hand. Applying gains exits MANUS teleoperation and holds the
+freshly measured pose. The browser safety range is `kp=0..10`, `kd=0..1`; every
+write requires confirmation. Changes survive disable/enable within this UI
+process but are intentionally not written to JSON or persistent device storage.
+Restarting the UI restores the command-line `--wuji-kp`/`--wuji-kd` values.
+
 Only fresh, complete 20-joint motor feedback can be recorded. JSON stores
 radians in firmware/device command order and includes all joint names so later
 gesture-triggered policies can reorder by name rather than assuming indices.
