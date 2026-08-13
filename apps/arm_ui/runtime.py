@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import math
 import threading
 import time
+from types import SimpleNamespace
 from typing import Callable, Sequence
 
 from .models import Routine, SIDES, Waypoint
@@ -90,7 +91,7 @@ class ArmRosRuntime:
                 MoveItErrorCodes,
                 MotionSequenceItem,
             )
-            from moveit_msgs.srv import GetPositionIK
+            from moveit_msgs.srv import GetPositionFK, GetPositionIK
             from geometry_msgs.msg import PoseStamped
             from rclpy.action import ActionClient
             from rclpy.executors import MultiThreadedExecutor
@@ -117,6 +118,7 @@ class ArmRosRuntime:
             "MotionSequenceItem": MotionSequenceItem,
             "MoveItErrorCodes": MoveItErrorCodes,
             "MoveGroupSequence": MoveGroupSequence,
+            "GetPositionFK": GetPositionFK,
             "GetPositionIK": GetPositionIK,
             "GoalStatus": GoalStatus,
             "FollowJointTrajectory": FollowJointTrajectory,
@@ -245,6 +247,7 @@ class ArmRosRuntime:
                 ),
             )
         self.compute_ik_client = self.node.create_client(GetPositionIK, "/compute_ik")
+        self.compute_fk_client = self.node.create_client(GetPositionFK, "/compute_fk")
         self._spin_thread.start()
 
     def _notify(self, side: str, message: str) -> None:
@@ -294,6 +297,21 @@ class ArmRosRuntime:
             raise ValueError(f"未知机械臂: {side}")
         return f"{side}_{self.robot_type}_link8"
 
+    def _combined_joint_state(self) -> tuple[list[str], list[float]]:
+        names: list[str] = []
+        positions: list[float] = []
+        with self._snapshot_lock:
+            snapshots = dict(self._snapshots)
+        for side in SIDES:
+            snapshot = snapshots.get(side)
+            if snapshot is None:
+                continue
+            names.extend(snapshot.names)
+            positions.extend(snapshot.positions)
+        if not names:
+            raise RuntimeError("还没有机械臂关节状态")
+        return names, positions
+
     def _lookup_tool_transform(self, side: str) -> object:
         try:
             return self.tf_buffer.lookup_transform(
@@ -301,10 +319,36 @@ class ArmRosRuntime:
                 self.tool_frame(side),
                 self.ros["Time"](),
             )
-        except self.ros["tf2_ros"].TransformException as error:
+        except self.ros["tf2_ros"].TransformException:
+            return self._lookup_tool_transform_via_fk(side)
+
+    def _lookup_tool_transform_via_fk(self, side: str) -> object:
+        """Use MoveIt FK when /tf is split across franka-control and moveit-ik."""
+        names, positions = self._combined_joint_state()
+        request = self.ros["GetPositionFK"].Request()
+        request.header.frame_id = self.base_frame
+        request.fk_link_names = [self.tool_frame(side)]
+        request.robot_state.joint_state.name = names
+        request.robot_state.joint_state.position = positions
+        response = self._call(
+            self.compute_fk_client, request, f"compute_fk ({side})"
+        )
+        if response.error_code.val != self.ros["MoveItErrorCodes"].SUCCESS:
             raise RuntimeError(
-                f"无法读取{self.base_frame}到{self.tool_frame(side)}的TF: {error}"
-            ) from error
+                f"无法通过FK读取{self.base_frame}到{self.tool_frame(side)}: "
+                f"error_code={response.error_code.val}"
+            )
+        if not response.pose_stamped:
+            raise RuntimeError(
+                f"FK未返回{self.tool_frame(side)}位姿"
+            )
+        pose = response.pose_stamped[0].pose
+        return SimpleNamespace(
+            transform=SimpleNamespace(
+                translation=pose.position,
+                rotation=pose.orientation,
+            )
+        )
 
     def start_recording(self, side: str, *, rate_hz: float = 100.0) -> None:
         if side not in SIDES:

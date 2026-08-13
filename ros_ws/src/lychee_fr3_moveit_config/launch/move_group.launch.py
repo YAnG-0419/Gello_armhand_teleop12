@@ -148,7 +148,9 @@ def generate_robot_nodes(context):
         'publish_planning_scene': True,
         'publish_geometry_updates': True,
         'publish_state_updates': True,
-        'publish_transforms_updates': True,
+        # Do not republish the robot TF: franka-control already owns the
+        # per-arm trees, and a second publisher splits lychee_root from link8.
+        'publish_transforms_updates': False,
     }
 
     run_move_group_node = Node(
@@ -178,14 +180,17 @@ def generate_robot_nodes(context):
         package='joint_state_publisher',
         executable='joint_state_publisher',
         name='moveit_ik_joint_state_publisher',
-        parameters=[{
-            'source_list': [
-                f'/{prefix}/franka/joint_states'
-                for prefix in yaml.safe_load(arm_prefixes)
-            ],
-            'rate': 100.0,
-            'use_robot_description': False,
-        }],
+        parameters=[
+            robot_description,
+            {
+                'source_list': [
+                    f'/{prefix}/franka/joint_states'
+                    for prefix in yaml.safe_load(arm_prefixes)
+                ],
+                'rate': 100.0,
+                'ignore_timestamp': True,
+            },
+        ],
     )
     robot_state_publisher = Node(
         package='robot_state_publisher',

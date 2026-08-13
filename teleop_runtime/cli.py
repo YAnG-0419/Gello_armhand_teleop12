@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import json
 import os
 import sys
 
@@ -14,11 +13,8 @@ from pathlib import Path
 from pico_bimanual_franka_teleop.config import load_config
 from pico_bimanual_franka_teleop.hand_worker import HandWorker
 from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
-from pico_bimanual_franka_teleop.relative_action import (
-    PresetAction,
-    SolvedRelativeAction,
-    load_preset_actions,
-)
+from pico_bimanual_franka_teleop.preset_ik_client import invoke_preset_ik
+from pico_bimanual_franka_teleop.relative_action import load_preset_actions
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -68,48 +64,6 @@ def invoke_capture_home(side: str) -> tuple[bool, str]:
     output = (completed.stdout + completed.stderr).strip()
     succeeded = completed.returncode == 0 and "success=True" in completed.stdout
     return succeeded, output[-400:]
-
-
-def invoke_preset_ik(
-    preset: PresetAction, *, max_joint_speed: float
-) -> SolvedRelativeAction:
-    """Run Arm UI's MoveIt IK solver in the ROS-enabled tools container."""
-    completed = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "run",
-            "--rm",
-            "-T",
-            "tools",
-            "python3",
-            "-m",
-            "apps.arm_ui.preset_ik_cli",
-            "--data-root",
-            "/data/arm_ui",
-            "--side",
-            preset.side,
-            "--action",
-            preset.action_name,
-            "--speed-scale",
-            str(preset.speed_scale),
-            "--max-joint-speed",
-            str(max_joint_speed),
-        ],
-        cwd=REPO_ROOT / "docker",
-        capture_output=True,
-        text=True,
-        timeout=90.0,
-    )
-    output = (completed.stdout + completed.stderr).strip()
-    prefix = "PRESET_IK_RESULT="
-    result_line = next(
-        (line for line in completed.stdout.splitlines() if line.startswith(prefix)),
-        None,
-    )
-    if completed.returncode != 0 or result_line is None:
-        raise RuntimeError(output[-800:] or "MoveIt IK process failed")
-    return SolvedRelativeAction.from_dict(json.loads(result_line[len(prefix):]))
 
 
 def main() -> None:

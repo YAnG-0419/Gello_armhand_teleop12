@@ -11,4 +11,4 @@ if grep -Eq '^(moveit-fake|moveit-real|arm-ui)$' <<<"$running"; then
   exit 1
 fi
 exec docker compose up \
-  franka-control teleop-control moveit-ik gello-bridge hand-control
+  franka-control teleop-control moveit-ik preset-ik gello-bridge hand-control

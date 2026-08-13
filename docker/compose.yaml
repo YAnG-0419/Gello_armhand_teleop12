@@ -146,6 +146,8 @@ services:
     <<: *runtime
     # Read-only MoveIt service for preset-action IK/collision prechecks during
     # teleop. move_group.launch.py starts no ros2_control/controller manager.
+    # Stay off the Franka realtime cores (FRANKA_CPUSET).
+    cpuset: ${PRESET_IK_CPUSET:?Missing PRESET_IK_CPUSET in docker/.env}
     command:
       - ros2
       - launch
@@ -154,6 +156,29 @@ services:
       - robot_types:=['fr3','fr3']
       - robot_ips:=['172.16.0.3','172.16.0.2']
       - move_group_log_level:=warn
+
+  preset-ik:
+    <<: *runtime
+    # Long-lived Arm UI IK helper. Operator Q/W/E talks to this TCP server
+    # instead of `docker compose run --rm tools`, which was starving
+    # franka-control on the realtime CPUs.
+    cpuset: ${PRESET_IK_CPUSET:?Missing PRESET_IK_CPUSET in docker/.env}
+    environment:
+      - ROS_LOCALHOST_ONLY=0
+      - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
+      - PYTHONPATH=/workspace/franka_upper_body_teleop
+    command:
+      - python3
+      - -m
+      - apps.arm_ui.preset_ik_server
+      - --host
+      - 127.0.0.1
+      - --port
+      - "5591"
+      - --data-root
+      - /data/arm_ui
+    depends_on:
+      - moveit-ik
 
   moveit-fake:
     <<: *runtime

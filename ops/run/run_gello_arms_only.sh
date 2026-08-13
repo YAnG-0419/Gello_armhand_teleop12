@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-SERVICES=(franka-control teleop-control moveit-ik gello-bridge)
+SERVICES=(franka-control teleop-control moveit-ik preset-ik gello-bridge)
 stack_started=false
 
 for argument in "$@"; do

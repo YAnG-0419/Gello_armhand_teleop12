@@ -241,7 +241,7 @@ class OperatorWindow(QMainWindow):
         actions.addWidget(home_both)
         layout.addLayout(actions)
 
-        preset_box = QGroupBox("Preset relative actions — 50% speed")
+        preset_box = QGroupBox("Preset relative actions — 65% speed")
         preset_layout = QHBoxLayout(preset_box)
         self.preset_buttons: dict[str, QPushButton] = {}
         preset_labels = {

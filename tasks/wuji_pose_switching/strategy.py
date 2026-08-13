@@ -11,14 +11,10 @@ from typing import Callable
 
 import numpy as np
 
-from apps.wuji_ui.models import (
-    GestureRangeGate,
-    ManusGestureTrigger,
-    ManusTrigger,
-    WujiPoseRepository,
-    gesture_match_fraction,
-    manus_gesture_features,
-)
+from apps.wuji_ui.models import ManusTrigger, WujiPoseRepository
+
+
+TIP_INDICES = {"index": 8, "middle": 12, "ring": 16, "pinky": 20}
 
 
 class PosePhase(str, Enum):
@@ -61,52 +57,63 @@ def load_config(path: str | Path) -> WujiPoseSwitchingConfig:
     )
 
 
+def _thumb_tip_gap_m(landmarks: np.ndarray, finger: str) -> float:
+    points = np.asarray(landmarks, dtype=np.float64)
+    if points.shape != (21, 3) or not np.isfinite(points).all():
+        raise ValueError("expected finite 21x3 MANUS landmarks")
+    try:
+        tip = TIP_INDICES[finger]
+    except KeyError as error:
+        raise ValueError(f"unknown MANUS target finger: {finger}") from error
+    return float(np.linalg.norm(points[4] - points[tip]))
+
+
 class TwoStageGestureTrigger:
     """FREE -> READY -> ACTIVE state machine with independent hysteresis."""
 
-    def __init__(
-        self,
-        ready: ManusTrigger,
-        active: ManusGestureTrigger,
-    ) -> None:
+    def __init__(self, ready: ManusTrigger, active: ManusTrigger) -> None:
         if ready.side != active.side:
             raise ValueError("ready and active triggers must use the same hand side")
+        if ready.name == active.name:
+            raise ValueError("ready and active triggers must be distinct")
+        if ready.finger == active.finger and not (
+            active.enter_max_m < active.exit_min_m < ready.enter_max_m < ready.exit_min_m
+        ):
+            raise ValueError(
+                "same-finger stages require "
+                "active_enter < active_exit < ready_enter < ready_exit"
+            )
         self.ready = ready
         self.active = active
-        self.active_gate = GestureRangeGate(
-            enter_match_fraction=active.enter_match_fraction,
-            exit_match_fraction=active.exit_match_fraction,
-            dwell_seconds=active.dwell_seconds,
-        )
         self.reset()
 
     def reset(self) -> None:
         self.phase = PosePhase.FREE
         self._ready_candidate_since: float | None = None
-        self.active_gate.reset()
+        self._active_candidate_since: float | None = None
 
     def _go_free(self) -> None:
         self.phase = PosePhase.FREE
         self._ready_candidate_since = None
-        self.active_gate.reset()
+        self._active_candidate_since = None
 
     def update(
         self,
         now: float,
         ready_gap_m: float,
-        active_match_fraction: float,
+        active_gap_m: float,
     ) -> PosePhase:
         moment = float(now)
-        gap = float(ready_gap_m)
-        match = float(active_match_fraction)
-        if not all(np.isfinite(value) for value in (moment, gap, match)):
+        ready_gap = float(ready_gap_m)
+        active_gap = float(active_gap_m)
+        if not all(np.isfinite(value) for value in (moment, ready_gap, active_gap)):
             raise ValueError("MANUS gesture values must be finite")
-        if gap < 0.0 or not 0.0 <= match <= 1.0:
+        if ready_gap < 0.0 or active_gap < 0.0:
             raise ValueError("MANUS gesture values are outside their valid range")
 
         if self.phase is PosePhase.FREE:
-            self.active_gate.reset()
-            if gap <= self.ready.enter_max_m:
+            self._active_candidate_since = None
+            if ready_gap <= self.ready.enter_max_m:
                 if self._ready_candidate_since is None:
                     self._ready_candidate_since = moment
                 if moment - self._ready_candidate_since >= self.ready.dwell_seconds:
@@ -114,13 +121,20 @@ class TwoStageGestureTrigger:
                     self._ready_candidate_since = None
             else:
                 self._ready_candidate_since = None
-        elif gap >= self.ready.exit_min_m:
+        elif ready_gap >= self.ready.exit_min_m:
             self._go_free()
         elif self.phase is PosePhase.READY:
-            if self.active_gate.update(moment, match):
-                self.phase = PosePhase.ACTIVE
-        elif not self.active_gate.update(moment, match):
+            if active_gap <= self.active.enter_max_m:
+                if self._active_candidate_since is None:
+                    self._active_candidate_since = moment
+                if moment - self._active_candidate_since >= self.active.dwell_seconds:
+                    self.phase = PosePhase.ACTIVE
+                    self._active_candidate_since = None
+            else:
+                self._active_candidate_since = None
+        elif active_gap >= self.active.exit_min_m:
             self.phase = PosePhase.READY
+            self._active_candidate_since = None
         return self.phase
 
 
@@ -132,7 +146,7 @@ class TwoStagePoseRetargeter:
         base,
         *,
         ready: ManusTrigger,
-        active: ManusGestureTrigger,
+        active: ManusTrigger,
         ready_pose_device,
         active_pose_device,
         device_joint_names,
@@ -185,10 +199,11 @@ class TwoStagePoseRetargeter:
         ).copy()
         self.trigger = TwoStageGestureTrigger(ready, active)
         self.ready_finger = ready.finger
+        self.active_finger = active.finger
         self.last_qpos: np.ndarray | None = None
         self._last_time: float | None = None
         self.last_ready_gap_m = float("nan")
-        self.last_active_match_fraction = float("nan")
+        self.last_active_gap_m = float("nan")
 
     @property
     def phase(self) -> PosePhase:
@@ -198,15 +213,9 @@ class TwoStagePoseRetargeter:
         points = np.asarray(landmarks, dtype=np.float64)
         base_qpos = np.asarray(self.base.retarget(points), dtype=np.float64)
         now = float(self.clock())
-        tip_indices = {"index": 8, "middle": 12, "ring": 16, "pinky": 20}
-        ready_gap = float(
-            np.linalg.norm(points[4] - points[tip_indices[self.ready_finger]])
-        )
-        features = manus_gesture_features(points)
-        active_match, _matches = gesture_match_fraction(
-            features, self.trigger.active.feature_ranges
-        )
-        phase = self.trigger.update(now, ready_gap, active_match)
+        ready_gap = _thumb_tip_gap_m(points, self.ready_finger)
+        active_gap = _thumb_tip_gap_m(points, self.active_finger)
+        phase = self.trigger.update(now, ready_gap, active_gap)
         desired = {
             PosePhase.FREE: base_qpos,
             PosePhase.READY: self.ready_pose,
@@ -225,7 +234,7 @@ class TwoStagePoseRetargeter:
         self.last_qpos = output.copy()
         self._last_time = now
         self.last_ready_gap_m = ready_gap
-        self.last_active_match_fraction = active_match
+        self.last_active_gap_m = active_gap
         return output
 
     def reset(self) -> None:
@@ -234,7 +243,7 @@ class TwoStagePoseRetargeter:
         self.last_qpos = None
         self._last_time = None
         self.last_ready_gap_m = float("nan")
-        self.last_active_match_fraction = float("nan")
+        self.last_active_gap_m = float("nan")
 
 
 def install_on_wuji_pipeline(
@@ -257,21 +266,18 @@ def install_on_wuji_pipeline(
     if tuple(repository.joint_names[side]) != runtime_names:
         raise ValueError(f"{side} pose joint order does not match the Wuji device")
 
-    ready_by_name = {trigger.name: trigger for trigger in repository.triggers(side)}
-    active_by_name = {
-        trigger.name: trigger for trigger in repository.gesture_triggers(side)
-    }
+    by_name = {trigger.name: trigger for trigger in repository.triggers(side)}
     try:
-        ready = ready_by_name[config.ready_trigger]
+        ready = by_name[config.ready_trigger]
     except KeyError as error:
         raise ValueError(
             f"MANUS distance trigger does not exist: {config.ready_trigger}"
         ) from error
     try:
-        active = active_by_name[config.active_trigger]
+        active = by_name[config.active_trigger]
     except KeyError as error:
         raise ValueError(
-            f"MANUS composite trigger does not exist: {config.active_trigger}"
+            f"MANUS distance trigger does not exist: {config.active_trigger}"
         ) from error
 
     wrapped = TwoStagePoseRetargeter(

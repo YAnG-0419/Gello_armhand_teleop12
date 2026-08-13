@@ -338,7 +338,8 @@ class DualFr3HardwareTeleop:
         self.preset_cancel_resume = True
         if side is not None:
             self.mappers[side].reset()
-            if resume and self.preset_resume_active:
+            reengage = resume and (self.preset_resume_active or reason == "completed")
+            if reengage:
                 self.operator.set_active(side, True, target="arm")
                 self._notify(f"preset {reason}; {side} GELLO re-anchoring now")
             else:

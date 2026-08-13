@@ -558,6 +558,42 @@
           "recommended_enter_max_m": 0.051761936753656874,
           "recommended_exit_min_m": 0.06211432410438825
         }
+      },
+      "33": {
+        "finger": "index",
+        "pose": "9999",
+        "metric": "thumb_tip_distance",
+        "enter_max_m": 0.06868,
+        "exit_min_m": 0.08242000000000001,
+        "dwell_seconds": 0.15,
+        "calibration": {
+          "sample_count": 127,
+          "min_m": 0.009957398512676451,
+          "p05_m": 0.010031054855687093,
+          "median_m": 0.010152289172573695,
+          "p95_m": 0.0633526263478134,
+          "max_m": 0.07045290360487803,
+          "recommended_enter_max_m": 0.06868478349702603,
+          "recommended_exit_min_m": 0.08242174019643124
+        }
+      },
+      "55": {
+        "finger": "index",
+        "pose": "9999",
+        "metric": "thumb_tip_distance",
+        "enter_max_m": 0.01384,
+        "exit_min_m": 0.01884,
+        "dwell_seconds": 0.15,
+        "calibration": {
+          "sample_count": 51,
+          "min_m": 0.011483754946689212,
+          "p05_m": 0.011520062304750084,
+          "median_m": 0.011693595160207203,
+          "p95_m": 0.01183569036860337,
+          "max_m": 0.011910594999685909,
+          "recommended_enter_max_m": 0.01383569036860337,
+          "recommended_exit_min_m": 0.01883569036860337
+        }
       }
     },
     "right": {}
@@ -633,6 +669,76 @@
         "exit_match_fraction": 0.6,
         "dwell_seconds": 0.2,
         "sample_count": 110
+      },
+      "44": {
+        "pose": "9999",
+        "metric": "composite_landmark_ranges_v1",
+        "feature_ranges": {
+          "thumb_curl_rad": {
+            "min": 0.3666389874554414,
+            "max": 0.5911006336798481,
+            "median": 0.5006274784819564
+          },
+          "index_curl_rad": {
+            "min": 0.560061364250219,
+            "max": 0.7892099185035092,
+            "median": 0.6954650801089888
+          },
+          "middle_curl_rad": {
+            "min": 0.5815343139606286,
+            "max": 0.7774636596536133,
+            "median": 0.6965718587954338
+          },
+          "ring_curl_rad": {
+            "min": 0.5041065844988175,
+            "max": 0.7073229261622574,
+            "median": 0.6087493892460697
+          },
+          "pinky_curl_rad": {
+            "min": 0.22288384989030935,
+            "max": 0.35900510810282366,
+            "median": 0.28978595413304176
+          },
+          "thumb_index_gap_palm": {
+            "min": 0.2912753321648157,
+            "max": 0.4120532575527466,
+            "median": 0.35828534616701735
+          },
+          "thumb_middle_gap_palm": {
+            "min": 0.3951307001789698,
+            "max": 0.5325505286270257,
+            "median": 0.46030172514768275
+          },
+          "thumb_ring_gap_palm": {
+            "min": 0.23798836803786735,
+            "max": 0.3383811003874475,
+            "median": 0.28614574937434206
+          },
+          "thumb_pinky_gap_palm": {
+            "min": 0.20068555753245534,
+            "max": 0.3067363273878162,
+            "median": 0.25079286318814537
+          },
+          "index_middle_gap_palm": {
+            "min": 0.21639496566373695,
+            "max": 0.328684680158286,
+            "median": 0.26249900464220544
+          },
+          "middle_ring_gap_palm": {
+            "min": 0.1957699856230437,
+            "max": 0.30869214827362135,
+            "median": 0.2435768127492255
+          },
+          "ring_pinky_gap_palm": {
+            "min": 0.42943180007508985,
+            "max": 0.5116405299668043,
+            "median": 0.46840566445621135
+          }
+        },
+        "enter_match_fraction": 0.8,
+        "exit_match_fraction": 0.6,
+        "dwell_seconds": 0.2,
+        "sample_count": 180
       }
     },
     "right": {}

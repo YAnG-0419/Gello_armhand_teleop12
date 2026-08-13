@@ -14,7 +14,7 @@ fi
 
 cd "$REPO_ROOT/docker"
 running="$(docker compose ps --services --status running)"
-for service in franka-control fake-franka-control teleop-control gello-bridge pico-bridge vive-bridge moveit-ik moveit-fake moveit-real arm-ui; do
+for service in franka-control fake-franka-control teleop-control gello-bridge pico-bridge vive-bridge moveit-ik preset-ik moveit-fake moveit-real arm-ui; do
   if grep -qx "$service" <<<"$running"; then
     echo "Refusing to start MoveIt while $service is running." >&2
     echo "Stop the Gello/teleop stack first; both modes own the FR3 command path." >&2

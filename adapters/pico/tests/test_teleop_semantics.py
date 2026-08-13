@@ -222,6 +222,80 @@ def test_finishing_preset_resumes_through_a_fresh_gello_anchor():
     assert notifications == ["preset completed; left GELLO re-anchoring now"]
 
 
+def test_completed_preset_reengages_even_if_arm_was_stopped() -> None:
+    changes = []
+    notifications = []
+    mapper = type(
+        "Mapper", (), {"reset": lambda self: setattr(self, "reset_called", True)}
+    )()
+    mapper.reset_called = False
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.operator = type(
+        "Operator",
+        (),
+        {
+            "set_active": lambda _self, side, active, *, target: changes.append(
+                (side, active, target)
+            )
+        },
+    )()
+    teleop.mappers = {"left": mapper}
+    teleop._notify = notifications.append
+    teleop.active_preset = SolvedRelativeAction.from_dict(
+        {
+            "name": "kuai1",
+            "side": "left",
+            "time_sec": [0.0, 0.5, 1.0],
+            "positions": [[0.0] * 7] * 3,
+            "start_q": [0.0] * 14,
+            "speed_scale": 0.5,
+        }
+    )
+    teleop.preset_pending = None
+    teleop.preset_started_at = 1.0
+    teleop.preset_leader_anchor = np.zeros(7)
+    teleop.preset_cancelled = False
+    teleop.preset_resume_active = False
+
+    teleop._finish_preset("completed", resume=True)
+
+    assert mapper.reset_called
+    assert changes == [("left", True, "arm")]
+    assert notifications == ["preset completed; left GELLO re-anchoring now"]
+
+
+def test_failed_preset_does_not_engage_a_stopped_arm() -> None:
+    changes = []
+    notifications = []
+    mapper = type(
+        "Mapper", (), {"reset": lambda self: setattr(self, "reset_called", True)}
+    )()
+    mapper.reset_called = False
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.operator = type(
+        "Operator",
+        (),
+        {
+            "set_active": lambda _self, side, active, *, target: changes.append(
+                (side, active, target)
+            )
+        },
+    )()
+    teleop.mappers = {"left": mapper}
+    teleop._notify = notifications.append
+    teleop.active_preset = None
+    teleop.preset_pending = type("Preset", (), {"side": "left"})()
+    teleop.preset_started_at = None
+    teleop.preset_leader_anchor = None
+    teleop.preset_cancelled = False
+    teleop.preset_resume_active = False
+
+    teleop._finish_preset("IK precheck failed", resume=True)
+
+    assert changes == []
+    assert notifications == ["preset IK precheck failed; left arm remains stopped"]
+
+
 def test_open_hand_removes_stale_same_tick_activation():
     sample = TeleopSample(
         poses={

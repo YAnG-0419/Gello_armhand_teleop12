@@ -4,6 +4,6 @@
   "side": "left",
   "pose_library": "../../../config/calibration/wuji_hand_2_poses.json",
   "ready_trigger": "11",
-  "active_trigger": "22",
+  "active_trigger": "55",
   "max_joint_speed_rad_s": 1.0
 }

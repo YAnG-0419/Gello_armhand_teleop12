@@ -12,7 +12,7 @@ for argument in "$@"; do
     OPERATOR_ARGS+=("$argument")
   fi
 done
-SERVICES=("$FRANKA_SERVICE" teleop-control moveit-ik gello-bridge)
+SERVICES=("$FRANKA_SERVICE" teleop-control moveit-ik preset-ik gello-bridge)
 stack_started=false
 operator_pid=""
 

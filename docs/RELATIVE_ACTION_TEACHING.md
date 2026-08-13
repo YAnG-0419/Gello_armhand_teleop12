@@ -27,7 +27,7 @@
 ### 2.0 Operator GUI 遥操接入
 
 Operator GUI 现有 `Q`、`W`、`E` 三个预设动作槽，配置文件为
-`config/preset_actions.yaml`。当前 Q 对应左臂 `kuai1`、速度 50%，W/E 暂未配置。
+`config/preset_actions.yaml`。当前 Q 对应左臂 `kuai1`、速度 65%，W/E 暂未配置。
 触发时使用当前真实 link8 位姿作为相对动作新原点，调用与 Arm UI 一致的
 MoveIt KDL `/compute_ik` 对完整轨迹逐帧预检；只有全部通过才由现有遥操 UDP
 安全网关执行。动作结束或中断后会重置 GELLO 增量映射并按动作前状态恢复。
@@ -172,7 +172,8 @@ UI STOP 是控制器轨迹取消功能，不是 Franka 硬件急停。
 9. 确认动作方向、勺子姿态和 STOP 后，再逐步提高到 10%–15%。
 
 完整 MoveIt/Arm UI 执行模式和 GELLO 遥操模式仍然互斥。GELLO 模式只额外
-启动不含控制器的 `moveit-ik`，专门提供只读 `/compute_ik` 预检。
+启动不含控制器的 `moveit-ik`，以及常驻的 `preset-ik` TCP 服务，专门提供只读
+`/compute_ik` 预检。按 Q 不会再 `docker compose run` 起一次性容器。
 
 ## 4. 已完成的验证
 
@@ -222,7 +223,9 @@ UI STOP 是控制器轨迹取消功能，不是 Franka 硬件急停。
 ### 6.1 统一控制权
 
 统一控制权仲裁已经接入现有 GELLO 安全网关。完整 Arm UI/MoveIt 执行栈仍不与
-遥操并行；遥操旁路的 `moveit-ik` 只计算 IK，不具备机械臂控制器。
+遥操并行；遥操旁路的 `moveit-ik` 只计算 IK，不具备机械臂控制器。Operator 的
+Q/W/E 打到常驻 `preset-ik`（`127.0.0.1:5591`），由它复用已预热的 Arm UI
+MoveIt 运行时。
 
 当前单一控制权流程为：
 
