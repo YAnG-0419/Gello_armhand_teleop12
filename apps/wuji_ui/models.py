@@ -50,6 +50,22 @@ def _name(value: object) -> str:
     return name
 
 
+def unused_pose_name(existing: Sequence[str], base: object) -> str:
+    """Return base, or base_2 / base_3 / ... if that name is already taken."""
+    seed = _name(base)
+    names = {str(name) for name in existing}
+    if seed not in names:
+        return seed
+    index = 2
+    while True:
+        candidate = f"{seed}_{index}"
+        if len(candidate) > 80:
+            raise ValueError("无法为现有姿态生成不超过80个字符的副本名称")
+        if candidate not in names:
+            return candidate
+        index += 1
+
+
 @dataclass(frozen=True)
 class HandPose:
     name: str

@@ -25,7 +25,10 @@ automatic browser opening. The default pose file is
    by hand, click **读取当前位置**, enter an independent name, and save it.
    Each pending angle can be adjusted with a model-bounded slider or its linked
    numeric degree field; editing these controls never commands hardware unless
-   that side is in **滑块实时控制**.
+   that side is in **滑块实时控制**. Clicking a saved pose loads it as a starting
+   point. **另存为新姿态** always creates a new named record (appending `_2` if
+   the current name is still selected); **覆盖选中** is the only way to rewrite
+   the original pose and requires confirmation.
 2. To jog from the UI, confirm **滑块实时控制** for either side. Sliders and
    degree fields then become rate-limited joint targets (`--pose-speed`). Return
    to **手动 / 失能** before touching or repositioning that hand directly.

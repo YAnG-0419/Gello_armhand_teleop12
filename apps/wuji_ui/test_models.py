@@ -15,6 +15,7 @@ from apps.wuji_ui.models import (
     manus_gesture_features,
     summarize_gap_samples,
     summarize_gesture_samples,
+    unused_pose_name,
 )
 
 
@@ -47,6 +48,12 @@ def test_pose_save_does_not_silently_overwrite(tmp_path: Path) -> None:
     poses.save(HandPose.create("pinch", "left", [0.1] * 20))
     with pytest.raises(ValueError, match="已存在"):
         poses.save(HandPose.create("pinch", "left", [0.2] * 20))
+
+
+def test_unused_pose_name_keeps_original_and_appends_suffix() -> None:
+    assert unused_pose_name([], "pinch") == "pinch"
+    assert unused_pose_name(["pinch"], "pinch") == "pinch_2"
+    assert unused_pose_name(["pinch", "pinch_2"], "pinch") == "pinch_3"
 
 
 def test_rejects_pose_file_from_different_joint_contract(tmp_path: Path) -> None:

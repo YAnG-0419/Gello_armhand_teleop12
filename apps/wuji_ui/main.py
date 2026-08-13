@@ -21,6 +21,7 @@ from .models import (
     gesture_match_fraction,
     summarize_gap_samples,
     summarize_gesture_samples,
+    unused_pose_name,
 )
 from .runtime import (
     MAX_RUNTIME_KD,
@@ -156,6 +157,7 @@ class WujiUiApplication:
                 "手动模式下电机失能，可直接摆手；遥操、滑块控制和姿态回放会使能电机。"
                 "未进入滑块控制时，拖动滑块只改待保存角度，不会驱动真机。"
                 "记录始终读取电机实际位置。"
+                "从已保存姿态微调后请用「另存为新姿态」；「覆盖选中」才会改原姿态。"
             ).classes("rounded-lg bg-blue-50 text-blue-900 p-3 w-full")
             with ui.row().classes("w-full items-start gap-5 flex-nowrap"):
                 for side in SIDES:
@@ -184,7 +186,12 @@ class WujiUiApplication:
                             record_button = ui.button(
                                 "读取当前位置", icon="add_location"
                             )
-                            save_button = ui.button("保存", icon="save", color="primary")
+                            save_as_button = ui.button(
+                                "另存为新姿态", icon="save", color="primary"
+                            )
+                            overwrite_button = ui.button(
+                                "覆盖选中", icon="save_as", color="warning"
+                            ).props("outline")
 
                         with ui.element("div").classes("joint-grid w-full"):
                             ui.label("关节").classes("font-medium")
@@ -341,21 +348,69 @@ class WujiUiApplication:
                             except Exception as error:
                                 _notify(str(error), color="negative", timeout=8)
 
-                        def _save(
+                        def _pending_qpos(side: str) -> list[float]:
+                            return [
+                                _radians(field.value)
+                                for field in states[side]["fields"]
+                            ]
+
+                        def _save_as(
                             side: str = side, refresh=refresh_pose_list
                         ) -> None:
                             try:
+                                selected = states[side]["selected"]
+                                requested = str(name_inputs[side].value or "").strip()
+                                existing = [
+                                    pose.name for pose in self.repository.poses(side)
+                                ]
+                                taken = set(existing)
+                                if not requested:
+                                    name = unused_pose_name(
+                                        existing,
+                                        selected or f"pose_{len(existing) + 1}",
+                                    )
+                                elif requested == selected:
+                                    name = unused_pose_name(existing, requested)
+                                elif requested in taken:
+                                    raise ValueError(f"姿态名称已存在: {requested}")
+                                else:
+                                    name = requested
                                 pose = HandPose.create(
-                                    name_inputs[side].value,
-                                    side,
-                                    [_radians(field.value) for field in states[side]["fields"]],
+                                    name, side, _pending_qpos(side)
                                 )
-                                self.repository.save(
-                                    pose, previous_name=states[side]["selected"]
-                                )
+                                self.repository.save(pose)
                                 states[side]["selected"] = pose.name
+                                name_inputs[side].value = pose.name
                                 refresh()
-                                _notify(f"姿态“{pose.name}”已保存", color="positive")
+                                kept = (
+                                    f"；原姿态“{selected}”未改"
+                                    if selected and selected != pose.name
+                                    else ""
+                                )
+                                _notify(
+                                    f"已另存为“{pose.name}”{kept}",
+                                    color="positive",
+                                )
+                            except Exception as error:
+                                _notify(str(error), color="negative", timeout=8)
+
+                        def _overwrite(
+                            side: str = side, refresh=refresh_pose_list
+                        ) -> None:
+                            try:
+                                selected = states[side]["selected"]
+                                if not selected:
+                                    raise ValueError("请先选中要覆盖的姿态")
+                                pose = HandPose.create(
+                                    selected, side, _pending_qpos(side)
+                                )
+                                self.repository.save(pose, previous_name=selected)
+                                name_inputs[side].value = selected
+                                refresh()
+                                _notify(
+                                    f"已覆盖姿态“{selected}”",
+                                    color="warning",
+                                )
                             except Exception as error:
                                 _notify(str(error), color="negative", timeout=8)
 
@@ -462,11 +517,39 @@ class WujiUiApplication:
                                     on_click=_confirm_move,
                                 )
 
+                        with ui.dialog() as overwrite_dialog, ui.card().classes(
+                            "max-w-lg"
+                        ):
+                            ui.label(f"确认覆盖{SIDE_LABELS[side]}选中姿态").classes(
+                                "text-lg font-semibold"
+                            )
+                            ui.label(
+                                "将用当前待保存角度覆盖已选中的原姿态，原记录会被改写。"
+                                "若只是在原姿态上微调并保留原动作，请改用「另存为新姿态」。"
+                            )
+                            with ui.row().classes("w-full justify-end"):
+                                ui.button(
+                                    "取消", on_click=overwrite_dialog.close
+                                ).props("flat")
+
+                                def _confirm_overwrite(
+                                    dialog=overwrite_dialog, action=_overwrite
+                                ) -> None:
+                                    dialog.close()
+                                    action()
+
+                                ui.button(
+                                    "确认覆盖",
+                                    color="warning",
+                                    on_click=_confirm_overwrite,
+                                )
+
                         manual_button.on("click", _manual)
                         jog_button.on("click", jog_dialog.open)
                         teleop_button.on("click", teleop_dialog.open)
                         record_button.on("click", _record)
-                        save_button.on("click", _save)
+                        save_as_button.on("click", _save_as)
+                        overwrite_button.on("click", overwrite_dialog.open)
                         delete_button.on("click", _delete)
                         move_button.on("click", move_dialog.open)
 
