@@ -237,7 +237,8 @@ class DualFr3HardwareTeleop:
     def _start_preset(
         self, key: str, measured_q: np.ndarray, sample: ArmSample | None
     ) -> None:
-        preset = self.preset_actions.get(key)
+        lookup = getattr(self.operator, "preset_action", None)
+        preset = lookup(key) if lookup is not None else self.preset_actions.get(key)
         if preset is None:
             self._notify(f"preset {key.upper()}: slot is not configured")
             return
@@ -513,8 +514,13 @@ class DualFr3HardwareTeleop:
                 elif requests.get("capture_home_right"):
                     self._start_capture_home("right")
                 else:
+                    selected_task = requests.get("preset_task")
+                    handled_preset = False
+                    if isinstance(selected_task, str) and selected_task:
+                        self._start_preset(selected_task, q, sample)
+                        handled_preset = True
                     for key in ("q", "w", "e"):
-                        if requests.get(f"preset_{key}"):
+                        if not handled_preset and requests.get(f"preset_{key}"):
                             self._start_preset(key, q, sample)
                             break
                 if (

@@ -8,3 +8,14 @@ slots:
     speed_scale: 0.65
   w: null
   e: null
+
+# Named tasks appear in the Operator GUI task selector. They reference the
+# exact same atomically-written Arm UI action YAML files as the legacy slots.
+# Q triggers whichever task is selected; no joint arrays are accepted from UI.
+selected_task: powder_weighing
+tasks:
+  powder_weighing:
+    label: "粉末称量"
+    side: left
+    action: kuai1
+    speed_scale: 0.65

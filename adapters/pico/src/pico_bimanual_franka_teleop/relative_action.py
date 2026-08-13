@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 import re
+import tempfile
 
 import numpy as np
 import yaml
@@ -84,7 +86,13 @@ def _safe_filename(name: str) -> str:
 def load_preset_actions(
     config_path: str | Path, data_root: str | Path
 ) -> dict[str, PresetAction | None]:
-    """Resolve Q/W/E slots without requiring action files to exist at startup."""
+    """Resolve legacy Q/W/E slots and named tasks.
+
+    Named tasks use the same validated relative-action files as the original
+    pedal presets.  Keeping the old slots makes existing deployments and CLI
+    flags backwards compatible while allowing the operator UI to select any
+    number of tasks and trigger the selected one with one pedal.
+    """
     with Path(config_path).open("r", encoding="utf-8") as stream:
         root = yaml.safe_load(stream) or {}
     slots = root.get("slots")
@@ -116,7 +124,110 @@ def load_preset_actions(
             path=action_root / f"{side}__{_safe_filename(name)}.yaml",
             speed_scale=speed_scale,
         )
+    tasks = root.get("tasks", {}) or {}
+    if not isinstance(tasks, dict):
+        raise ValueError("preset action tasks must be a mapping")
+    for task_id, entry in tasks.items():
+        key = str(task_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", key):
+            raise ValueError(f"invalid task id: {task_id!r}")
+        if key in result:
+            raise ValueError(f"task id conflicts with legacy slot: {key}")
+        if not isinstance(entry, dict):
+            raise ValueError(f"task {key} must be a mapping")
+        side = str(entry.get("side", ""))
+        name = str(entry.get("action", "")).strip()
+        speed_scale = float(entry.get("speed_scale", 0.15))
+        if side not in SIDES or not name:
+            raise ValueError(f"task {key} requires side and action")
+        if any(value in name for value in ("/", "\\", "\n", "\r")):
+            raise ValueError(f"task {key} has an invalid action name")
+        if not 0.05 <= speed_scale <= 1.0:
+            raise ValueError(f"task {key} speed must be 5% to 100%")
+        result[key] = PresetAction(
+            key=key,
+            label=str(entry.get("label", name)).strip() or name,
+            side=side,
+            action_name=name,
+            path=action_root / f"{side}__{_safe_filename(name)}.yaml",
+            speed_scale=speed_scale,
+        )
     return result
+
+
+def selected_task_id(config_path: str | Path) -> str | None:
+    with Path(config_path).open("r", encoding="utf-8") as stream:
+        root = yaml.safe_load(stream) or {}
+    selected = str(root.get("selected_task", "")).strip()
+    return selected or None
+
+
+def save_preset_task(
+    config_path: str | Path,
+    data_root: str | Path,
+    *,
+    task_id: str,
+    label: str,
+    side: str,
+    action_name: str,
+    speed_scale: float,
+) -> PresetAction:
+    """Atomically add or update a named task and return its resolved action."""
+    task_id = str(task_id).strip()
+    label = str(label).strip()
+    action_name = str(action_name).strip()
+    side = str(side)
+    speed_scale = float(speed_scale)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", task_id):
+        raise ValueError("task id must contain only letters, numbers, _, . or -")
+    if task_id in {"q", "w", "e"}:
+        raise ValueError("task id q/w/e is reserved for legacy slots")
+    if side not in SIDES:
+        raise ValueError("task side must be left or right")
+    if not label or len(label) > 64:
+        raise ValueError("task label must contain 1 to 64 characters")
+    if not action_name or any(
+        value in action_name for value in ("/", "\\", "\n", "\r")
+    ):
+        raise ValueError("task action name is invalid")
+    if not 0.05 <= speed_scale <= 1.0:
+        raise ValueError("task speed must be 5% to 100%")
+    path = Path(config_path)
+    with path.open("r", encoding="utf-8") as stream:
+        root = yaml.safe_load(stream) or {}
+    tasks = root.setdefault("tasks", {})
+    if not isinstance(tasks, dict):
+        raise ValueError("preset action tasks must be a mapping")
+    tasks[task_id] = {
+        "label": label,
+        "side": side,
+        "action": action_name,
+        "speed_scale": speed_scale,
+    }
+    root["selected_task"] = task_id
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(root, stream, allow_unicode=True, sort_keys=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return PresetAction(
+        key=task_id,
+        label=label,
+        side=side,
+        action_name=action_name,
+        path=Path(data_root) / "arm_ui" / "actions" / f"{side}__{_safe_filename(action_name)}.yaml",
+        speed_scale=speed_scale,
+    )
 
 
 def sample_solved_action(solution: SolvedRelativeAction, elapsed: float) -> np.ndarray:

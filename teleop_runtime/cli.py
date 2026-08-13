@@ -14,7 +14,10 @@ from pico_bimanual_franka_teleop.config import load_config
 from pico_bimanual_franka_teleop.hand_worker import HandWorker
 from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
 from pico_bimanual_franka_teleop.preset_ik_client import invoke_preset_ik
-from pico_bimanual_franka_teleop.relative_action import load_preset_actions
+from pico_bimanual_franka_teleop.relative_action import (
+    load_preset_actions,
+    selected_task_id,
+)
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -283,7 +286,12 @@ def main() -> None:
         OperatorControlServer,
     )
 
-    ui = OperatorConsole()
+    ui = OperatorConsole(
+        preset_actions,
+        preset_config=args.preset_config,
+        preset_data_root=args.preset_data_root,
+        selected_task=selected_task_id(args.preset_config),
+    )
     server = OperatorControlServer((args.control_host, args.control_port), ui)
     server.start()
     print(

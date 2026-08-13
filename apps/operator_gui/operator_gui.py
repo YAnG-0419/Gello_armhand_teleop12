@@ -16,13 +16,15 @@ import json
 import sys
 import time
 
-from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -34,9 +36,12 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from apps.operator_gui.camera_view import CameraView
 
 POLL_INTERVAL_MS = 500
 RECONNECT_INTERVAL_MS = 2000
@@ -49,7 +54,7 @@ PEDAL_BINDINGS = {
     "A": ("toggle", "arm", "right"),
     "B": ("toggle", "hand", "right"),
 }
-PRESET_KEYS = ("Q", "W", "E")
+PRESET_KEYS = ("Q",)
 HAND_KEY_HINTS = {"left": "R", "right": "B"}
 
 
@@ -88,6 +93,59 @@ class ConnectionDialog(QDialog):
 
     def endpoint(self) -> tuple[str, int]:
         return self.host_field.text().strip(), self.port_field.value()
+
+
+class TaskDialog(QDialog):
+    def __init__(self, actions: list[dict], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("新增或更新轨迹任务")
+        self.setMinimumWidth(440)
+        self.task_id = QLineEdit()
+        self.task_id.setPlaceholderText("例如 powder_scoop（保存后不建议修改）")
+        self.label = QLineEdit()
+        self.label.setPlaceholderText("例如 粉末称量")
+        self.action = QComboBox()
+        for item in actions:
+            side, name = str(item["side"]), str(item["name"])
+            self.action.addItem(f"{side} · {name}", (side, name))
+        self.action.setEditable(not actions)
+        if not actions:
+            self.action.setPlaceholderText("请先在轨迹示教 UI 中录制动作")
+        self.speed = QDoubleSpinBox()
+        self.speed.setRange(5.0, 100.0)
+        self.speed.setValue(15.0)
+        self.speed.setSuffix(" %")
+        form = QFormLayout()
+        form.addRow("任务 ID", self.task_id)
+        form.addRow("显示名称", self.label)
+        form.addRow("动作轨迹", self.action)
+        form.addRow("执行速度", self.speed)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Save).setText("保存任务")
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def _accept_if_valid(self) -> None:
+        if not self.task_id.text().strip() or not self.label.text().strip():
+            QMessageBox.warning(self, "信息不完整", "请填写任务 ID 和显示名称。")
+            return
+        if self.action.currentData() is None:
+            QMessageBox.warning(self, "没有轨迹", "请先在轨迹示教 UI 中录制动作。")
+            return
+        self.accept()
+
+    def payload(self) -> dict:
+        side, action = self.action.currentData()
+        return {
+            "task_id": self.task_id.text().strip(),
+            "label": self.label.text().strip(),
+            "side": side,
+            "action": action,
+            "speed_scale": self.speed.value() / 100.0,
+        }
 
 
 class OperatorWindow(QMainWindow):
@@ -146,7 +204,11 @@ class OperatorWindow(QMainWindow):
         connection_menu.addAction(quit_action)
 
         root = QWidget(self)
-        layout = QVBoxLayout(root)
+        root_layout = QVBoxLayout(root)
+        tabs = QTabWidget()
+        control_tab = QWidget()
+        layout = QVBoxLayout(control_tab)
+        tabs.addTab(control_tab, "遥操作与任务")
 
         layout.addWidget(QLabel("System status"))
         self.status_label = QPlainTextEdit("-")
@@ -241,25 +303,27 @@ class OperatorWindow(QMainWindow):
         actions.addWidget(home_both)
         layout.addLayout(actions)
 
-        preset_box = QGroupBox("Preset relative actions — 65% speed")
+        preset_box = QGroupBox("轨迹任务 · Q 脚踏触发当前选择")
         preset_layout = QHBoxLayout(preset_box)
-        self.preset_buttons: dict[str, QPushButton] = {}
-        preset_labels = {
-            "q": "Preset 1: left kuai1 (Q)",
-            "w": "Preset 2: unconfigured (W)",
-            "e": "Preset 3: unconfigured (E)",
-        }
-        for key in ("q", "w", "e"):
-            button = self._button(
-                preset_labels[key], "run_preset", {"key": key}
-            )
-            button.setMinimumHeight(48)
-            button.setToolTip(
-                "Rebase the saved relative tool path at the current measured "
-                "end-effector pose, precheck every IK frame, then execute once."
-            )
-            self.preset_buttons[key] = button
-            preset_layout.addWidget(button)
+        self.task_select = QComboBox()
+        self.task_select.setMinimumHeight(48)
+        self.task_select.setMinimumWidth(280)
+        self.task_select.currentIndexChanged.connect(self._select_task)
+        preset_layout.addWidget(self.task_select, stretch=2)
+        run_task = self._button("执行当前任务 (Q)", "run_selected_task")
+        run_task.setMinimumHeight(48)
+        run_task.setToolTip("从真实当前位置重定位轨迹，完整 IK 预检通过后执行一次")
+        preset_layout.addWidget(run_task)
+        add_task = QPushButton("新增/更新任务")
+        add_task.setFocusPolicy(Qt.NoFocus)
+        add_task.clicked.connect(self._open_task_dialog)
+        preset_layout.addWidget(add_task)
+        refresh_actions = self._button("刷新轨迹", "refresh_actions")
+        preset_layout.addWidget(refresh_actions)
+        teach_action = QPushButton("打开轨迹示教")
+        teach_action.setFocusPolicy(Qt.NoFocus)
+        teach_action.clicked.connect(self._open_arm_ui)
+        preset_layout.addWidget(teach_action)
         stop_action = self._button("STOP PRESET", "stop_action")
         stop_action.setMinimumHeight(48)
         stop_action.setStyleSheet(
@@ -283,11 +347,32 @@ class OperatorWindow(QMainWindow):
         self.feedback.setPlaceholderText("Backend messages will appear here.")
         layout.addWidget(self.feedback, stretch=1)
 
+        camera_tab = QWidget()
+        camera_layout = QVBoxLayout(camera_tab)
+        camera_layout.addWidget(QLabel("相机监看（画面与机器人控制完全解耦）"))
+        self.camera_view = CameraView(f"http://{self.host}:8091")
+        camera_layout.addWidget(self.camera_view, stretch=1)
+        tabs.addTab(camera_tab, "相机")
+        root_layout.addWidget(tabs)
+
         self.setCentralWidget(root)
         self.connection_indicator = QLabel()
         self.connection_indicator.setContentsMargins(4, 0, 4, 0)
         self.statusBar().addPermanentWidget(self.connection_indicator)
         self.resize(980, 900)
+
+    def _open_arm_ui(self) -> None:
+        QDesktopServices.openUrl(QUrl(f"http://{self.host}:8081"))
+
+    def _open_task_dialog(self) -> None:
+        dialog = TaskDialog(getattr(self, "available_actions", []), self)
+        if dialog.exec() == QDialog.Accepted:
+            self._send("configure_task", dialog.payload())
+
+    def _select_task(self) -> None:
+        task_id = self.task_select.currentData()
+        if task_id and self.connection_state == "connected":
+            self._send("select_task", {"task_id": task_id})
 
     def _confirm_capture_home(self, side: str) -> None:
         """Confirm before overwriting one arm's persisted Home pose."""
@@ -366,18 +451,19 @@ class OperatorWindow(QMainWindow):
             shortcut.activated.connect(slot)
             self.shortcuts.append(shortcut)
         self.preset_shortcuts = []
-        for key in PRESET_KEYS:
-            shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.setContext(Qt.WindowShortcut)
-            shortcut.setAutoRepeat(False)
-            shortcut.activated.connect(
-                lambda selected=key.lower(): self._shortcut_preset(selected)
-            )
-            self.preset_shortcuts.append(shortcut)
+        shortcut = QShortcut(QKeySequence("Q"), self)
+        shortcut.setContext(Qt.WindowShortcut)
+        shortcut.setAutoRepeat(False)
+        shortcut.activated.connect(self._shortcut_task)
+        self.preset_shortcuts.append(shortcut)
 
     def _shortcut_preset(self, key: str) -> None:
         if self.connection_state == "connected":
             self._send("run_preset", {"key": key})
+
+    def _shortcut_task(self) -> None:
+        if self.connection_state == "connected":
+            self._send("run_selected_task")
 
     def _shortcut_toggle_engage(self, side: str, target: str = "arm") -> None:
         if self.connection_state != "connected":
@@ -525,6 +611,7 @@ class OperatorWindow(QMainWindow):
             self.settings.setValue("host", self.host)
             self.settings.setValue("port", self.port)
             self.setWindowTitle(f"Teleop operator - {self.host}:{self.port}")
+            self.camera_view.set_base_url(f"http://{self.host}:8091")
             self._connect()
         elif self.connection_state == "disconnected":
             self.reconnect_timer.start()
@@ -582,6 +669,34 @@ class OperatorWindow(QMainWindow):
         if self.connection_state != "connected":
             self._set_connection_state("connected")
         self.status_label.setPlainText(str(status.get("status_line", "-")))
+        tasks = status.get("tasks", [])
+        selected_task = status.get("selected_task")
+        signature = tuple(
+            (
+                item.get("id"),
+                item.get("label"),
+                item.get("side"),
+                bool(item.get("available")),
+            )
+            for item in tasks
+        )
+        if getattr(self, "_task_signature", None) != signature:
+            self._task_signature = signature
+            self.task_select.blockSignals(True)
+            self.task_select.clear()
+            for item in tasks:
+                suffix = "" if item.get("available") else " · 轨迹缺失"
+                self.task_select.addItem(
+                    f"{item.get('label')} · {item.get('side')}{suffix}", item.get("id")
+                )
+            self.task_select.blockSignals(False)
+        if selected_task:
+            index = self.task_select.findData(selected_task)
+            if index >= 0 and index != self.task_select.currentIndex():
+                self.task_select.blockSignals(True)
+                self.task_select.setCurrentIndex(index)
+                self.task_select.blockSignals(False)
+        self.available_actions = list(status.get("available_actions", []))
         active = status.get("active", {})
         for side, button in self.arm_engage_buttons.items():
             engaged = bool(active.get(side))
@@ -615,6 +730,10 @@ class OperatorWindow(QMainWindow):
             self.feedback.verticalScrollBar().setValue(
                 self.feedback.verticalScrollBar().maximum()
             )
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.camera_view.stop()
+        super().closeEvent(event)
 
 
 def main() -> int:

@@ -6,6 +6,8 @@ import pytest
 from pico_bimanual_franka_teleop.relative_action import (
     SolvedRelativeAction,
     load_preset_actions,
+    save_preset_task,
+    selected_task_id,
     sample_solved_action,
 )
 
@@ -41,3 +43,21 @@ def test_solved_action_interpolates_at_scaled_time():
 
     np.testing.assert_allclose(sample_solved_action(solution, 1.0), [0.5] * 7)
     assert solution.duration_sec == pytest.approx(4.0)
+
+
+def test_named_task_is_atomically_persisted_and_loaded(tmp_path):
+    config = tmp_path / "presets.yaml"
+    config.write_text("slots: {q: null, w: null, e: null}\n", encoding="utf-8")
+    task = save_preset_task(
+        config,
+        tmp_path / "data",
+        task_id="powder_weighing",
+        label="粉末称量",
+        side="left",
+        action_name="scoop",
+        speed_scale=0.2,
+    )
+
+    loaded = load_preset_actions(config, tmp_path / "data")
+    assert loaded["powder_weighing"] == task
+    assert selected_task_id(config) == "powder_weighing"

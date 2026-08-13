@@ -282,6 +282,17 @@ services:
       - enable_point_cloud:=false
       - enable_colored_point_cloud:=false
 
+  camera-view:
+    <<: *runtime
+    command:
+      - python3
+      - -m
+      - apps.operator_gui.camera_stream_server
+      - --camera
+      - gemini435le=/camera/color/image_raw/compressed
+      - --camera
+      - camera305=/camera305/color/image_raw/compressed
+
   tools:
     <<: *runtime
     profiles: [tools]

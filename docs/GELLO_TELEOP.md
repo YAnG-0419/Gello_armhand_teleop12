@@ -122,12 +122,27 @@ arm and hand followers while the reset trajectory owns the command path.
 window must have keyboard focus for these ordinary keyboard-emulating pedals;
 hardware emergency stopping remains separate.
 
-### Preset relative actions
+### Selectable trajectory tasks
 
-The Operator GUI exposes preset slots `Q`, `W`, and `E`. Slot configuration is
-in `config/preset_actions.yaml`; `Q` currently resolves the Arm UI recording
-`left__kuai1.yaml` at 65% speed, while `W` and `E` are intentionally empty. A
-missing or empty slot reports in the event log and sends no arm command.
+The Operator GUI now has a named task selector. `Q` is the single task pedal:
+it always triggers the task currently shown in the selector. The selected task
+is resolved by the backend, not by sending joint arrays from the GUI. It still
+uses the existing current-pose rebase, full MoveIt IK/collision precheck,
+100 Hz safety-gateway path, GELLO-motion interruption, and STOP behavior.
+
+Use **打开轨迹示教** to open Arm UI on port 8081 and record a new relative
+action in the existing format. Then click **刷新轨迹** and **新增/更新任务** to
+give that action an operator-facing task name, side, and speed. Task definitions
+are atomically persisted in `config/preset_actions.yaml`; the recorded samples
+remain under `${TELEOP_DATA_ROOT}/arm_ui/actions`.
+
+### Legacy preset relative actions
+
+The backend retains legacy preset slots `Q`, `W`, and `E` for protocol and
+configuration compatibility. New GUI operation uses the named task selector
+and the single `Q` task pedal. Slot configuration remains in
+`config/preset_actions.yaml`; a missing action reports in the event log and
+sends no arm command.
 
 On trigger, the selected arm temporarily disengages from GELLO. The long-lived
 `preset-ik` service (on `127.0.0.1:5591`, off the Franka realtime CPUs) asks

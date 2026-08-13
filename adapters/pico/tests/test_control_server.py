@@ -8,6 +8,7 @@ from pico_bimanual_franka_teleop.control_server import (
     OperatorConsole,
     OperatorControlServer,
 )
+from pico_bimanual_franka_teleop.relative_action import PresetAction
 
 
 def test_console_matches_the_input_source_contract():
@@ -171,3 +172,24 @@ def test_only_the_last_frontend_disconnect_disengages():
         first.close()
         second.close()
         server.close()
+
+
+def test_selected_named_task_is_a_one_shot_request(tmp_path):
+    action = PresetAction(
+        key="powder",
+        label="Powder",
+        side="left",
+        action_name="scoop",
+        path=tmp_path / "left__scoop.yaml",
+        speed_scale=0.15,
+    )
+    console = OperatorConsole({"powder": action}, selected_task="powder")
+    server = OperatorControlServer(("127.0.0.1", 0), console)
+    try:
+        snapshot = server.dispatch("status", {})
+        assert snapshot["selected_task"] == "powder"
+        server.dispatch("run_selected_task", {})
+        assert console.take_requests()["preset_task"] == "powder"
+        assert console.take_requests()["preset_task"] is None
+    finally:
+        server.server_close()

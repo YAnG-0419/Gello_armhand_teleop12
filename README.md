@@ -13,6 +13,12 @@
 
 默认模式不启动相机或数据记录。
 
+Operator GUI 已提供独立的相机页和可切换轨迹任务。相机页通过 ROS 容器内的
+`camera-view` 最新帧桥接显示 Gemini 435Le/可配置的 305 相机，不把相机解码或
+ROS 驱动放进遥操作控制进程；任务页用同一个 `Q` 脚踏键触发当前选择的轨迹。
+详细配置见 [Orbbec 相机文档](docs/ORBBEC_CAMERA.md) 和
+[GELLO 遥操作文档](docs/GELLO_TELEOP.md)。
+
 ## 代码结构
 
 ```text

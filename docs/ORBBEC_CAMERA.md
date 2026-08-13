@@ -42,6 +42,32 @@ docker compose exec orbbec timeout 15 ros2 topic hz /camera/depth/image_raw
 
 Expected topics are `/camera/color/image_raw`, `/camera/color/camera_info`, `/camera/depth/image_raw`, and `/camera/depth/camera_info`. The configured source rate is 10 FPS; Python `ros2 topic hz` can under-report while deserializing 1280×800 images, so `/camera/device_status` is the authoritative source counter.
 
+## Operator GUI camera tab
+
+The desktop Operator GUI deliberately does not load an Orbbec or ROS driver.
+Start the lightweight snapshot bridge beside the camera driver:
+
+```bash
+cd /home/descfly/llx/gello_upper_body_teleop/docker
+docker compose up -d orbbec camera-view
+```
+
+The bridge subscribes to compressed ROS images and exposes only the newest JPEG
+on host port `8091`. The GUI polls at at most 8 FPS with one request in flight,
+so a slow remote display cannot queue old frames or block robot control. It
+automatically shows an offline placeholder and reconnects when frames return.
+
+The default camera selectors are:
+
+- `Gemini 435Le`: `/camera/color/image_raw/compressed`
+- `305 相机`: `/camera305/color/image_raw/compressed`
+
+The second namespace is intentionally configurable because the exact 305
+driver/launch model has not been verified on this development computer. After
+installing that camera's ROS driver, change only the second `--camera` argument
+under the `camera-view` service in `docker/compose.yaml` to its compressed color
+topic. Keep each physical camera in a distinct ROS namespace.
+
 The image pins the SDK v2 ROS wrapper and applies `docker/patches/orbbec_ros2_skip_uvc_for_network.patch`; removing that patch causes the Ethernet camera to fail on an irrelevant USB/UVC initialization.
 
 ## Viewer

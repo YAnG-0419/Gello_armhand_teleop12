@@ -17,10 +17,14 @@ returns the loop's latest published snapshot.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import socketserver
 import threading
 import time
 
+import yaml
+
+from .relative_action import PresetAction, save_preset_task
 from .types import SIDES
 
 
@@ -31,7 +35,14 @@ class OperatorConsole:
     the `status` command serves to frontends.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        preset_actions: dict[str, PresetAction | None] | None = None,
+        *,
+        preset_config: str | Path | None = None,
+        preset_data_root: str | Path | None = None,
+        selected_task: str | None = None,
+    ) -> None:
         self.sides = SIDES
         # `active` remains the arm activation map for compatibility with every
         # existing arm input source. Hands have independent ownership so a
@@ -50,12 +61,23 @@ class OperatorConsole:
             "preset_q": False,
             "preset_w": False,
             "preset_e": False,
+            "preset_task": None,
             "stop_action": False,
             "abort_action": False,
         }
         self._status_line = "starting..."
         self._feedback: list[str] = []
         self._lock = threading.Lock()
+        self._preset_actions = preset_actions if preset_actions is not None else {}
+        self._preset_config = Path(preset_config) if preset_config is not None else None
+        self._preset_data_root = (
+            Path(preset_data_root) if preset_data_root is not None else None
+        )
+        self._available_actions = self._scan_actions()
+        named = [key for key in self._preset_actions if key not in {"q", "w", "e"}]
+        self._selected_task = (
+            selected_task if selected_task in named else (named[0] if named else None)
+        )
 
     # -- operator-state interface ----------------------------------------
     # Every mutation happens under the lock: the server thread writes while
@@ -72,10 +94,12 @@ class OperatorConsole:
         with self._lock:
             return dict(self.hand_active)
 
-    def take_requests(self) -> dict[str, bool]:
+    def take_requests(self) -> dict[str, object]:
         with self._lock:
             taken = self.requests
-            self.requests = {name: False for name in taken}
+            self.requests = {
+                name: None if name == "preset_task" else False for name in taken
+            }
         return taken
 
     def set_active(self, side: str, engaged: bool, *, target: str = "both") -> None:
@@ -94,6 +118,65 @@ class OperatorConsole:
             if name not in self.requests:
                 raise ValueError(f"Unknown request: {name}")
             self.requests[name] = True
+
+    def request_task(self, task_id: str | None = None) -> None:
+        with self._lock:
+            selected = str(task_id or self._selected_task or "")
+            if selected not in self._preset_actions or selected in {"q", "w", "e"}:
+                raise ValueError("select a configured task first")
+            self.requests["preset_task"] = selected
+
+    def select_task(self, task_id: str) -> None:
+        with self._lock:
+            if task_id not in self._preset_actions or task_id in {"q", "w", "e"}:
+                raise ValueError(f"unknown task: {task_id}")
+            self._selected_task = task_id
+
+    def preset_action(self, task_id: str) -> PresetAction | None:
+        with self._lock:
+            return self._preset_actions.get(task_id)
+
+    def configure_task(self, arguments: dict) -> dict:
+        if self._preset_config is None or self._preset_data_root is None:
+            raise RuntimeError("task editing is not configured on this backend")
+        task = save_preset_task(
+            self._preset_config,
+            self._preset_data_root,
+            task_id=str(arguments.get("task_id", "")),
+            label=str(arguments.get("label", "")),
+            side=str(arguments.get("side", "")),
+            action_name=str(arguments.get("action", "")),
+            speed_scale=float(arguments.get("speed_scale", 0.15)),
+        )
+        with self._lock:
+            self._preset_actions[task.key] = task
+            self._selected_task = task.key
+        self.show(f"task configured: {task.label}")
+        self.refresh_actions()
+        return {"task_id": task.key}
+
+    def _scan_actions(self) -> list[dict]:
+        if self._preset_data_root is None:
+            return []
+        root = self._preset_data_root / "arm_ui" / "actions"
+        result = []
+        for path in sorted(root.glob("*.yaml")):
+            try:
+                with path.open("r", encoding="utf-8") as stream:
+                    data = yaml.safe_load(stream) or {}
+                side = str(data.get("side", ""))
+                name = str(data.get("name", "")).strip()
+                if side in SIDES and name:
+                    result.append({"side": side, "name": name})
+            except (OSError, TypeError, ValueError, yaml.YAMLError):
+                continue
+        return result
+
+    def refresh_actions(self) -> dict:
+        actions = self._scan_actions()
+        with self._lock:
+            self._available_actions = actions
+        return {"count": len(actions)}
 
     def disable_all(self, reason: str) -> None:
         with self._lock:
@@ -128,13 +211,31 @@ class OperatorConsole:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return {
+            available = {
+                (item["side"], item["name"]) for item in self._available_actions
+            }
+            snapshot = {
                 "status_line": self._status_line,
                 "feedback": list(self._feedback),
                 "active": dict(self.active),
                 "hand_active": dict(self.hand_active),
                 "sides": list(self.sides),
+                "selected_task": self._selected_task,
+                "tasks": [
+                    {
+                        "id": key,
+                        "label": action.label,
+                        "side": action.side,
+                        "action": action.action_name,
+                        "speed_scale": action.speed_scale,
+                        "available": (action.side, action.action_name) in available,
+                    }
+                    for key, action in self._preset_actions.items()
+                    if key not in {"q", "w", "e"} and action is not None
+                ],
+                "available_actions": list(self._available_actions),
             }
+        return snapshot
 
 
 class _RequestHandler(socketserver.StreamRequestHandler):
@@ -280,6 +381,12 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
             "run_preset": lambda: self.keyboard.request(
                 f"preset_{_require_preset(arguments)}"
             ),
+            "select_task": lambda: self.keyboard.select_task(
+                str(arguments.get("task_id", ""))
+            ),
+            "run_selected_task": lambda: self.keyboard.request_task(),
+            "configure_task": lambda: self.keyboard.configure_task(arguments),
+            "refresh_actions": self.keyboard.refresh_actions,
             "stop_action": lambda: self.keyboard.request("stop_action"),
         }
         handler = commands.get(command)

@@ -30,7 +30,7 @@ def test_five_pedal_bindings_match_the_workcell_layout():
         "A": ("toggle", "arm", "right"),
         "B": ("toggle", "hand", "right"),
     }
-    assert PRESET_KEYS == ("Q", "W", "E")
+    assert PRESET_KEYS == ("Q",)
 
 
 def test_shortcuts_send_independent_arm_hand_and_home_both_commands(tmp_path):
@@ -96,7 +96,7 @@ def test_record_home_sends_per_side_command_only_while_arm_is_stopped(tmp_path):
     assert "stop the right arm first" in window.feedback.toPlainText()
 
 
-def test_preset_shortcuts_send_q_w_e_slots(tmp_path):
+def test_task_pedal_runs_current_selection(tmp_path):
     QSettings.setPath(
         QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
     )
@@ -121,9 +121,7 @@ def test_preset_shortcuts_send_q_w_e_slots(tmp_path):
         window.close()
 
     assert sent == [
-        ("run_preset", {"key": "q"}),
-        ("run_preset", {"key": "w"}),
-        ("run_preset", {"key": "e"}),
+        ("run_selected_task", {}),
     ]
 
 
