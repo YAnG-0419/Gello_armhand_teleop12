@@ -9,10 +9,11 @@ if [[ ! -x ${viewer} ]]; then
   echo "Orbbec SDK v2 Viewer is missing: ${viewer}" >&2
   exit 1
 fi
-if docker compose --file "${repo}/docker/compose.yaml" \
-    ps --status running --services | grep -Fxq orbbec; then
-  echo "The ROS Orbbec service is running; stop it before opening Viewer:" >&2
-  echo "  docker compose --file ${repo}/docker/compose.yaml stop orbbec" >&2
+running_cameras=$(docker compose --file "${repo}/docker/compose.yaml" \
+    ps --status running --services | grep -E '^(orbbec|orbbec-305)$' || true)
+if [[ -n ${running_cameras} ]]; then
+  echo "A ROS Orbbec service is running; stop it before opening Viewer:" >&2
+  echo "  docker compose --file ${repo}/docker/compose.yaml stop orbbec orbbec-305" >&2
   exit 1
 fi
 if pgrep -x OrbbecViewer >/dev/null; then

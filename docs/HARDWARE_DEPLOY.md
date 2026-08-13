@@ -18,7 +18,7 @@ Terminal 1:
 
 ```bash
 cd /home/descfly/llx/gello_upper_body_teleop/docker
-docker compose up franka-control teleop-control moveit-ik preset-ik gello-bridge hand-control
+docker compose up franka-control teleop-control moveit-ik preset-ik gello-bridge hand-control orbbec orbbec-305
 ```
 
 Terminal 2:
@@ -152,16 +152,18 @@ docker compose run --rm -T tools bash -lc \
 
 ## Camera
 
-The default Compose stack includes Orbbec. For camera-only diagnosis:
+The default Compose stack includes both Orbbec cameras: Ethernet Gemini 435Le (`/camera/*`) and USB Gemini 305 (`/gemini305/*`). For camera-only diagnosis:
 
 ```bash
 cd /home/descfly/llx/gello_upper_body_teleop/docker
-docker compose up -d orbbec
-docker compose logs -f orbbec
-docker compose run --rm tools ros2 topic list | grep '^/camera/'
+docker compose up -d orbbec orbbec-305
+docker compose logs -f orbbec orbbec-305
+docker compose run --rm tools ros2 topic list | grep -E '^/(camera|gemini305)/'
 ```
 
-Expected images are `/camera/color/image_raw` and `/camera/depth/image_raw`. Do not run OrbbecViewer while ROS owns the camera; network recovery is in [ORBBEC_CAMERA.md](ORBBEC_CAMERA.md).
+Expected scene images are `/camera/color/image_raw` and `/camera/depth/image_raw`. Expected USB images are `/gemini305/color/image_raw` and `/gemini305/depth/image_raw`. Do not run OrbbecViewer while ROS owns either camera; recovery is in [ORBBEC_CAMERA.md](ORBBEC_CAMERA.md).
+
+Plug the Gemini 305 Type-C cable into a USB 3.0 port before `orbbec-305` starts. Confirm with `lsusb | grep -i 2bc5`.
 
 ## Record
 

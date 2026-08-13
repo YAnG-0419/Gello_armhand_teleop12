@@ -56,4 +56,8 @@ conda run --no-capture-output -n base python -c \
   docker compose config --quiet
 )
 echo "[PASS] Docker Compose configuration"
+
+if ! "$REPO_ROOT/ops/diagnostics/check_orbbec_cameras.sh"; then
+  echo "[WARN] Camera preflight reported a failure; teleop can still start, but recording will miss required RGB-D until the 435Le is up."
+fi
 echo "Preflight passed. No robot, hand, or motor command was sent."

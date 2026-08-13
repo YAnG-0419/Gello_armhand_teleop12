@@ -94,7 +94,7 @@ After the ordinary Docker build and GELLO preflight:
 
 ```bash
 cd docker
-docker compose up franka-control teleop-control moveit-ik preset-ik gello-bridge hand-control
+docker compose up franka-control teleop-control moveit-ik preset-ik gello-bridge hand-control orbbec orbbec-305
 ```
 
 In another terminal:

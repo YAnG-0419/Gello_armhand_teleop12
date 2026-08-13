@@ -21,6 +21,9 @@ from pico_bimanual_franka_teleop.relative_action import (
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_repo_root = str(REPO_ROOT)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 
 def invoke_reset(side: str | None = None) -> tuple[bool, str]:

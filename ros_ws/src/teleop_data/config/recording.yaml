@@ -70,3 +70,19 @@ topics:
     topic: /camera/depth/camera_info
     type: sensor_msgs/msg/CameraInfo
     required: true
+  gemini305_color:
+    topic: /gemini305/color/image_raw
+    type: sensor_msgs/msg/Image
+    required: false
+  gemini305_color_info:
+    topic: /gemini305/color/camera_info
+    type: sensor_msgs/msg/CameraInfo
+    required: false
+  gemini305_depth:
+    topic: /gemini305/depth/image_raw
+    type: sensor_msgs/msg/Image
+    required: false
+  gemini305_depth_info:
+    topic: /gemini305/depth/camera_info
+    type: sensor_msgs/msg/CameraInfo
+    required: false

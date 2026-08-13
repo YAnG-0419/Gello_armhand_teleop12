@@ -1,55 +1,59 @@
-# Orbbec Gemini 435Le
+# Orbbec cameras
 
-Verified hardware: Gemini 435Le `CP4E46300048`, camera `192.168.1.10:8090`, host camera address `192.168.1.53/24`.
+This workcell uses two cameras:
 
-## Network
+| Camera | Link | ROS namespace |
+|--------|------|----------------|
+| Gemini 435Le | Ethernet `192.168.35.35:8090` on `enp2s0f3` | `/camera` |
+| Gemini 305 | USB Type-C, VID `2bc5` | `/gemini305` |
 
-The camera is Ethernet/PoE, so it does not appear in `lsusb` or `/dev/video*`. Discovery can work across a misconfigured host while streams still fail; the host needs an address on `192.168.1.0/24`.
+The 435Le is Ethernet/PoE, so it does not appear in `lsusb` or `/dev/video*`. The 305 is powered and streamed through the same Type-C cable (`DC 5V ≥ 700 mA`, USB 3.0 recommended).
 
-The current `Wired connection 1` profile carries both `172.16.0.6/24` for FR3 and `192.168.1.53/24` for the camera. Verify without changing the live interface:
+Verified 435Le on this host: serial `CP4N5630008Z`. Verified 305: serial `CV2T661000EV` on USB 3.2. Older notes used 435Le `CP4E46300048` at `192.168.1.10`.
 
-```bash
-nmcli -g ipv4.addresses connection show 'Wired connection 1'
-ip -4 -br address show dev enp6s0
-nc -vz -w 3 192.168.1.10 8090
-```
+## Network (435Le)
 
-If the persistent camera address is missing, add it only while FCI is stopped:
-
-```bash
-nmcli connection modify 'Wired connection 1' ipv4.addresses '172.16.0.6/24,192.168.1.53/24' ipv4.method manual
-nmcli device modify enp6s0 +ipv4.addresses 192.168.1.53/24
-```
-
-Rollback:
+Discovery can work across a misconfigured host while streams still fail. This workstation's camera NIC is `enp2s0f3` (`camera`, `192.168.35.6/16`). Verify without changing a live FCI interface:
 
 ```bash
-nmcli connection modify 'Wired connection 1' ipv4.addresses '172.16.0.6/24'
-nmcli device modify enp6s0 -ipv4.addresses 192.168.1.53/24
+ip -4 -br address show dev enp2s0f3
+nc -vz -w 3 192.168.35.35 8090
+lsusb | grep -iE '2bc5|orbbec'
 ```
 
-Never bounce or reconfigure `enp6s0` during an active FCI session.
+Never bounce or reconfigure a Franka NIC during an active FCI session.
+
+## USB (305)
+
+```bash
+lsusb | grep -iE '2bc5|orbbec'
+```
+
+Plug the Type-C cable into a USB 3.0 port. Charge-only cables will not enumerate. If ROS already owns the camera, unplug/replug will not help until `orbbec-305` is stopped.
 
 ## ROS
 
 ```bash
-cd /home/descfly/llx/gello_upper_body_teleop/docker
-docker compose up -d orbbec
-docker compose logs -f orbbec
-docker compose exec orbbec timeout 15 ros2 topic hz /camera/color/image_raw
-docker compose exec orbbec timeout 15 ros2 topic hz /camera/depth/image_raw
+cd docker
+docker compose up -d orbbec orbbec-305
+docker compose logs -f orbbec orbbec-305
 ```
 
-Expected topics are `/camera/color/image_raw`, `/camera/color/camera_info`, `/camera/depth/image_raw`, and `/camera/depth/camera_info`. The configured source rate is 10 FPS; Python `ros2 topic hz` can under-report while deserializing 1280×800 images, so `/camera/device_status` is the authoritative source counter.
+Expected 435Le topics: `/camera/color/image_raw`, `/camera/color/camera_info`, `/camera/depth/image_raw`, `/camera/depth/camera_info`.
+Expected 305 topics: the same names under `/gemini305`.
+
+The 435Le source rate is 10 FPS; Python `ros2 topic hz` can under-report while deserializing 1280×800 images, so `/camera/device_status` is the authoritative source counter.
+
+The image pins the SDK v2 ROS wrapper and applies `docker/patches/orbbec_ros2_skip_uvc_for_network.patch` only when a network IP is set. The USB 305 launch does not set that IP, so it still initializes libuvc.
 
 ## Operator GUI camera tab
 
 The desktop Operator GUI deliberately does not load an Orbbec or ROS driver.
-Start the lightweight snapshot bridge beside the camera driver:
+Start the lightweight snapshot bridge beside the camera drivers:
 
 ```bash
-cd /home/descfly/llx/gello_upper_body_teleop/docker
-docker compose up -d orbbec camera-view
+cd docker
+docker compose up -d orbbec orbbec-305 camera-view
 ```
 
 The bridge subscribes to compressed ROS images and exposes only the newest JPEG
@@ -60,27 +64,18 @@ automatically shows an offline placeholder and reconnects when frames return.
 The default camera selectors are:
 
 - `Gemini 435Le`: `/camera/color/image_raw/compressed`
-- `305 相机`: `/camera305/color/image_raw/compressed`
-
-The second namespace is intentionally configurable because the exact 305
-driver/launch model has not been verified on this development computer. After
-installing that camera's ROS driver, change only the second `--camera` argument
-under the `camera-view` service in `docker/compose.yaml` to its compressed color
-topic. Keep each physical camera in a distinct ROS namespace.
-
-The image pins the SDK v2 ROS wrapper and applies `docker/patches/orbbec_ros2_skip_uvc_for_network.patch`; removing that patch causes the Ethernet camera to fail on an irrelevant USB/UVC initialization.
+- `305 相机`: `/gemini305/color/image_raw/compressed`
 
 ## Viewer
 
-Stop the ROS camera service first, then run:
+Stop both ROS camera services first, then run:
 
 ```bash
-cd /home/descfly/llx/gello_upper_body_teleop
 ./ops/run/start_orbbec_viewer.sh
 ```
 
-Use the SDK v2 viewer selected by the script, not the old SDK v1 download. Only one Viewer or ROS client may own the camera.
+Use the SDK v2 viewer selected by the script. Only one Viewer or ROS client may own a given camera.
 
 ## FCI isolation
 
-RGB-D traffic and the 1 kHz Franka sessions currently share `enp6s0`. Basic streaming and ping checks passed, but they do not prove worst-case FCI timing. Production data collection should put `192.168.1.53/24` on a dedicated Gigabit NIC and confirm `ip route get 192.168.1.10` selects it.
+Keep RGB-D traffic on `enp2s0f3`. Confirm `ip route get 192.168.35.35` selects that NIC.

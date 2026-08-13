@@ -276,8 +276,28 @@ services:
       - orbbec_camera
       - gemini435_le.launch.py
       - enumerate_net_device:=false
-      - net_device_ip:=192.168.1.10
-      - net_device_port:=8090
+      - net_device_ip:=${ORBBEC_NET_DEVICE_IP:-192.168.1.10}
+      - net_device_port:=${ORBBEC_NET_DEVICE_PORT:-8090}
+      - connection_delay:=1
+      - enable_point_cloud:=false
+      - enable_colored_point_cloud:=false
+
+  orbbec-305:
+    <<: *runtime
+    # USB Type-C Gemini 305. Privileged /dev access is required; do not share
+    # the 435Le /camera namespace or the Ethernet camera will be stolen.
+    privileged: true
+    volumes:
+      - ..:/workspace/franka_upper_body_teleop
+      - ${TELEOP_DATA_ROOT:?Missing TELEOP_DATA_ROOT in docker/.env}:/data
+      - /dev:/dev
+    command:
+      - ros2
+      - launch
+      - orbbec_camera
+      - gemini305.launch.py
+      - camera_name:=gemini305
+      - device_num:=1
       - connection_delay:=1
       - enable_point_cloud:=false
       - enable_colored_point_cloud:=false
@@ -291,7 +311,7 @@ services:
       - --camera
       - gemini435le=/camera/color/image_raw/compressed
       - --camera
-      - camera305=/camera305/color/image_raw/compressed
+      - camera305=/gemini305/color/image_raw/compressed
 
   tools:
     <<: *runtime

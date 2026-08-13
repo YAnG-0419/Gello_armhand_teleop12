@@ -69,4 +69,9 @@ def ensure_ros_free_process() -> None:
         "re-executing without it\n"
     )
     sys.stderr.flush()
-    os.execve(sys.executable, [sys.executable, *sys.argv], environment)
+    # Preserve `python -m package.module`. Rebuilding argv from sys.argv after
+    # -m turns the launch into `python /path/to/module.py`, which puts the
+    # module directory on sys.path instead of the repo root and breaks
+    # `import adapters`.
+    argv = list(getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv])
+    os.execve(sys.executable, argv, environment)

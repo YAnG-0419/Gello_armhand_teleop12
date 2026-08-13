@@ -32,17 +32,21 @@ class EpisodeRecorder(Node):
     def start(self):
         if self.recorder is not None or self.pending is not None:
             raise RuntimeError("Stop and save or discard the current episode first.")
-        errors, warnings = validate_topics(
-            self.config.topics, dict(self.get_topic_names_and_types())
-        )
+        discovered = dict(self.get_topic_names_and_types())
+        errors, warnings = validate_topics(self.config.topics, discovered)
         for warning in warnings:
             self.get_logger().warn(warning)
         if errors:
             raise RuntimeError("Required topics unavailable: " + "; ".join(errors))
+        record_topics = [
+            spec.topic
+            for spec in self.config.topics
+            if spec.required or spec.type_name in discovered.get(spec.topic, [])
+        ]
         self.pending = pending_path(self.data_root)
         self.recorder = BagRecorder(
             self.pending,
-            [spec.topic for spec in self.config.topics],
+            record_topics,
             self.config.storage_id,
             self.qos_path,
         )
