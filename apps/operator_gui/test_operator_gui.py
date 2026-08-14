@@ -60,7 +60,7 @@ def test_shortcuts_send_independent_arm_hand_and_home_both_commands(tmp_path):
     assert sent == [
         ("engage_arm", {"side": "left"}),
         ("engage_hand", {"side": "left"}),
-        ("home_arm", {"side": "both"}),
+        ("home_arm", {"side": "both", "task": "powder_weighing"}),
         ("engage_arm", {"side": "right"}),
         ("engage_hand", {"side": "right"}),
     ]
@@ -92,8 +92,42 @@ def test_record_home_sends_per_side_command_only_while_arm_is_stopped(tmp_path):
         window.socket.abort()
         window.close()
 
-    assert sent == [("capture_home", {"side": "left"})]
+    assert sent == [
+        ("capture_home", {"side": "left", "task": "powder_weighing"})
+    ]
     assert "stop the right arm first" in window.feedback.toPlainText()
+
+
+def test_task_selection_drives_home_and_ready_to_home(tmp_path):
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    sent = []
+    try:
+        window.socket.abort()
+        window.reconnect_timer.stop()
+        window.connection_state = "connected"
+        window._send = lambda command, arguments=None: sent.append(
+            (command, arguments or {})
+        )
+        window.task_selector.setCurrentIndex(
+            window.task_selector.findData("bean_picking")
+        )
+        window._shortcut_home("both")
+        window.ready_to_home_button.setEnabled(True)
+        window.ready_to_home_button.click()
+        application.processEvents()
+    finally:
+        window.poll_timer.stop()
+        window.health_timer.stop()
+        window.reconnect_timer.stop()
+        window.socket.abort()
+        window.close()
+
+    assert sent == [
+        ("home_arm", {"side": "both", "task": "bean_picking"}),
+        ("ready_to_home", {"task": "bean_picking"}),
+    ]
 
 
 def test_preset_shortcuts_send_q_w_e_slots(tmp_path):

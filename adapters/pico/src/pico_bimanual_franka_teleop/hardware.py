@@ -3,6 +3,7 @@ import time
 from dataclasses import replace
 
 import numpy as np
+from operator_tasks import DEFAULT_OPERATOR_TASK, OPERATOR_TASKS
 from teleop_core.safety import LOWER_LIMITS, UPPER_LIMITS
 
 from .ik import BimanualPinkIK, IKError, classify_step
@@ -59,6 +60,9 @@ class DualFr3HardwareTeleop:
         debug_logger=None,
         reset_invoker=None,
         capture_home_invoker=None,
+        ready_invoker=None,
+        ready_to_home_invoker=None,
+        hand_home_store=None,
         preset_actions: dict[str, PresetAction | None] | None = None,
         preset_solver=None,
     ) -> None:
@@ -121,10 +125,16 @@ class DualFr3HardwareTeleop:
         self.reset_invoker = reset_invoker
         self.reset_thread: threading.Thread | None = None
         self.reset_outcome: list[tuple[bool, str]] = []
+        self.reset_hand_targets: dict[str, tuple[float, ...]] | None = None
         self.capture_home_invoker = capture_home_invoker
+        self.ready_invoker = ready_invoker
+        self.ready_to_home_invoker = ready_to_home_invoker
         self.capture_thread: threading.Thread | None = None
         self.capture_side: str | None = None
+        self.capture_task: str | None = None
         self.capture_outcome: list[tuple[bool, str]] = []
+        self.capture_hand_positions: tuple[float, ...] | None = None
+        self.hand_home_store = hand_home_store
         self.preset_actions = preset_actions or {key: None for key in ("q", "w", "e")}
         self.preset_solver = preset_solver
         self.preset_thread: threading.Thread | None = None
@@ -138,7 +148,9 @@ class DualFr3HardwareTeleop:
         self.preset_resume_active = False
         self.preset_leader_anchor: np.ndarray | None = None
 
-    def _start_reset(self, side: str | None = None) -> None:
+    def _start_reset(
+        self, side: str | None = None, task: str = DEFAULT_OPERATOR_TASK
+    ) -> None:
         """Home both arms, or only `side`. Either way the whole session
         disengages for the duration: the reset trajectory owns the command
         bus (the gateway blocks while it is active), so the other arm simply
@@ -154,15 +166,24 @@ class DualFr3HardwareTeleop:
         ):
             self._notify("Home reset/capture is already in progress")
             return
+        hand_targets = None
+        if self.hands is not None and self.hand_home_store is not None:
+            selected_sides = (side,) if side is not None else SIDES
+            try:
+                hand_targets = self.hand_home_store.load(task, selected_sides)
+            except Exception as error:  # noqa: BLE001 - reject before arm motion
+                self._notify(f"Home rejected: {error}")
+                return
         self.operator.disable_all("resetting to initial pose")
         for mapper in self.mappers.values():
             mapper.reset()
         scope = f"{side} arm" if side else "arms"
-        self._notify(f"reset: moving {scope} to the initial pose")
+        self.reset_hand_targets = hand_targets
+        self._notify(f"Home: moving {scope} to {OPERATOR_TASKS[task]}")
 
         def worker() -> None:
             try:
-                outcome = self.reset_invoker(side)
+                outcome = self.reset_invoker(side, task)
             except Exception as error:  # noqa: BLE001 - report, never crash the loop
                 outcome = (False, str(error))
             self.reset_outcome.append(outcome)
@@ -181,7 +202,9 @@ class DualFr3HardwareTeleop:
         self.hands.request_open(sides=selected)
         self._notify("hands: opening " + "/".join(selected))
 
-    def _start_capture_home(self, side: str) -> None:
+    def _start_capture_home(
+        self, side: str, task: str = DEFAULT_OPERATOR_TASK
+    ) -> None:
         """Persist one stopped arm's current measured joints as its Home."""
         if self.capture_home_invoker is None:
             self._notify(
@@ -199,14 +222,28 @@ class DualFr3HardwareTeleop:
         if self.operator.poll().get(side, False):
             self._notify(f"{side} Home capture rejected: stop that arm first")
             return
+        if self.hands is not None and self.operator.poll_hands().get(side, False):
+            self._notify(f"{side} Home capture rejected: stop that hand first")
+            return
+        hand_positions = None
+        if self.hands is not None and self.hand_home_store is not None:
+            try:
+                hand_positions = self.hands.feedback_position(side)
+            except Exception as error:  # noqa: BLE001
+                self._notify(f"{side} Home capture rejected: {error}")
+                return
         self.operator.set_active(side, False, target="arm")
         self.mappers[side].reset()
         self.capture_side = side
-        self._notify(f"{side}: recording current measured joints as Home")
+        self.capture_task = task
+        self.capture_hand_positions = hand_positions
+        self._notify(
+            f"{side}: recording current measured joints as {OPERATOR_TASKS[task]} Home"
+        )
 
         def worker() -> None:
             try:
-                outcome = self.capture_home_invoker(side)
+                outcome = self.capture_home_invoker(side, task)
             except Exception as error:  # noqa: BLE001 - report, never crash loop
                 outcome = (False, str(error))
             self.capture_outcome.append(outcome)
@@ -220,15 +257,74 @@ class DualFr3HardwareTeleop:
         self.capture_thread.join()
         self.capture_thread = None
         side = self.capture_side
+        task = self.capture_task
         self.capture_side = None
+        self.capture_task = None
         succeeded, message = (
             self.capture_outcome.pop()
             if self.capture_outcome
             else (False, "no result")
         )
+        hand_positions = self.capture_hand_positions
+        self.capture_hand_positions = None
+        if succeeded and hand_positions is not None:
+            try:
+                self.hand_home_store.save_side(task, side, hand_positions)
+            except Exception as error:  # noqa: BLE001
+                succeeded = False
+                message = f"arm saved, but hand Home save failed: {error}"
         self._notify(
-            f"{side} Home capture {'done' if succeeded else 'FAILED'}: {message}"
+            f"{side} {OPERATOR_TASKS.get(task, str(task))} Home capture "
+            f"{'done' if succeeded else 'FAILED'}: {message}"
         )
+
+    def _start_ready_operation(self, action: str, task: str | None = None) -> None:
+        invoker = self.ready_to_home_invoker if action == "trajectory" else self.ready_invoker
+        if invoker is None:
+            self._notify(f"Ready {action} requested, but no command is configured")
+            return
+        if (
+            self.reset_thread is not None
+            or self.capture_thread is not None
+            or self.preset_thread is not None
+            or self.active_preset is not None
+        ):
+            self._notify("another Home/Ready/preset operation is already in progress")
+            return
+        if action == "capture" and any(self.operator.poll().values()):
+            self._notify("Ready capture rejected: stop both arms first")
+            return
+        hand_targets = None
+        if (
+            action == "trajectory"
+            and self.hands is not None
+            and self.hand_home_store is not None
+        ):
+            try:
+                hand_targets = self.hand_home_store.load(task, SIDES)
+            except Exception as error:  # noqa: BLE001
+                self._notify(f"Ready-to-Home rejected: {error}")
+                return
+        self.operator.disable_all(f"Ready {action}")
+        self.reset_hand_targets = hand_targets
+        for mapper in self.mappers.values():
+            mapper.reset()
+        label = (
+            f"Ready to {OPERATOR_TASKS.get(str(task), str(task))} Home"
+            if action == "trajectory"
+            else f"Ready {action}"
+        )
+        self._notify(f"{label}: started")
+
+        def worker() -> None:
+            try:
+                outcome = invoker(task) if action == "trajectory" else invoker(action)
+            except Exception as error:  # noqa: BLE001
+                outcome = (False, str(error))
+            self.reset_outcome.append(outcome)
+
+        self.reset_thread = threading.Thread(target=worker, daemon=True)
+        self.reset_thread.start()
 
     @staticmethod
     def _side_slice(side: str) -> slice:
@@ -382,6 +478,14 @@ class DualFr3HardwareTeleop:
         succeeded, message = (
             self.reset_outcome.pop() if self.reset_outcome else (False, "no result")
         )
+        if succeeded and self.reset_hand_targets:
+            try:
+                self.hands.request_pose(self.reset_hand_targets)
+                message += "; arms settled, Wuji hands are now moving to Home"
+            except Exception as error:  # noqa: BLE001
+                succeeded = False
+                message += f"; hand Home request FAILED: {error}"
+        self.reset_hand_targets = None
         self._notify(f"reset {'done' if succeeded else 'FAILED'}: {message}")
         # The arms are wherever the reset left them, so the pre-reset hold_q is
         # a lie. Dropping it makes the loop re-seed from measured state and
@@ -494,6 +598,8 @@ class DualFr3HardwareTeleop:
                     self._stop_preset("operator STOP")
                 if requests.get("abort_action"):
                     self._stop_preset("all followers disengaged", resume=False)
+                    if self.hands is not None:
+                        self.hands.cancel_pose()
                 open_sides = {
                     side
                     for side in SIDES
@@ -503,15 +609,27 @@ class DualFr3HardwareTeleop:
                 if open_sides:
                     self._open_hands(tuple(open_sides))
                 if requests.get("reset"):
-                    self._start_reset()
+                    self._start_reset(task=str(requests["reset"]))
                 elif requests.get("reset_left"):
-                    self._start_reset("left")
+                    self._start_reset("left", str(requests["reset_left"]))
                 elif requests.get("reset_right"):
-                    self._start_reset("right")
+                    self._start_reset("right", str(requests["reset_right"]))
                 elif requests.get("capture_home_left"):
-                    self._start_capture_home("left")
+                    self._start_capture_home(
+                        "left", str(requests["capture_home_left"])
+                    )
                 elif requests.get("capture_home_right"):
-                    self._start_capture_home("right")
+                    self._start_capture_home(
+                        "right", str(requests["capture_home_right"])
+                    )
+                elif requests.get("capture_ready"):
+                    self._start_ready_operation("capture")
+                elif requests.get("move_ready"):
+                    self._start_ready_operation("move")
+                elif requests.get("ready_to_home"):
+                    self._start_ready_operation(
+                        "trajectory", str(requests["ready_to_home"])
+                    )
                 else:
                     for key in ("q", "w", "e"):
                         if requests.get(f"preset_{key}"):

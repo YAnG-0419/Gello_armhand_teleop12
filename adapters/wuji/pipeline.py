@@ -92,6 +92,9 @@ class WujiHandPipeline:
             model not in MODELS for model in self.models.values()
         ):
             raise ValueError(f"models must map every side to one of {MODELS}")
+        self.feedback_sides = tuple(
+            side for side in self.sides if self.models[side] == "wuji_hand_2"
+        )
         self.addresses = dict(addresses or {})
         self.serials = dict(serials or {})
         if not 0.0 < rate <= 60.0:
@@ -108,10 +111,12 @@ class WujiHandPipeline:
         self.backends = {}
         self.last_frames = {side: None for side in self.sides}
         self.last_frame_at = {side: None for side in self.sides}
+        self.last_feedback = {side: None for side in self.sides}
         self.next_due = {side: 0.0 for side in self.sides}
         self.open_until = {side: 0.0 for side in self.sides}
         self.was_following = {side: False for side in self.sides}
         self.was_opening = {side: False for side in self.sides}
+        self.pose_moves = {side: None for side in self.sides}
         self._debug = None
         self.bridge = None
 
@@ -192,7 +197,10 @@ class WujiHandPipeline:
             raise RuntimeError(
                 f"position feedback is unavailable for {self.models[side]}"
             )
-        return reader()
+        latest = reader()
+        if latest is not None:
+            self.last_feedback[side] = np.asarray(latest, dtype=np.float64).copy()
+        return latest
 
     def joint_diagnostics(self, side: str):
         if side not in self.sides:
@@ -235,6 +243,53 @@ class WujiHandPipeline:
         moment = time.monotonic() if now is None else float(now)
         for side in self.sides if sides is None else sides:
             self.open_until[side] = moment + float(duration)
+            self.pose_moves[side] = None
+
+    def request_pose(
+        self,
+        positions: dict[str, tuple[float, ...]],
+        *,
+        max_speed: float = 0.5,
+    ) -> None:
+        """Schedule smooth measured-position moves for Wuji Hand 2."""
+        moment = time.monotonic()
+        if not np.isfinite(max_speed) or max_speed <= 0.0:
+            raise ValueError("Wuji hand Home speed must be positive")
+        prepared = {}
+        for side, raw_target in positions.items():
+            if side not in self.sides or self.models[side] != "wuji_hand_2":
+                raise ValueError(f"Wuji Hand 2 pose is unavailable for {side}")
+            target = np.asarray(raw_target, dtype=np.float64)
+            if target.shape != (20,) or not np.isfinite(target).all():
+                raise ValueError("Wuji Hand 2 pose must contain 20 finite positions")
+            limits = self.joint_limits[side]
+            if any(
+                value < lower or value > upper
+                for value, (lower, upper) in zip(target, limits, strict=True)
+            ):
+                raise ValueError(f"{side} Wuji Hand 2 Home exceeds joint limits")
+            start = self.feedback_position(side)
+            if start is None:
+                start = self.last_feedback[side]
+            if start is None:
+                start = self.backends[side].last_command_position
+            if start is None:
+                raise RuntimeError(f"{side} Wuji Hand 2 has no pose to start from")
+            distance = float(np.max(np.abs(target - start)))
+            duration = 0.0 if distance == 0.0 else max(0.5, 1.875 * distance / max_speed)
+            prepared[side] = {
+                "start": np.asarray(start, dtype=np.float64),
+                "target": target,
+                "started_at": moment,
+                "duration": duration,
+            }
+        for side, move in prepared.items():
+            self.open_until[side] = 0.0
+            self.pose_moves[side] = move
+
+    def cancel_pose(self) -> None:
+        for side in self.sides:
+            self.pose_moves[side] = None
 
     def _open_pose(self, side: str) -> np.ndarray:
         robot = self.retargeters[side].optimizer.robot
@@ -260,7 +315,10 @@ class WujiHandPipeline:
                 continue
 
             following = bool(enabled.get(side, False))
-            opening = moment < self.open_until[side]
+            pose_move = self.pose_moves[side]
+            if pose_move is not None:
+                following = False
+            opening = pose_move is None and moment < self.open_until[side]
             if (
                 (self.was_following[side] and not following)
                 or (opening and not self.was_opening[side])
@@ -270,7 +328,7 @@ class WujiHandPipeline:
                     reset()
             self.was_following[side] = following
             self.was_opening[side] = opening
-            if not following and not opening:
+            if not following and not opening and pose_move is None:
                 status.sending = False
                 status.fault = "disengaged"
                 continue
@@ -278,7 +336,20 @@ class WujiHandPipeline:
                 continue
 
             try:
-                if opening:
+                if pose_move is not None:
+                    duration = float(pose_move["duration"])
+                    progress = (
+                        1.0
+                        if duration == 0.0
+                        else min(1.0, (moment - pose_move["started_at"]) / duration)
+                    )
+                    blend = progress**3 * (
+                        progress * (progress * 6.0 - 15.0) + 10.0
+                    )
+                    command = pose_move["start"] + blend * (
+                        pose_move["target"] - pose_move["start"]
+                    )
+                elif opening:
                     command = self._open_pose(side)
                 else:
                     age = (
@@ -299,6 +370,8 @@ class WujiHandPipeline:
                     status.solve_seconds = time.monotonic() - started
                     command = qpos[self.permutations[side]]
                 self.backends[side].send(command)
+                if pose_move is not None and progress >= 1.0:
+                    self.pose_moves[side] = None
                 self.next_due[side] = moment + self.interval
                 status.sending = True
                 status.fault = None

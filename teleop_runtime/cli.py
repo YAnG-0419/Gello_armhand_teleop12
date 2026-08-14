@@ -16,11 +16,31 @@ from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
 from pico_bimanual_franka_teleop.preset_ik_client import invoke_preset_ik
 from pico_bimanual_franka_teleop.relative_action import load_preset_actions
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
+from operator_tasks import DEFAULT_OPERATOR_TASK, require_operator_task
+from operator_hand_poses import HandHomeStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def invoke_reset(side: str | None = None) -> tuple[bool, str]:
+def _invoke_trigger_service(service: str, timeout: float = 120.0) -> tuple[bool, str]:
+    completed = subprocess.run(
+        [
+            "docker", "compose", "run", "--rm", "tools",
+            "ros2", "service", "call", service, "std_srvs/srv/Trigger", "{}",
+        ],
+        cwd=REPO_ROOT / "docker",
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    output = (completed.stdout + completed.stderr).strip()
+    succeeded = completed.returncode == 0 and "success=True" in completed.stdout
+    return succeeded, output[-400:]
+
+
+def invoke_reset(
+    side: str | None = None, task: str = DEFAULT_OPERATOR_TASK
+) -> tuple[bool, str]:
     """Call /reset_to_initial_pose (optionally one side) via the container.
 
     The operator process is deliberately ROS-free (env_guard), so the reset goes
@@ -29,41 +49,34 @@ def invoke_reset(side: str | None = None) -> tuple[bool, str]:
     startup; the timeout is generous because killing the call does not stop the
     controller-side trajectory anyway.
     """
-    service = "/reset_to_initial_pose" + (f"/{side}" if side else "")
-    completed = subprocess.run(
-        [
-            "docker", "compose", "run", "--rm", "tools",
-            "ros2", "service", "call",
-            service, "std_srvs/srv/Trigger", "{}",
-        ],
-        cwd=REPO_ROOT / "docker",
-        capture_output=True,
-        text=True,
-        timeout=120.0,
-    )
-    output = (completed.stdout + completed.stderr).strip()
-    succeeded = completed.returncode == 0 and "success=True" in completed.stdout
-    return succeeded, output[-400:]
+    selected = require_operator_task(task)
+    service = f"/reset_to_home/{selected}" + (f"/{side}" if side else "")
+    return _invoke_trigger_service(service)
 
 
-def invoke_capture_home(side: str) -> tuple[bool, str]:
+def invoke_capture_home(
+    side: str, task: str = DEFAULT_OPERATOR_TASK
+) -> tuple[bool, str]:
     """Persist one arm's current measured joints through its ROS service."""
     if side not in ("left", "right"):
         raise ValueError(f"invalid Home capture side: {side}")
-    completed = subprocess.run(
-        [
-            "docker", "compose", "run", "--rm", "tools",
-            "ros2", "service", "call",
-            f"/capture_initial_pose/{side}", "std_srvs/srv/Trigger", "{}",
-        ],
-        cwd=REPO_ROOT / "docker",
-        capture_output=True,
-        text=True,
-        timeout=30.0,
+    selected = require_operator_task(task)
+    return _invoke_trigger_service(
+        f"/capture_home/{selected}/{side}", timeout=30.0
     )
-    output = (completed.stdout + completed.stderr).strip()
-    succeeded = completed.returncode == 0 and "success=True" in completed.stdout
-    return succeeded, output[-400:]
+
+
+def invoke_ready(action: str) -> tuple[bool, str]:
+    if action not in {"capture", "move"}:
+        raise ValueError(f"invalid Ready action: {action}")
+    service = "/capture_ready" if action == "capture" else "/reset_to_ready"
+    return _invoke_trigger_service(service, timeout=30.0 if action == "capture" else 120.0)
+
+
+def invoke_ready_to_home(task: str) -> tuple[bool, str]:
+    return _invoke_trigger_service(
+        f"/ready_to_home/{require_operator_task(task)}", timeout=180.0
+    )
 
 
 def main() -> None:
@@ -488,6 +501,9 @@ def main() -> None:
             debug_logger=debug_logger,
             reset_invoker=invoke_reset,
             capture_home_invoker=invoke_capture_home,
+            ready_invoker=invoke_ready,
+            ready_to_home_invoker=invoke_ready_to_home,
+            hand_home_store=HandHomeStore(args.preset_data_root),
             preset_actions=preset_actions,
             preset_solver=lambda preset: invoke_preset_ik(
                 preset, max_joint_speed=config.host.max_joint_speed

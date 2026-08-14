@@ -13,6 +13,7 @@ import time
 from types import SimpleNamespace
 from typing import Callable, Sequence
 
+from .absolute_recording import DualArmSample
 from .models import Routine, SIDES, Waypoint
 from .recording import (
     MotionSample,
@@ -37,6 +38,12 @@ class MotionCapture:
     tool_frame: str
     samples: tuple[MotionSample, ...]
     skipped_tf_samples: int
+
+
+@dataclass(frozen=True)
+class AbsoluteMotionCapture:
+    joint_names: dict[str, tuple[str, ...]]
+    samples: tuple[DualArmSample, ...]
 
 
 @dataclass(frozen=True)
@@ -149,6 +156,11 @@ class ArmRosRuntime:
         self._record_period_sec = 0.01
         self._record_samples: list[MotionSample] = []
         self._record_skipped_tf = 0
+        self._absolute_recording = False
+        self._absolute_record_started_at = 0.0
+        self._absolute_record_last_sample_at = -math.inf
+        self._absolute_record_period_sec = 0.02
+        self._absolute_record_samples: list[DualArmSample] = []
         # `world` is only an SRDF virtual-joint parent and is not published by
         # robot_state_publisher. The URDF root is present in both fake and real
         # stacks and is a stable fixed base for relative-pose recording.
@@ -272,6 +284,7 @@ class ArmRosRuntime:
                 side, expected, ordered, time.monotonic()
             )
         self._capture_recording_sample(side, ordered)
+        self._capture_absolute_recording_sample()
 
     def _on_combined_joint_state(self, message: object) -> None:
         for side in SIDES:
@@ -355,6 +368,8 @@ class ArmRosRuntime:
             raise ValueError(f"未知机械臂: {side}")
         if self.is_running():
             raise RuntimeError("轨迹正在执行，不能开始录制")
+        if self.absolute_recording_status()["active"]:
+            raise RuntimeError("双臂绝对轨迹正在录制")
         if not math.isfinite(rate_hz) or not 10.0 <= rate_hz <= 250.0:
             raise ValueError("录制频率必须在10Hz到250Hz之间")
         if self._graph_controller_mode(side) != "teach":
@@ -426,6 +441,92 @@ class ArmRosRuntime:
                 "skipped_tf_samples": self._record_skipped_tf,
             }
 
+    def start_absolute_recording(self, *, rate_hz: float = 50.0) -> None:
+        """Capture synchronized measured joints for both hand-guided arms."""
+        if self.is_running():
+            raise RuntimeError("轨迹正在执行，不能开始录制")
+        if self.recording_status()["active"]:
+            raise RuntimeError("单臂相对动作正在录制")
+        if not math.isfinite(rate_hz) or not 10.0 <= rate_hz <= 100.0:
+            raise ValueError("双臂绝对轨迹录制频率必须在10Hz到100Hz之间")
+        modes = {side: self._graph_controller_mode(side) for side in SIDES}
+        if any(mode != "teach" for mode in modes.values()):
+            raise RuntimeError("请先让左右臂都进入零力矩拖动模式")
+        for side in SIDES:
+            _ = self.snapshot(side)
+        with self._record_lock:
+            if self._absolute_recording:
+                raise RuntimeError("双臂绝对轨迹已经在录制")
+            self._absolute_recording = True
+            self._absolute_record_started_at = time.monotonic()
+            self._absolute_record_last_sample_at = -math.inf
+            self._absolute_record_period_sec = 1.0 / rate_hz
+            self._absolute_record_samples = []
+        for side in SIDES:
+            self._notify(side, "双臂绝对轨迹录制中")
+
+    def _capture_absolute_recording_sample(self) -> None:
+        now = time.monotonic()
+        with self._record_lock:
+            if not self._absolute_recording:
+                return
+            if now - self._absolute_record_last_sample_at < self._absolute_record_period_sec:
+                return
+            started_at = self._absolute_record_started_at
+        try:
+            snapshots = {side: self.snapshot(side) for side in SIDES}
+        except RuntimeError:
+            return
+        if (
+            max(snapshot.received_at for snapshot in snapshots.values())
+            - min(snapshot.received_at for snapshot in snapshots.values())
+            > 0.05
+        ):
+            return
+        sample = DualArmSample.create(
+            now - started_at,
+            {side: snapshots[side].positions for side in SIDES},
+        )
+        with self._record_lock:
+            if not self._absolute_recording:
+                return
+            self._absolute_record_samples.append(sample)
+            self._absolute_record_last_sample_at = now
+
+    def absolute_recording_status(self) -> dict[str, object]:
+        with self._record_lock:
+            return {
+                "active": self._absolute_recording,
+                "elapsed_sec": (
+                    time.monotonic() - self._absolute_record_started_at
+                    if self._absolute_recording
+                    else 0.0
+                ),
+                "sample_count": len(self._absolute_record_samples),
+            }
+
+    def stop_absolute_recording(self) -> AbsoluteMotionCapture:
+        with self._record_lock:
+            if not self._absolute_recording:
+                raise RuntimeError("当前没有正在录制的双臂绝对轨迹")
+            samples = tuple(self._absolute_record_samples)
+            self._absolute_recording = False
+            self._absolute_record_samples = []
+        names = {side: self.joint_names(side) for side in SIDES}
+        for side in SIDES:
+            self._notify(side, "双臂绝对轨迹录制完成")
+        return AbsoluteMotionCapture(names, samples)
+
+    def discard_absolute_recording(self) -> bool:
+        with self._record_lock:
+            if not self._absolute_recording:
+                return False
+            self._absolute_recording = False
+            self._absolute_record_samples = []
+        for side in SIDES:
+            self._notify(side, "双臂绝对轨迹录制已放弃")
+        return True
+
     def stop_recording(self) -> MotionCapture:
         with self._record_lock:
             side = self._record_side
@@ -467,6 +568,8 @@ class ArmRosRuntime:
             raise RuntimeError("轨迹正在执行，不能验证IK")
         if self.recording_status()["active"]:
             raise RuntimeError("请先停止动作录制，再验证IK")
+        if self.absolute_recording_status()["active"]:
+            raise RuntimeError("请先停止双臂绝对轨迹录制，再验证IK")
         if action.tool_frame != self.tool_frame(action.side):
             raise ValueError(
                 f"动作末端坐标系不匹配: {action.tool_frame} != {self.tool_frame(action.side)}"
@@ -666,6 +769,8 @@ class ArmRosRuntime:
             raise ValueError("试运行速度必须在5%到100%之间")
         if self.recording_status()["active"]:
             raise RuntimeError("动作正在录制，不能低速试运行")
+        if self.absolute_recording_status()["active"]:
+            raise RuntimeError("双臂绝对轨迹正在录制，不能低速试运行")
         if not self._execution_lock.acquire(blocking=False):
             raise RuntimeError("已有轨迹正在执行")
         side = action.side
@@ -946,6 +1051,8 @@ class ArmRosRuntime:
             raise RuntimeError("轨迹正在执行，不能切换控制器")
         if self.recording_status()["active"]:
             raise RuntimeError("动作正在录制，请先停止并保存或放弃录制")
+        if self.absolute_recording_status()["active"]:
+            raise RuntimeError("双臂绝对轨迹正在录制，请先停止或放弃录制")
         self._switch_mode_unchecked(side, mode)
 
     def _switch_mode_unchecked(self, side: str, mode: str) -> None:
@@ -987,6 +1094,8 @@ class ArmRosRuntime:
             raise ValueError("任务包含另一条机械臂的点位")
         if self.recording_status()["active"]:
             raise RuntimeError("动作正在录制，不能执行轨迹")
+        if self.absolute_recording_status()["active"]:
+            raise RuntimeError("双臂绝对轨迹正在录制，不能执行轨迹")
         if not self._execution_lock.acquire(blocking=False):
             raise RuntimeError("已有轨迹正在执行")
         side = routine.side
@@ -1132,6 +1241,7 @@ class ArmRosRuntime:
 
     def shutdown(self) -> None:
         self.discard_recording()
+        self.discard_absolute_recording()
         self.executor.shutdown(timeout_sec=2.0)
         self._spin_thread.join(timeout=2.0)
         self.node.destroy_node()

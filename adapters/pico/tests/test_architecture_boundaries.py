@@ -82,6 +82,42 @@ def test_open_request_atomically_disengages_the_selected_hand():
     assert pipeline.active[0] == {"left": True, "right": False}
 
 
+def test_hand_worker_caches_feedback_and_serializes_home_pose_requests():
+    class PosePipeline:
+        sides = ("left",)
+        status = type("Status", (), {"errors": 0, "last_error": None})()
+
+        def __init__(self):
+            self.requested = []
+            self.closed = False
+
+        def tick(self, *, active):
+            pass
+
+        def request_pose(self, positions):
+            self.requested.append(positions)
+
+        def feedback_position(self, side):
+            return np.full(20, 0.2)
+
+        def close(self):
+            self.closed = True
+
+    pipeline = PosePipeline()
+    worker = HandWorker(pipeline, tick_rate=100.0)
+    target = {"left": tuple([0.4] * 20)}
+    worker.request_pose(target)
+    worker.start()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not pipeline.requested:
+        time.sleep(0.005)
+
+    assert worker.feedback_position("left") == tuple([0.2] * 20)
+    worker.close()
+    assert pipeline.requested == [target]
+    assert pipeline.closed
+
+
 class _FakePicoClient:
     def __init__(self) -> None:
         self.init_count = 0

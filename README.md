@@ -194,11 +194,24 @@ Operator GUI 支持5个键盘式脚踏输入，机械臂和手独立启停：
 | `Space` | 双臂同时 Home |  |  |
 
 Home 是单次操作，执行前会解除控制权；`DISENGAGE ALL` 仍可同时停止所有臂/手
-跟随。脚踏模拟普通键盘，使用时 Operator GUI 窗口需要获得键盘焦点。
+跟随。Home 下拉框提供 `粉末称量`、`装配`、`夹豆` 三个任务，Space 和界面按钮
+都使用当前选择的任务。脚踏模拟普通键盘，使用时 Operator GUI 窗口需要获得
+键盘焦点。
 
-左右臂面板中的 `Record current as Home` 可以分别把该机械臂当前实测的 7 个
-关节角覆盖保存为新的 HomePose。记录前必须先停止对应机械臂；记录本身不会
-驱动机械臂，确认对话框也会提示下一次 Home 才会运动。
+左右臂面板中的 `Record arm + hand as Home` 会把同侧机械臂当前实测的 7 个关节
+角和 Wuji Hand 2 当前实测的 20 个关节角一起保存为当前下拉任务的 HomePose。
+记录前必须先停止对应机械臂和手；记录本身不会驱动硬件。Home 执行严格分两阶段：
+先等待所选机械臂到达并稳定在 Home，再让对应 Wuji Hand 2 从实测姿态平滑移动
+到 Hand Home。首次创建持久化配置时只有 `粉末称量` 的机械臂继承旧 Home；手部
+以及另两个任务必须实际记录，缺少任一目标时会在机械臂运动前拒绝 Home。
+
+`Record both arms as Ready` 一次记录共享 Ready，`Move both arms to Ready` 将双臂
+平滑移动到该点。Arm UI 的“双臂绝对 Ready → Home 轨迹”面板可按任务同步录制
+左右各 7 个关节角。Operator GUI 的 `Ready to Home` 回放当前任务文件；开始前会
+检查真实双臂和轨迹首点都在 Ready 的 0.05 rad 内，并检查轨迹末点匹配当前任务
+Home，否则拒绝执行。Ready-to-Home 的双臂轨迹完成后也会再执行双手 Home。
+机械臂位姿持久化在 `${TELEOP_DATA_ROOT}/operator_gui/poses.yaml`，Wuji Hand 2
+位姿持久化在 `${TELEOP_DATA_ROOT}/operator_gui/hand_poses.yaml`。
 
 Operator GUI 还提供三个相对末端预设动作槽：`Q`、`W`、`E`。当前 `Q` 配置为
 Arm UI 录制的左臂动作 `kuai1`，以 65% 速度执行；`W`、`E` 保留待配置。执行前
