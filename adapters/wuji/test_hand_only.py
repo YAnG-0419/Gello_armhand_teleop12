@@ -9,7 +9,7 @@ def test_hand_only_defaults_to_explicit_right_hand2():
     assert args.selected_sides == ("right",)
     assert args.wuji_right_model == "wuji_hand_2"
     assert args.wuji_right_address == "192.168.2.111:7447"
-    assert args.wuji_kp == pytest.approx(4.0)
+    assert args.wuji_kp == pytest.approx(8.0)
     assert args.wuji_kd == pytest.approx(0.1)
     assert args.wuji_current_limit == pytest.approx(1.0)
 

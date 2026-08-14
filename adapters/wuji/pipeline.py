@@ -76,7 +76,7 @@ class WujiHandPipeline:
         serials=None,
         rate: float = 30.0,
         stale_timeout: float = 0.25,
-        kp: float = 4.0,
+        kp: float = 8.0,
         kd: float = 0.1,
         current_limit: float = 1.0,
         library: Path | None = None,

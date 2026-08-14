@@ -54,6 +54,9 @@ for argument in "$@"; do
 done
 
 cd "$REPO_ROOT"
+# Match the container stack: keep host-side DDS off the physical interfaces
+# (FCI robot subnets and hand networks). Override by exporting it beforehand.
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
 # activate + exec, NOT `conda run`: conda run wraps python in a subprocess
 # and dies first on Ctrl-C, orphaning python into the background where it
 # cannot restore the terminal (tcsetattr EIO -> hidden cursor, stuck cbreak).

@@ -154,7 +154,7 @@ class WujiUiRuntime:
         self,
         *,
         addresses: Mapping[str, str],
-        kp: float = 4.0,
+        kp: float = 8.0,
         kd: float = 0.1,
         current_limit: float = 1.0,
         rate: float = 30.0,

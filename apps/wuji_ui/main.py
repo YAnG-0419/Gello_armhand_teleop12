@@ -1792,7 +1792,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=Path,
         default=Path("config/calibration/wuji_hand_2_poses.json"),
     )
-    parser.add_argument("--wuji-kp", type=float, default=4.0)
+    parser.add_argument("--wuji-kp", type=float, default=8.0)
     parser.add_argument("--wuji-kd", type=float, default=0.1)
     parser.add_argument("--wuji-current-limit", type=float, default=1.0)
     parser.add_argument("--wuji-rate", type=float, default=30.0)
