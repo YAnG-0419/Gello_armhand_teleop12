@@ -21,6 +21,7 @@ from PySide6.QtGui import QAction, QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -37,6 +38,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from operator_tasks import DEFAULT_OPERATOR_TASK, OPERATOR_TASKS
 
 POLL_INTERVAL_MS = 500
 RECONNECT_INTERVAL_MS = 2000
@@ -110,6 +113,7 @@ class OperatorWindow(QMainWindow):
         self.connection_dialog: ConnectionDialog | None = None
         self.disconnect_message: QMessageBox | None = None
         self.capture_dialogs: dict[str, QMessageBox] = {}
+        self.ready_capture_dialog: QMessageBox | None = None
 
         self.socket = QTcpSocket(self)
         self.socket.readyRead.connect(self._read_responses)
@@ -232,14 +236,53 @@ class OperatorWindow(QMainWindow):
         actions.addWidget(
             self._button("Open both hands", "open_hand", {"side": "both"})
         )
-        home_both = self._button(
-            "Home both arms (Space)", "home_arm", {"side": "both"}
+        self.task_selector = QComboBox()
+        for task, label in OPERATOR_TASKS.items():
+            self.task_selector.addItem(label, task)
+        saved_task = str(self.settings.value("operator_task", DEFAULT_OPERATOR_TASK))
+        selected_index = self.task_selector.findData(saved_task)
+        self.task_selector.setCurrentIndex(max(0, selected_index))
+        self.task_selector.currentIndexChanged.connect(
+            lambda: self.settings.setValue("operator_task", self._selected_task())
         )
+        self.task_selector.setToolTip("Select which task Home pose and trajectory to use")
+        actions.addWidget(self.task_selector)
+        home_both = QPushButton("Home both arms (Space)")
+        home_both.setFocusPolicy(Qt.NoFocus)
+        home_both.clicked.connect(
+            lambda: self._send(
+                "home_arm", {"side": "both", "task": self._selected_task()}
+            )
+        )
+        self.action_buttons.append(home_both)
         home_both.setToolTip(
             "Pedal/shortcut: Space homes both arms and disengages followers"
         )
         actions.addWidget(home_both)
         layout.addLayout(actions)
+
+        ready_box = QGroupBox("Shared Ready and task Home trajectory")
+        ready_layout = QHBoxLayout(ready_box)
+        self.capture_ready_button = QPushButton("Record both arms as Ready")
+        self.capture_ready_button.setFocusPolicy(Qt.NoFocus)
+        self.capture_ready_button.clicked.connect(self._confirm_capture_ready)
+        self.action_buttons.append(self.capture_ready_button)
+        ready_layout.addWidget(self.capture_ready_button)
+        ready_layout.addWidget(self._button("Move both arms to Ready", "move_ready"))
+        self.ready_to_home_button = QPushButton("Ready to Home")
+        self.ready_to_home_button.setFocusPolicy(Qt.NoFocus)
+        self.ready_to_home_button.clicked.connect(
+            lambda: self._send(
+                "ready_to_home", {"task": self._selected_task()}
+            )
+        )
+        self.ready_to_home_button.setToolTip(
+            "Execute the selected task's absolute dual-arm trajectory only when "
+            "both arms are already within 0.05 rad of Ready."
+        )
+        self.action_buttons.append(self.ready_to_home_button)
+        ready_layout.addWidget(self.ready_to_home_button)
+        layout.addWidget(ready_box)
 
         preset_box = QGroupBox("Preset relative actions — 65% speed")
         preset_layout = QHBoxLayout(preset_box)
@@ -299,9 +342,11 @@ class OperatorWindow(QMainWindow):
         message = QMessageBox(self)
         self.capture_dialogs[side] = message
         message.setIcon(QMessageBox.Warning)
-        message.setWindowTitle(f"Replace {side} arm Home?")
+        task_label = OPERATOR_TASKS[self._selected_task()]
+        message.setWindowTitle(f"Replace {side} arm {task_label} Home?")
         message.setText(
-            f"Record the {side} arm's current measured joint angles as its new Home?"
+            f"Record the {side} arm's current measured joint angles as the "
+            f"{task_label} Home?"
         )
         message.setInformativeText(
             "The arm must be stopped. Recording does not move the robot; the "
@@ -311,22 +356,22 @@ class OperatorWindow(QMainWindow):
         message.setDefaultButton(QMessageBox.Cancel)
         message.button(QMessageBox.Save).setText("Record Home")
         message.finished.connect(
-            lambda result, selected=side, current=message: (
-                self._capture_home_dialog_finished(selected, current, result)
+            lambda result, selected=side, task=self._selected_task(), current=message: (
+                self._capture_home_dialog_finished(selected, task, current, result)
             )
         )
         message.open()
 
     def _capture_home_dialog_finished(
-        self, side: str, message: QMessageBox, result: int
+        self, side: str, task: str, message: QMessageBox, result: int
     ) -> None:
         if self.capture_dialogs.get(side) is message:
             del self.capture_dialogs[side]
         if result == QMessageBox.Save:
-            self._record_current_home(side)
+            self._record_current_home(side, task)
         message.deleteLater()
 
-    def _record_current_home(self, side: str) -> None:
+    def _record_current_home(self, side: str, task: str | None = None) -> None:
         if self.connection_state != "connected":
             return
         if self.arm_engage_buttons[side].isChecked():
@@ -334,7 +379,49 @@ class OperatorWindow(QMainWindow):
                 f"[capture_home] rejected: stop the {side} arm first"
             )
             return
-        self._send("capture_home", {"side": side})
+        self._send(
+            "capture_home", {"side": side, "task": task or self._selected_task()}
+        )
+
+    def _selected_task(self) -> str:
+        return str(self.task_selector.currentData())
+
+    def _confirm_capture_ready(self) -> None:
+        if self.ready_capture_dialog is not None:
+            self.ready_capture_dialog.raise_()
+            self.ready_capture_dialog.activateWindow()
+            return
+        message = QMessageBox(self)
+        self.ready_capture_dialog = message
+        message.setIcon(QMessageBox.Warning)
+        message.setWindowTitle("Replace shared Ready pose?")
+        message.setText("Record both arms' current measured joints as Ready?")
+        message.setInformativeText(
+            "Both arms must be stopped. This overwrites the one shared Ready pose."
+        )
+        message.setStandardButtons(QMessageBox.Save | QMessageBox.Cancel)
+        message.setDefaultButton(QMessageBox.Cancel)
+        message.button(QMessageBox.Save).setText("Record Ready")
+        message.finished.connect(
+            lambda result, current=message: self._capture_ready_dialog_finished(
+                current, result
+            )
+        )
+        message.open()
+
+    def _capture_ready_dialog_finished(
+        self, message: QMessageBox, result: int
+    ) -> None:
+        if self.ready_capture_dialog is message:
+            self.ready_capture_dialog = None
+        if result == QMessageBox.Save:
+            if any(button.isChecked() for button in self.arm_engage_buttons.values()):
+                self.feedback.appendPlainText(
+                    "[capture_ready] rejected: stop both arms first"
+                )
+            else:
+                self._send("capture_ready")
+        message.deleteLater()
 
     def _button(self, text: str, command: str, arguments=None) -> QPushButton:
         button = QPushButton(text)
@@ -395,7 +482,9 @@ class OperatorWindow(QMainWindow):
 
     def _shortcut_home(self, side: str) -> None:
         if self.connection_state == "connected":
-            self._send("home_arm", {"side": side})
+            self._send(
+                "home_arm", {"side": side, "task": self._selected_task()}
+            )
 
     # -------------------------------------------------------------- socket
     def _connect(self) -> None:
@@ -491,6 +580,7 @@ class OperatorWindow(QMainWindow):
                 button.setText(f"Start hand ({key_hint})")
                 button.blockSignals(False)
         self.connect_action.setEnabled(state != "connected")
+        self.task_selector.setEnabled(ready)
         if state == "disconnected":
             self.status_label.setPlainText(
                 "DISCONNECTED — backend status unavailable"
@@ -607,6 +697,10 @@ class OperatorWindow(QMainWindow):
                 else f"Start hand ({key_hint})"
             )
             button.blockSignals(False)
+        both_stopped = not any(
+            button.isChecked() for button in self.arm_engage_buttons.values()
+        )
+        self.capture_ready_button.setEnabled(both_stopped)
         feedback = status.get("feedback", [])
         # Re-render the ring wholesale: the server caps it at 50 lines, so
         # replacing the text is the simplest correct display.

@@ -9,6 +9,7 @@ def test_switch_mode_allows_both_arms_in_teach_mode() -> None:
     runtime = Mock(spec=ArmRosRuntime)
     runtime.is_running.return_value = False
     runtime.recording_status.return_value = {"active": False}
+    runtime.absolute_recording_status.return_value = {"active": False}
     runtime._graph_controller_mode.return_value = "teach"
 
     ArmRosRuntime.switch_mode(runtime, "right", "teach")

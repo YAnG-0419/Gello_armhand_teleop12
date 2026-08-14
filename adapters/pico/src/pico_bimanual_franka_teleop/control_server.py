@@ -21,6 +21,8 @@ import socketserver
 import threading
 import time
 
+from operator_tasks import DEFAULT_OPERATOR_TASK, require_operator_task
+
 from .types import SIDES
 
 
@@ -47,6 +49,9 @@ class OperatorConsole:
             "reset_right": False,
             "capture_home_left": False,
             "capture_home_right": False,
+            "capture_ready": False,
+            "move_ready": False,
+            "ready_to_home": False,
             "preset_q": False,
             "preset_w": False,
             "preset_e": False,
@@ -89,11 +94,11 @@ class OperatorConsole:
             if target in {"hand", "both"}:
                 self.hand_active[side] = engaged
 
-    def request(self, name: str) -> None:
+    def request(self, name: str, value=True) -> None:
         with self._lock:
             if name not in self.requests:
                 raise ValueError(f"Unknown request: {name}")
-            self.requests[name] = True
+            self.requests[name] = value
 
     def disable_all(self, reason: str) -> None:
         with self._lock:
@@ -229,14 +234,15 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
         both: str,
         left: str,
         right: str,
+        value=True,
     ) -> None:
         scope = str(arguments.get("side", "both"))
         if scope == "both":
-            self.keyboard.request(both)
+            self.keyboard.request(both, value)
         elif scope == "left":
-            self.keyboard.request(left)
+            self.keyboard.request(left, value)
         elif scope == "right":
-            self.keyboard.request(right)
+            self.keyboard.request(right, value)
         else:
             raise ValueError("side must be left, right, or both")
 
@@ -273,9 +279,23 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
                 both="reset",
                 left="reset_left",
                 right="reset_right",
+                value=require_operator_task(
+                    arguments.get("task", DEFAULT_OPERATOR_TASK)
+                ),
             ),
             "capture_home": lambda: self.keyboard.request(
-                f"capture_home_{_require_side(arguments)}"
+                f"capture_home_{_require_side(arguments)}",
+                require_operator_task(
+                    arguments.get("task", DEFAULT_OPERATOR_TASK)
+                ),
+            ),
+            "capture_ready": lambda: self.keyboard.request("capture_ready"),
+            "move_ready": lambda: self.keyboard.request("move_ready"),
+            "ready_to_home": lambda: self.keyboard.request(
+                "ready_to_home",
+                require_operator_task(
+                    arguments.get("task", DEFAULT_OPERATOR_TASK)
+                ),
             ),
             "run_preset": lambda: self.keyboard.request(
                 f"preset_{_require_preset(arguments)}"

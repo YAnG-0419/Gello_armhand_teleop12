@@ -58,6 +58,16 @@ than 0.03 rad while IK is being solved aborts before controller switching.
 Adjacent IK jumps and generated joint-velocity limit violations also abort the
 preview.
 
+### Dual-arm absolute Ready-to-Home recording
+
+The bottom **Operator GUI: dual-arm absolute Ready → Home trajectory** panel
+records measured joint positions for both arms at once. Put both arms in teach
+mode, start at the shared Ready pose, select one of `粉末称量`, `装配`, or
+`夹豆`, record while guiding both arms to that task's Home, then stop and save.
+The file is absolute (no IK or rebasing) and overwrites that task's previous
+recording. Operator playback independently verifies its first and last frames
+against the currently recorded Ready and task Home poses.
+
 `STOP` requests cancellation through the MoveIt action. It is not a hardware
 emergency stop.
 
@@ -70,6 +80,8 @@ Files are written atomically under `/data/arm_ui` in the container:
   acceleration, and blend settings.
 - `actions/<side>__<name>.yaml`: raw hand-guided joint/tool samples and the
   derived tool-relative action frames.
+- `absolute_trajectories/<task>.yaml`: synchronized dual-arm absolute joint
+  samples used by Operator GUI's Ready-to-Home command.
 
 The browser also exposes download buttons for both files. The `/data` volume is
 provided by `TELEOP_DATA_ROOT` in `docker/.env`.

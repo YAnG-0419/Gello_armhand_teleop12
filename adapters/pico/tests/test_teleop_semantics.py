@@ -109,7 +109,7 @@ def test_home_arm_does_not_also_open_the_hand():
         (),
         {"request_open": lambda _self, **_kwargs: opened.append(True)},
     )()
-    teleop.reset_invoker = lambda side: (True, side or "both")
+    teleop.reset_invoker = lambda side, task: (True, f"{side or 'both'}:{task}")
     teleop.reset_thread = None
     teleop.reset_outcome = []
     teleop._notify = lambda _message: None
@@ -118,6 +118,41 @@ def test_home_arm_does_not_also_open_the_hand():
     teleop.reset_thread.join(timeout=1.0)
 
     assert opened == []
+
+
+def test_ready_to_home_disengages_and_invokes_selected_task():
+    invoked = []
+    disabled = []
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.operator = type(
+        "Operator",
+        (),
+        {
+            "poll": lambda _self: {"left": False, "right": False},
+            "disable_all": lambda _self, reason: disabled.append(reason),
+        },
+    )()
+    teleop.mappers = {
+        side: type("Mapper", (), {"reset": lambda _self: None})()
+        for side in ("left", "right")
+    }
+    teleop.ready_invoker = None
+    teleop.ready_to_home_invoker = lambda task: (
+        invoked.append(task) or (True, "played")
+    )
+    teleop.reset_thread = None
+    teleop.reset_outcome = []
+    teleop.capture_thread = None
+    teleop.preset_thread = None
+    teleop.active_preset = None
+    teleop._notify = lambda _message: None
+
+    teleop._start_ready_operation("trajectory", "assembly")
+    teleop.reset_thread.join(timeout=1.0)
+
+    assert invoked == ["assembly"]
+    assert disabled == ["Ready trajectory"]
+    assert teleop.reset_outcome == [(True, "played")]
 
 
 def _capture_test_teleop(active: bool, invoker):
@@ -142,6 +177,7 @@ def _capture_test_teleop(active: bool, invoker):
     teleop.capture_home_invoker = invoker
     teleop.capture_thread = None
     teleop.capture_side = None
+    teleop.capture_task = None
     teleop.capture_outcome = []
     teleop._notify = notifications.append
     return teleop, notifications, activation_changes
@@ -164,19 +200,19 @@ def test_capture_home_rejects_an_arm_that_is_still_following():
 def test_capture_home_records_only_the_selected_stopped_arm():
     invoked = []
     teleop, notifications, activation_changes = _capture_test_teleop(
-        False, lambda side: (invoked.append(side) or (True, "saved"))
+        False, lambda side, task: (invoked.append((side, task)) or (True, "saved"))
     )
 
     teleop._start_capture_home("left")
     teleop.capture_thread.join(timeout=1.0)
     teleop._service_capture_home()
 
-    assert invoked == ["left"]
+    assert invoked == [("left", "powder_weighing")]
     assert activation_changes == [("left", False, "arm")]
     assert teleop.capture_thread is None
     assert notifications == [
-        "left: recording current measured joints as Home",
-        "left Home capture done: saved",
+        "left: recording current measured joints as 粉末称量 Home",
+        "left 粉末称量 Home capture done: saved",
     ]
 
 

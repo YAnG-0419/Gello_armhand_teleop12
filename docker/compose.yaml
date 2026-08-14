@@ -21,6 +21,7 @@ services:
       memlock: -1
     volumes:
       - ..:/workspace/franka_upper_body_teleop
+      - ${TELEOP_DATA_ROOT:?Missing TELEOP_DATA_ROOT in docker/.env}:/data
       - /dev:/dev
     command:
       - ros2
@@ -44,6 +45,7 @@ services:
       memlock: -1
     volumes:
       - ..:/workspace/franka_upper_body_teleop
+      - ${TELEOP_DATA_ROOT:?Missing TELEOP_DATA_ROOT in docker/.env}:/data
       - /dev:/dev
     command:
       - ros2

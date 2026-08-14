@@ -10,6 +10,9 @@ import threading
 
 from nicegui import events, run, ui
 
+from operator_tasks import DEFAULT_OPERATOR_TASK, OPERATOR_TASKS
+
+from .absolute_recording import AbsoluteTrajectoryStore, build_absolute_trajectory
 from .models import ArmRepository, MAX_ROUTINE_WAYPOINTS, Routine, Waypoint
 from .recording import ActionStore, build_recorded_action
 from .runtime import ArmRosRuntime, TrajectoryCancelled
@@ -29,6 +32,7 @@ class ArmUiApplication:
     def __init__(self, repository: ArmRepository, runtime: ArmRosRuntime) -> None:
         self.repository = repository
         self.action_store = ActionStore(repository.root)
+        self.absolute_store = AbsoluteTrajectoryStore(repository.root)
         self.runtime = runtime
         self._status_lock = threading.RLock()
         self._status = {"left": "等待关节状态", "right": "等待关节状态"}
@@ -465,6 +469,40 @@ class ArmUiApplication:
 
                 action_list()
 
+            with ui.card().classes(
+                "arm-card arm-workspace w-full min-w-[1816px] p-5"
+            ):
+                ui.label("Operator GUI：双臂绝对 Ready → Home 轨迹").classes(
+                    "text-lg font-semibold"
+                )
+                ui.label(
+                    "先在 Operator GUI 记录共享 Ready 和各任务 Home。然后让左右臂都进入"
+                    "零力矩拖动，从 Ready 开始同步拖动双臂，到所选任务 Home 后停止保存。"
+                ).classes("text-sm text-slate-500")
+                with ui.row().classes("w-full items-end gap-3"):
+                    absolute_task = ui.select(
+                        OPERATOR_TASKS,
+                        value=DEFAULT_OPERATOR_TASK,
+                        label="对应任务",
+                    ).classes("w-64")
+                    absolute_rate = ui.number(
+                        "采样频率", value=50, min=10, max=100, step=10
+                    ).props("outlined suffix=Hz").classes("w-40")
+                    start_absolute_button = ui.button(
+                        "开始双臂绝对录制",
+                        icon="fiber_manual_record",
+                        color="negative",
+                    ).classes("h-12")
+                    stop_absolute_button = ui.button(
+                        "停止并保存/覆盖", icon="stop", color="positive"
+                    ).classes("h-12")
+                    discard_absolute_button = ui.button(
+                        "放弃录制", icon="delete_sweep", color="warning"
+                    ).props("outline").classes("h-12")
+                    absolute_status_label = ui.label("未录制").classes(
+                        "grow rounded bg-slate-100 p-3 font-mono"
+                    )
+
         def _nudge(index: int, direction: int) -> None:
             try:
                 step = float(nudge_step.value or 0.1)
@@ -711,6 +749,57 @@ class ArmUiApplication:
             except Exception as error:
                 ui.notify(str(error), color="negative")
 
+        async def _start_absolute_capture() -> None:
+            if state["busy"]:
+                return
+            state["busy"] = True
+            try:
+                await run.io_bound(
+                    self.runtime.start_absolute_recording,
+                    rate_hz=float(absolute_rate.value),
+                )
+                ui.notify(
+                    "双臂绝对轨迹录制已开始；请从 Ready 同步拖动到任务 Home",
+                    color="negative",
+                )
+            except Exception as error:
+                ui.notify(str(error), color="negative", timeout=10)
+            finally:
+                state["busy"] = False
+
+        async def _stop_absolute_capture() -> None:
+            if state["busy"]:
+                return
+            state["busy"] = True
+            try:
+                capture = await run.io_bound(self.runtime.stop_absolute_recording)
+                trajectory = await run.io_bound(
+                    build_absolute_trajectory,
+                    absolute_task.value,
+                    capture.samples,
+                    capture.joint_names,
+                )
+                path = await run.io_bound(self.absolute_store.save, trajectory)
+                ui.notify(
+                    f"“{trajectory.label}” Ready → Home 已保存：{path.name}",
+                    color="positive",
+                )
+            except Exception as error:
+                ui.notify(str(error), color="negative", timeout=10)
+            finally:
+                state["busy"] = False
+
+        async def _discard_absolute_capture() -> None:
+            try:
+                discarded = await run.io_bound(
+                    self.runtime.discard_absolute_recording
+                )
+                ui.notify(
+                    "已放弃双臂绝对轨迹录制" if discarded else "当前没有双臂录制"
+                )
+            except Exception as error:
+                ui.notify(str(error), color="negative")
+
         async def _validate_action(name: str) -> None:
             if state["busy"]:
                 return
@@ -852,6 +941,33 @@ class ArmUiApplication:
                 start_capture_button.enable()
                 stop_capture_button.disable()
                 discard_capture_button.disable()
+            absolute_status = self.runtime.absolute_recording_status()
+            if absolute_status["active"]:
+                absolute_status_label.text = (
+                    f"双臂录制中  {absolute_status['elapsed_sec']:.1f}s  "
+                    f"{absolute_status['sample_count']}帧"
+                )
+                absolute_status_label.classes(
+                    remove="bg-slate-100", add="bg-red-100 text-red-900"
+                )
+                start_absolute_button.disable()
+                stop_absolute_button.enable()
+                discard_absolute_button.enable()
+            else:
+                path = self.absolute_store.path(absolute_task.value)
+                absolute_status_label.text = (
+                    f"已保存：{path.name}" if path.exists() else "当前任务尚未录制"
+                )
+                absolute_status_label.classes(
+                    remove="bg-red-100 text-red-900", add="bg-slate-100"
+                )
+                start_absolute_button.enable()
+                stop_absolute_button.disable()
+                discard_absolute_button.disable()
+            if capture_status["active"]:
+                start_absolute_button.disable()
+            if absolute_status["active"]:
+                start_capture_button.disable()
             if self.runtime.is_running():
                 preview_stop_button.enable()
             else:
@@ -945,6 +1061,9 @@ class ArmUiApplication:
         start_capture_button.on("click", _start_capture)
         stop_capture_button.on("click", _stop_capture)
         discard_capture_button.on("click", _discard_capture)
+        start_absolute_button.on("click", _start_absolute_capture)
+        stop_absolute_button.on("click", _stop_absolute_capture)
+        discard_absolute_button.on("click", _discard_absolute_capture)
         preview_stop_button.on("click", _stop)
         download_points_button.on(
             "click", lambda: _download(self.repository.waypoints_path)
