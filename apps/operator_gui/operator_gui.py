@@ -206,10 +206,10 @@ class OperatorWindow(QMainWindow):
             self.hand_engage_buttons[side] = hand_engage
             grid.addWidget(hand_engage, 1, 0)
 
-            capture_home = QPushButton("Record current as Home")
+            capture_home = QPushButton("Record arm + hand as Home")
             capture_home.setFocusPolicy(Qt.NoFocus)
             capture_home.setToolTip(
-                "Save this arm's current measured joint angles as its new Home. "
+                "Save this arm and its Wuji Hand 2 measured joints as task Home. "
                 "This does not move the robot."
             )
             capture_home.clicked.connect(
@@ -349,8 +349,8 @@ class OperatorWindow(QMainWindow):
             f"{task_label} Home?"
         )
         message.setInformativeText(
-            "The arm must be stopped. Recording does not move the robot; the "
-            "next Home command will move to this saved posture."
+            "The arm and hand must be stopped. Recording does not move hardware; "
+            "the next Home command moves the arm first, then the Wuji hand."
         )
         message.setStandardButtons(QMessageBox.Save | QMessageBox.Cancel)
         message.setDefaultButton(QMessageBox.Cancel)
@@ -377,6 +377,11 @@ class OperatorWindow(QMainWindow):
         if self.arm_engage_buttons[side].isChecked():
             self.feedback.appendPlainText(
                 f"[capture_home] rejected: stop the {side} arm first"
+            )
+            return
+        if self.hand_engage_buttons[side].isChecked():
+            self.feedback.appendPlainText(
+                f"[capture_home] rejected: stop the {side} hand first"
             )
             return
         self._send(
@@ -684,7 +689,6 @@ class OperatorWindow(QMainWindow):
                 else f"Start arm ({key_hint})"
             )
             button.blockSignals(False)
-            self.capture_home_buttons[side].setEnabled(not engaged)
         hand_active = status.get("hand_active", {})
         for side, button in self.hand_engage_buttons.items():
             engaged = bool(hand_active.get(side))
@@ -697,6 +701,11 @@ class OperatorWindow(QMainWindow):
                 else f"Start hand ({key_hint})"
             )
             button.blockSignals(False)
+        for side, button in self.capture_home_buttons.items():
+            button.setEnabled(
+                not self.arm_engage_buttons[side].isChecked()
+                and not self.hand_engage_buttons[side].isChecked()
+            )
         both_stopped = not any(
             button.isChecked() for button in self.arm_engage_buttons.values()
         )

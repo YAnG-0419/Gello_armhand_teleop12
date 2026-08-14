@@ -1,5 +1,6 @@
 import threading
 import time
+import math
 
 from .types import SIDES
 
@@ -16,6 +17,9 @@ class HandWorker:
         self.dt = 1.0 / float(tick_rate)
         self._active = {side: False for side in SIDES}
         self._open_requests: list[tuple[tuple[str, ...] | None, float]] = []
+        self._pose_requests: list[dict[str, tuple[float, ...]]] = []
+        self._cancel_pose_requested = False
+        self._feedback: dict[str, tuple[tuple[float, ...], float]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -50,20 +54,85 @@ class HandWorker:
                 self._active[side] = False
             self._open_requests.append((selected, float(duration)))
 
+    def feedback_position(
+        self, side: str, *, max_age: float = 0.5
+    ) -> tuple[float, ...]:
+        if side not in self.sides:
+            raise ValueError(f"Invalid hand side: {side}")
+        with self._lock:
+            snapshot = self._feedback.get(side)
+        if snapshot is None:
+            raise RuntimeError(f"{side} Wuji Hand 2 feedback is unavailable")
+        positions, received_at = snapshot
+        age = time.monotonic() - received_at
+        if age > max_age:
+            raise RuntimeError(
+                f"{side} Wuji Hand 2 feedback is stale ({age:.2f}s)"
+            )
+        return positions
+
+    def request_pose(self, positions: dict[str, tuple[float, ...]]) -> None:
+        selected = {side: tuple(values) for side, values in positions.items()}
+        if not selected or set(selected).difference(self.sides):
+            raise ValueError(f"Invalid hand pose sides: {tuple(selected)}")
+        if any(
+            len(values) != 20 or not all(math.isfinite(value) for value in values)
+            for values in selected.values()
+        ):
+            raise ValueError("Wuji Hand 2 target must contain 20 finite positions")
+        with self._lock:
+            for side in selected:
+                self._active[side] = False
+            self._pose_requests.append(selected)
+
+    def cancel_pose(self) -> None:
+        with self._lock:
+            self._pose_requests = []
+            self._cancel_pose_requested = True
+
     def _snapshot(self):
         with self._lock:
             active = dict(self._active)
             requests = self._open_requests
             self._open_requests = []
-        return active, requests
+            pose_requests = self._pose_requests
+            self._pose_requests = []
+            cancel_pose = self._cancel_pose_requested
+            self._cancel_pose_requested = False
+        return active, requests, pose_requests, cancel_pose
 
     def _run(self) -> None:
         deadline = time.monotonic()
         while not self._stop.is_set():
-            active, requests = self._snapshot()
+            active, requests, pose_requests, cancel_pose = self._snapshot()
+            if cancel_pose:
+                cancel = getattr(self.pipeline, "cancel_pose", None)
+                if cancel is not None:
+                    cancel()
             for sides, duration in requests:
                 self.pipeline.request_open(sides=sides, duration=duration)
+            for positions in pose_requests:
+                try:
+                    self.pipeline.request_pose(positions)
+                except Exception as error:  # noqa: BLE001 - contain worker errors
+                    self.status.errors += 1
+                    self.status.last_error = f"hand Home request failed: {error}"
             self.pipeline.tick(active=active)
+            feedback_reader = getattr(self.pipeline, "feedback_position", None)
+            if feedback_reader is not None:
+                for side in getattr(self.pipeline, "feedback_sides", self.sides):
+                    try:
+                        positions = feedback_reader(side)
+                    except Exception as error:  # noqa: BLE001
+                        self.status.errors += 1
+                        self.status.last_error = f"{side} hand feedback failed: {error}"
+                        continue
+                    if positions is None:
+                        continue
+                    values = tuple(float(value) for value in positions)
+                    if len(values) == 20 and all(math.isfinite(value) for value in values):
+                        with self._lock:
+                            self._feedback[side] = (values, time.monotonic())
             deadline += self.dt
             remaining = deadline - time.monotonic()
             if remaining <= 0:

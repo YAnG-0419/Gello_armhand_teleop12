@@ -176,3 +176,31 @@ def test_real_hand2_tick_sends_reordered_command(monkeypatch, side):
     np.testing.assert_array_equal(
         sent[0], source_qpos[HAND2_DEVICE_PERMUTATION]
     )
+
+
+def test_hand2_home_pose_starts_from_measured_feedback():
+    pipeline = object.__new__(pipeline_module.WujiHandPipeline)
+    pipeline.sides = ("left",)
+    pipeline.models = {"left": "wuji_hand_2"}
+    pipeline.joint_limits = {"left": tuple((-2.0, 2.0) for _ in range(20))}
+    pipeline.open_until = {"left": 10.0}
+    pipeline.pose_moves = {"left": None}
+    pipeline.last_feedback = {"left": None}
+    pipeline.backends = {
+        "left": type(
+            "Backend",
+            (),
+            {
+                "read_position": lambda _self: np.full(20, 0.1),
+                "last_command_position": None,
+            },
+        )()
+    }
+
+    pipeline.request_pose({"left": tuple([0.5] * 20)}, max_speed=0.5)
+
+    move = pipeline.pose_moves["left"]
+    np.testing.assert_allclose(move["start"], 0.1)
+    np.testing.assert_allclose(move["target"], 0.5)
+    assert move["duration"] == pytest.approx(1.5)
+    assert pipeline.open_until["left"] == 0.0
