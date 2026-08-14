@@ -137,6 +137,24 @@ def _hand2_feedback_positions(frame: Any) -> np.ndarray:
     return values
 
 
+def _connect_hand2(manager: Any, sdk: Any, *, address: str, side: str) -> Any:
+    """Connect one Hand 2 without exposing its SDK bridge on FCI networks.
+
+    The vendor SDK defaults ``enable_bridge`` to true.  That mode starts a
+    local Zenoh router for other *processes* to attach to the same hand, and
+    advertises a listener on every host address.  The arm teleop owns both
+    hands from this single process, so that extra bridge is neither needed nor
+    safe on a host whose Franka FCI NICs must stay dedicated to 1 kHz control.
+    Direct UDP traffic to the explicitly supplied Hand 2 address is unchanged.
+    """
+    options = sdk.ConnectOptions(enable_bridge=False)
+    return manager.connect(
+        address=address,
+        device_name=f"wuji_hand_2_{side}",
+        options=options,
+    )
+
+
 class WujiHand2Backend:
     """Network Wuji Hand 2 backend using the vendor SDK."""
 
@@ -166,8 +184,11 @@ class WujiHand2Backend:
         self._manager = SdkManager.instance()
         # device_name is a local SdkManager alias, not the product type; it must
         # be unique when both hands are connected in one process.
-        self._hand: Any = self._manager.connect(
-            address=address, device_name=f"wuji_hand_2_{side}"
+        self._hand: Any = _connect_hand2(
+            self._manager,
+            wuji_sdk,
+            address=address,
+            side=side,
         )
         self._publisher: Any = None
         self._state_subscription: Any = None

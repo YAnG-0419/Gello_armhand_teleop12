@@ -5,6 +5,7 @@ import pytest
 
 from adapters.wuji.backend import (
     WujiHand2Backend,
+    _connect_hand2,
     _hand2_diagnostics,
     _hand2_feedback_positions,
 )
@@ -70,3 +71,28 @@ def test_hand2_backend_preserves_other_gains_for_single_joint_update() -> None:
     assert gains[12] == (4.0, 0.1)
     assert len(written[-1]) == 20
     assert written[-1][13] == (5.0, 0.15)
+
+
+def test_hand2_connection_disables_unneeded_cross_process_bridge() -> None:
+    calls = []
+
+    class FakeOptions:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    class FakeManager:
+        def connect(self, **kwargs):
+            calls.append(kwargs)
+            return "hand"
+
+    sdk = SimpleNamespace(ConnectOptions=FakeOptions)
+
+    result = _connect_hand2(
+        FakeManager(), sdk, address="192.168.2.111:7447", side="right"
+    )
+
+    assert result == "hand"
+    assert len(calls) == 1
+    assert calls[0]["address"] == "192.168.2.111:7447"
+    assert calls[0]["device_name"] == "wuji_hand_2_right"
+    assert calls[0]["options"].kwargs == {"enable_bridge": False}
