@@ -37,7 +37,10 @@ RESET_MAX_SPEED = 0.20
 RESET_MAX_ACCELERATION = 0.40
 RESET_MIN_DURATION = 1.0
 READY_TOLERANCE = 0.05
-TRAJECTORY_ENDPOINT_TOLERANCE = 0.05
+# A separately captured Home and the final hand-guided recording frame can
+# differ slightly after settling.  Keep the robot-at-Ready gate tight, while
+# allowing this modest recording endpoint tolerance.
+TRAJECTORY_ENDPOINT_TOLERANCE = 0.075
 TRAJECTORY_MAX_RECORDED_SPEED = 1.0
 SMOOTHERSTEP_PEAK_SPEED = 1.875
 SMOOTHERSTEP_PEAK_ACCELERATION = 10.0 * math.sqrt(3.0) / 3.0

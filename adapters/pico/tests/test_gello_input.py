@@ -33,7 +33,7 @@ def test_checked_in_config_preserves_verified_identities_and_directions():
     assert config.left.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5)
     assert config.right.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5)
     assert config.max_relative_delta == 1.5
-    assert config.max_target_velocity == 0.5
+    assert config.max_target_velocity == 0.7
 
 
 def test_relative_mapper_has_no_engage_jump_and_reanchors():

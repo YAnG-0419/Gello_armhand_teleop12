@@ -2,14 +2,17 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from pico_bimanual_franka_teleop.env_guard import ensure_ros_free_process
 
 ensure_ros_free_process()
 
-import subprocess
-from pathlib import Path
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
+import subprocess
 from pico_bimanual_franka_teleop.config import load_config
 from pico_bimanual_franka_teleop.hand_worker import HandWorker
 from pico_bimanual_franka_teleop.hardware import DualFr3HardwareTeleop
@@ -18,8 +21,6 @@ from pico_bimanual_franka_teleop.relative_action import load_preset_actions
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 from operator_tasks import DEFAULT_OPERATOR_TASK, require_operator_task
 from operator_hand_poses import HandHomeStore
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _invoke_trigger_service(service: str, timeout: float = 120.0) -> tuple[bool, str]:

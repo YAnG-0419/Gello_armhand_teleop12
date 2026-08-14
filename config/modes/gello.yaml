@@ -13,7 +13,7 @@ right:
   expected_serial: FTALZ24C
   # 2026-08-01 hardware trial: reverse right J2/J4 from the historical mapping.
   direction_correction: [1, 1, 1, -1, 1, -1, 1]
-  joint_sensitivity: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]
+  joint_sensitivity: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.9]
 
 baudrate: 57600
 joint_ids: [1, 2, 3, 4, 5, 6, 7]
@@ -23,4 +23,4 @@ stale_timeout: 0.25
 max_joint_jump: 0.35
 # Full operational range; FR3 joint limits and the ROS safety gateway remain active.
 max_relative_delta: 1.5
-max_target_velocity: 0.5
+max_target_velocity: 0.7

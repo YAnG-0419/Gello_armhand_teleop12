@@ -46,6 +46,21 @@ def _scrubbed(value: str) -> str:
     )
 
 
+def _reexec_argv(main=None) -> list[str]:
+    """Rebuild argv so `python -m pkg.mod` stays a module invocation.
+
+    `sys.argv[0]` for `-m` is the module file path. Re-execing that path as a
+    script would put the file's directory on `sys.path` instead of the cwd,
+    and repo-root modules such as `operator_tasks` would then fail to import.
+    """
+    main = sys.modules["__main__"] if main is None else main
+    spec = getattr(main, "__spec__", None)
+    name = getattr(spec, "name", None)
+    if name and name not in {"__main__", "builtins"}:
+        return [sys.executable, "-m", name, *sys.argv[1:]]
+    return [sys.executable, *sys.argv]
+
+
 def ensure_ros_free_process() -> None:
     """Exec into a clean copy of this process if ROS paths pollute it."""
     polluted = any(
@@ -69,4 +84,4 @@ def ensure_ros_free_process() -> None:
         "re-executing without it\n"
     )
     sys.stderr.flush()
-    os.execve(sys.executable, [sys.executable, *sys.argv], environment)
+    os.execve(sys.executable, _reexec_argv(), environment)
