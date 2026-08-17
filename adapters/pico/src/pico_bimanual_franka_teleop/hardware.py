@@ -87,7 +87,7 @@ class DualFr3HardwareTeleop:
         self.ik = BimanualPinkIK(dt=self.dt, max_joint_speed=max_joint_speed)
         self.joint_input = getattr(arm_source, "output_kind", "pose") == "joint"
         if self.joint_input:
-            max_delta = float(getattr(arm_source, "max_relative_delta", 0.25))
+            max_delta_by_side = getattr(arm_source, "max_relative_delta", 0.25)
             max_target_velocity = getattr(
                 arm_source, "max_target_velocity", None
             )
@@ -96,7 +96,11 @@ class DualFr3HardwareTeleop:
                 side: RelativeJointMapper(
                     LOWER_LIMITS[index : index + 7],
                     UPPER_LIMITS[index : index + 7],
-                    max_delta,
+                    (
+                        max_delta_by_side.get(side, np.full(7, 0.25, dtype=float))
+                        if isinstance(max_delta_by_side, dict)
+                        else max_delta_by_side
+                    ),
                     joint_sensitivity=sensitivity_by_side.get(
                         side, np.ones(7, dtype=float)
                     ),

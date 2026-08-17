@@ -8,8 +8,43 @@ CONDA_BASE="$(conda info --base)"
 backend_pid=""
 gui_pid=""
 
+# Keep the native GELLO/MANUS backend and GUI off the isolated Franka cores.
+# The checked deployment file is authoritative so an old exported shell value
+# cannot silently override Docker and host processes differently.
+configured_housekeeping=""
+if [[ -f "$REPO_ROOT/docker/.env" ]]; then
+  configured_housekeeping="$(
+    awk -F= '$1 == "HOUSEKEEPING_CPUSET" {
+      sub(/^[^=]*=/, ""); print; exit
+    }' "$REPO_ROOT/docker/.env"
+  )"
+fi
+if [[ -z "$configured_housekeeping" ]]; then
+  echo "HOUSEKEEPING_CPUSET is missing from docker/.env" >&2
+  exit 1
+fi
+if [[ -n "${HOUSEKEEPING_CPUSET:-}" && \
+      "$HOUSEKEEPING_CPUSET" != "$configured_housekeeping" ]]; then
+  echo "Exported HOUSEKEEPING_CPUSET conflicts with docker/.env:" >&2
+  echo "  exported=$HOUSEKEEPING_CPUSET" >&2
+  echo "  configured=$configured_housekeeping" >&2
+  exit 1
+fi
+HOUSEKEEPING_CPUSET="$configured_housekeeping"
+if ! taskset -c "$HOUSEKEEPING_CPUSET" true >/dev/null 2>&1; then
+  echo "Invalid HOUSEKEEPING_CPUSET: $HOUSEKEEPING_CPUSET" >&2
+  exit 1
+fi
+
 group_alive() {
-  kill -0 -- "-$1" 2>/dev/null
+  # kill -0 also succeeds for an exited child that is waiting to be reaped.
+  # Treat a process group containing only zombies as stopped; otherwise every
+  # clean backend exit waits for the full timeout and is needlessly escalated
+  # to SIGTERM before the final wait(1) can reap it.
+  ps -eo pgid=,stat= | awk -v pgid="$1" '
+    $1 == pgid && $2 !~ /^Z/ { alive = 1 }
+    END { exit(alive ? 0 : 1) }
+  '
 }
 
 wait_for_group() {
@@ -67,10 +102,11 @@ if [[ " $(id -nG) " != *" dialout "* ]]; then
   backend_command=(sg dialout -c "exec $backend_shell")
 fi
 
-setsid "${backend_command[@]}" &
+setsid taskset -c "$HOUSEKEEPING_CPUSET" "${backend_command[@]}" &
 backend_pid=$!
 
-setsid "$CONDA_BASE/bin/python" "$REPO_ROOT/apps/operator_gui/operator_gui.py" \
+setsid taskset -c "$HOUSEKEEPING_CPUSET" \
+  "$CONDA_BASE/bin/python" "$REPO_ROOT/apps/operator_gui/operator_gui.py" \
   --host "$CONTROL_HOST" --port "$CONTROL_PORT" &
 gui_pid=$!
 

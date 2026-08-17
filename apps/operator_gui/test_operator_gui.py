@@ -31,7 +31,7 @@ def test_five_pedal_bindings_match_the_workcell_layout():
         "A": ("toggle", "arm", "right"),
         "B": ("toggle", "hand", "right"),
     }
-    assert PRESET_KEYS == ("Q", "W", "E")
+    assert PRESET_KEYS == ("W", "E")
 
 
 def test_shortcuts_send_independent_arm_hand_and_home_both_commands(tmp_path):
@@ -131,7 +131,7 @@ def test_task_selection_drives_home_and_ready_to_home(tmp_path):
     ]
 
 
-def test_preset_shortcuts_send_q_w_e_slots(tmp_path):
+def test_q_shortcut_starts_ready_to_home_and_w_e_run_presets(tmp_path):
     QSettings.setPath(
         QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
     )
@@ -145,6 +145,7 @@ def test_preset_shortcuts_send_q_w_e_slots(tmp_path):
         window._send = lambda command, arguments=None: sent.append(
             (command, arguments or {})
         )
+        window.ready_to_home_shortcut.activated.emit()
         for shortcut in window.preset_shortcuts:
             shortcut.activated.emit()
             application.processEvents()
@@ -156,7 +157,7 @@ def test_preset_shortcuts_send_q_w_e_slots(tmp_path):
         window.close()
 
     assert sent == [
-        ("run_preset", {"key": "q"}),
+        ("ready_to_home", {"task": "powder_weighing"}),
         ("run_preset", {"key": "w"}),
         ("run_preset", {"key": "e"}),
     ]

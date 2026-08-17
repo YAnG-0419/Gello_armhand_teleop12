@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -81,6 +82,15 @@ def invoke_ready_to_home(task: str) -> tuple[bool, str]:
 
 
 def main() -> None:
+    # Bash starts asynchronous commands with SIGINT ignored when job control
+    # is disabled. run_operator.sh deliberately backgrounds this process, so
+    # explicitly restore an interrupt handler here; an ignored disposition is
+    # inherited across exec and otherwise makes the supervisor wait for its
+    # timeout before killing an otherwise healthy backend. Route SIGTERM
+    # through the same KeyboardInterrupt/finally cleanup as Ctrl-C.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
     parser = argparse.ArgumentParser(
         description=(
             "Unified FR3 and LinkerHand teleoperation. GELLO supplies incremental "

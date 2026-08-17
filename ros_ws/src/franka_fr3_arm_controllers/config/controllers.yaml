@@ -1,7 +1,13 @@
 /**:
   controller_manager:
     ros__parameters:
-      update_rate: 1000  # Hz
+      # Run the host timer just ahead of the robot's nominal 1 kHz clock.
+      # FrankaHardwareInterface::read() blocks for the next FCI state, so the
+      # effective loop remains robot-paced at 1 kHz.  Using exactly 1000 Hz
+      # lets the independent host/robot clocks drift in phase; on the left FR3
+      # the state-to-command delay grew to ~0.8 ms and caused a communication
+      # constraints reflex despite zero missing packet IDs.
+      update_rate: 1001  # Hz requested; effective FCI rate remains 1000 Hz
       thread_priority: 98
       overruns:
         manage: false
@@ -53,3 +59,9 @@
   franka_robot_state_broadcaster:
     ros__parameters:
       update_rate: 100
+      # franka_ros2 v2.0.4 can lose this publisher's non-blocking lock while
+      # the previous state is still being sent.  Treat that as a dropped
+      # telemetry sample instead of a controller failure, and never log from
+      # the 1 kHz realtime loop.  The FCI read/write result is unaffected.
+      lock_update_success: true
+      lock_log_error: false

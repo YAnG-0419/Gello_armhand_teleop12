@@ -48,7 +48,9 @@ read-only `move_group` process used by Q/W/E preset prechecks; it subscribes to
 measured joint states and exposes `/compute_ik`, but starts no controller
 manager and cannot publish the FR3 command bus. `preset-ik` keeps that solver
 warm on `127.0.0.1:5591` so each Q/W/E does not spawn a tools container.
-Both stay on `PRESET_IK_CPUSET` (default `0-15`), away from `FRANKA_CPUSET`.
+Both stay on `HOUSEKEEPING_CPUSET`, away from `FRANKA_TELEOP_CPUSET`.
+Other non-FCI containers and the native Operator use the same housekeeping
+set; only `franka-control` uses the teleop realtime set.
 With hands enabled the normal internal services are `franka-control`,
 `teleop-control`, `moveit-ik`, `preset-ik`, `gello-bridge`, and
 `hand-control`; the host Operator backend/GUI remain outside Docker.

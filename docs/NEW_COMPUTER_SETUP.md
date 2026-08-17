@@ -101,14 +101,21 @@ cp docker/.env.example docker/.env
 TELEOP_DATA_ROOT=/path/to/franka_teleop_data
 TELEOP_ROS_DOMAIN_ID=0
 FRANKA_CPUSET=16-23
+FRANKA_TELEOP_CPUSET=16-23
+HOUSEKEEPING_CPUSET=0-15
 FRANKA_ROBOT_CONFIG=/workspace/franka_upper_body_teleop/config/workcell/current.yaml
 ```
 
 注意：
 
 - `TELEOP_DATA_ROOT` 是主机路径，目录需提前创建且当前用户可写。
-- `FRANKA_CPUSET` 必须是新电脑实际存在的 CPU 编号；CPU 较少时不能照抄
-  `16-23`。用 `lscpu -e` 查看后再设置。
+- 所有 CPU 集合都必须是新电脑实际存在的编号；CPU 较少时不能照抄示例。
+  用 `lscpu -e=CPU,CORE,SOCKET` 同时核对逻辑 CPU 和物理核。
+- `FRANKA_TELEOP_CPUSET` 只承载常规双臂 FCI 控制容器，不能与 FCI IRQ
+  所在的物理核共享 SMT sibling；`HOUSEKEEPING_CPUSET` 承载其余容器及宿主
+  Operator，并应与它完全分离。
+- `FRANKA_CPUSET` 目前保留给独立的 `moveit-real` 模式；只读 IK 服务也
+  使用 `HOUSEKEEPING_CPUSET`。不同主机需按自身拓扑重新规划。
 - `FRANKA_ROBOT_CONFIG` 是容器内路径。Compose 会把当前仓库挂载为
   `/workspace/franka_upper_body_teleop`，这里不需要改成主机仓库名。
 - `ops/run/run_teleop.sh` 默认把诊断写到

@@ -30,9 +30,13 @@ def test_checked_in_config_preserves_verified_identities_and_directions():
     assert config.joint_ids == (1, 2, 3, 4, 5, 6, 7)
     assert config.left.direction_correction == (1, 1, 1, -1, 1, -1, 1)
     assert config.right.direction_correction == (1, 1, 1, -1, 1, -1, 1)
-    assert config.left.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5)
-    assert config.right.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5)
-    assert config.max_relative_delta == 1.5
+    assert config.left.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+    assert config.right.joint_sensitivity == (0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 1.2)
+    assert config.left.max_relative_delta == (1.5,) * 7
+    np.testing.assert_allclose(
+        config.right.max_relative_delta,
+        hardware.UPPER_LIMITS[7:14] - hardware.LOWER_LIMITS[7:14],
+    )
     assert config.max_target_velocity == 0.7
 
 
@@ -81,6 +85,20 @@ def test_relative_mapper_applies_per_joint_sensitivity_before_displacement_limit
 
     limited = mapper.update(np.ones(7), True, np.zeros(7))
     np.testing.assert_allclose(limited, np.full(7, 0.25))
+
+
+def test_relative_mapper_applies_per_joint_displacement_limits():
+    limits = np.linspace(0.1, 0.7, 7)
+    mapper = RelativeJointMapper(
+        lower_limits=np.full(7, -2.0),
+        upper_limits=np.full(7, 2.0),
+        max_relative_delta=limits,
+    )
+    mapper.update(np.zeros(7), True, np.zeros(7))
+
+    target = mapper.update(np.ones(7), True, np.zeros(7))
+
+    np.testing.assert_allclose(target, limits)
 
 
 def test_relative_mapper_applies_gello_target_velocity_limit():
@@ -147,6 +165,7 @@ def test_side_reader_reacquires_stable_input_after_fail_closed_jump():
             "RIGHT",
             (1, 1, 1, 1, 1, 1, 1),
             (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            (1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5),
         ),
         baudrate=57600,
         joint_ids=(1, 2, 3, 4, 5, 6, 7),
@@ -185,12 +204,14 @@ def _config(stale_timeout=0.25, ready_timeout=0.2):
             "LEFT",
             (1, 1, 1, -1, 1, -1, 1),
             (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0),
+            (1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5),
         ),
         right=GelloSideConfig(
             "/dev/RIGHT",
             "RIGHT",
             (1, 1, 1, -1, 1, -1, 1),
             (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0),
+            (1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5),
         ),
         baudrate=57600,
         joint_ids=(1, 2, 3, 4, 5, 6, 7),
@@ -198,7 +219,6 @@ def _config(stale_timeout=0.25, ready_timeout=0.2):
         ready_timeout=ready_timeout,
         stale_timeout=stale_timeout,
         max_joint_jump=0.35,
-        max_relative_delta=1.5,
         max_target_velocity=0.5,
     )
 
@@ -443,7 +463,10 @@ def test_hardware_coordinator_anchors_joint_input_to_measured_state(monkeypatch)
 
     class Source:
         output_kind = "joint"
-        max_relative_delta = 0.25
+        max_relative_delta = {
+            "left": np.full(7, 0.25),
+            "right": np.linspace(0.3, 0.9, 7),
+        }
         joint_sensitivity = {
             "left": np.full(7, 0.5),
             "right": np.full(7, 2.0),
@@ -524,6 +547,12 @@ def test_hardware_coordinator_anchors_joint_input_to_measured_state(monkeypatch)
     )
     np.testing.assert_array_equal(
         teleop.mappers["right"].joint_sensitivity, np.full(7, 2.0)
+    )
+    np.testing.assert_array_equal(
+        teleop.mappers["left"].max_relative_delta, np.full(7, 0.25)
+    )
+    np.testing.assert_allclose(
+        teleop.mappers["right"].max_relative_delta, np.linspace(0.3, 0.9, 7)
     )
 
     with pytest.raises(KeyboardInterrupt):

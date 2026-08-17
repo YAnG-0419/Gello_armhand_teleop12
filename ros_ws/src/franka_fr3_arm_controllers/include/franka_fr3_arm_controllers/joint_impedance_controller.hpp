@@ -15,6 +15,7 @@
 #pragma once
 
 #include <Eigen/Eigen>
+#include <atomic>
 #include <array>
 #include <controller_interface/controller_interface.hpp>
 #include <cstdint>
@@ -46,6 +47,15 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) override;
 
  private:
+  enum class CommandStatus : std::uint8_t {
+    kInactive,
+    kWaiting,
+    kInvalidTimestamp,
+    kInitialTargetRejected,
+    kActive,
+    kTimedOut,
+  };
+
   struct JointCommand {
     std::array<double, 7> positions{};
     rclcpp::Time source_stamp;
@@ -70,7 +80,6 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   const Vector7d tau_max_ = (Vector7d() << 87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0).finished();
   bool move_to_start_position_finished_{false};
   bool motion_generator_initialized_{false};
-  bool initial_target_rejection_logged_{false};
   rclcpp::Time start_time_;
   std::unique_ptr<MotionGenerator> motion_generator_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_ = nullptr;
@@ -90,10 +99,14 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   double interp_duration_{0.01};
   Vector7d applied_goal_;
   bool applied_goal_valid_{false};
+  std::atomic<CommandStatus> command_status_{CommandStatus::kInactive};
+  CommandStatus last_reported_command_status_{CommandStatus::kInactive};
+  rclcpp::TimerBase::SharedPtr command_status_timer_;
 
   Vector7d calculateTauDGains_(const Vector7d& q_goal);
   bool validateGains_(const std::vector<double>& gains, const std::string& gains_name);
   bool initializeMotionGenerator_();
+  void reportCommandStatus_();
   void updateJointStates_();
   void validateGelloPositions_(const rclcpp::Time& source_stamp);
   void jointStateCallback_(const sensor_msgs::msg::JointState msg);

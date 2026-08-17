@@ -25,6 +25,35 @@ if [[ -z "$DATA_ROOT" ]]; then
   echo "TELEOP_DATA_ROOT is not set and is missing from docker/.env" >&2
   exit 1
 fi
+
+# This is the common backend entrypoint for GELLO, PICO, VIVE, and the
+# Operator supervisor.  Pin here as well as in run_operator.sh so direct
+# invocations cannot drift onto the Franka realtime cores.
+HOUSEKEEPING_CPUSET_FILE=""
+if [[ -f "$REPO_ROOT/docker/.env" ]]; then
+  HOUSEKEEPING_CPUSET_FILE="$(
+    awk -F= '$1 == "HOUSEKEEPING_CPUSET" {
+      sub(/^[^=]*=/, ""); print; exit
+    }' "$REPO_ROOT/docker/.env"
+  )"
+fi
+if [[ -z "$HOUSEKEEPING_CPUSET_FILE" ]]; then
+  echo "HOUSEKEEPING_CPUSET is missing from docker/.env" >&2
+  exit 1
+fi
+if [[ -n "${HOUSEKEEPING_CPUSET:-}" && \
+      "$HOUSEKEEPING_CPUSET" != "$HOUSEKEEPING_CPUSET_FILE" ]]; then
+  echo "Exported HOUSEKEEPING_CPUSET conflicts with docker/.env:" >&2
+  echo "  exported=$HOUSEKEEPING_CPUSET" >&2
+  echo "  configured=$HOUSEKEEPING_CPUSET_FILE" >&2
+  exit 1
+fi
+HOUSEKEEPING_CPUSET="$HOUSEKEEPING_CPUSET_FILE"
+if ! taskset -c "$HOUSEKEEPING_CPUSET" true >/dev/null 2>&1; then
+  echo "Invalid HOUSEKEEPING_CPUSET: $HOUSEKEEPING_CPUSET" >&2
+  exit 1
+fi
+
 RUN_PARENT="${TELEOP_DIAGNOSTICS_ROOT:-$DATA_ROOT/diagnostics}"
 if [[ -n "${TELEOP_RUN_DIR:-}" ]]; then
   RUN_DIR="$TELEOP_RUN_DIR"
@@ -65,7 +94,7 @@ CONDA_BASE="$(conda info --base)"
 # shellcheck disable=SC1091
 source "$CONDA_BASE/etc/profile.d/conda.sh"
 conda activate "$TELEOP_CONDA_ENV"
-exec python -m teleop_runtime.cli \
+exec taskset -c "$HOUSEKEEPING_CPUSET" python -m teleop_runtime.cli \
   --config config/modes/pico.yaml "${ARM_ARGS[@]}" \
   --preset-config config/preset_actions.yaml \
   --preset-data-root "$DATA_ROOT" \

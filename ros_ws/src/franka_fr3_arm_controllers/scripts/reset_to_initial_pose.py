@@ -36,12 +36,17 @@ STATE_MAX_AGE = 0.5
 RESET_MAX_SPEED = 0.20
 RESET_MAX_ACCELERATION = 0.40
 RESET_MIN_DURATION = 1.0
+# Absolute Ready-to-Home recordings have their own playback cap.  Keep direct
+# Ready/Home resets at RESET_MAX_SPEED, including the final settling move.
+READY_TO_HOME_MAX_SPEED = 0.85
 READY_TOLERANCE = 0.05
-# A separately captured Home and the final hand-guided recording frame can
-# differ slightly after settling.  Keep the robot-at-Ready gate tight, while
-# allowing this modest recording endpoint tolerance.
-TRAJECTORY_ENDPOINT_TOLERANCE = 0.075
-TRAJECTORY_MAX_RECORDED_SPEED = 1.0
+# The operator may intentionally use a task Home only as a coarse named
+# reference while relying on the absolute recording as the playback truth.
+# Keep the robot-at-Ready gate tight, but allow this bounded endpoint offset.
+TRAJECTORY_ENDPOINT_TOLERANCE = 2.0
+# Reject an implausible position discontinuity even when local retiming could
+# otherwise make its velocity appear safe.
+TRAJECTORY_MAX_RECORDED_STEP = 0.10
 SMOOTHERSTEP_PEAK_SPEED = 1.875
 SMOOTHERSTEP_PEAK_ACCELERATION = 10.0 * math.sqrt(3.0) / 3.0
 
@@ -270,6 +275,44 @@ def reset_duration(
         / max_acceleration
     )
     return max(min_duration, velocity_duration, acceleration_duration)
+
+
+def maximum_trajectory_step(samples):
+    return max(
+        abs(samples[index][1][side][joint] - samples[index - 1][1][side][joint])
+        for index in range(1, len(samples))
+        for side in SIDES
+        for joint in range(JOINT_COUNT)
+    )
+
+
+def maximum_trajectory_speed(samples):
+    return max(
+        abs(samples[index][1][side][joint] - samples[index - 1][1][side][joint])
+        / (samples[index][0] - samples[index - 1][0])
+        for index in range(1, len(samples))
+        for side in SIDES
+        for joint in range(JOINT_COUNT)
+    )
+
+
+def retime_trajectory(samples, max_speed):
+    """Keep the recorded path while extending only intervals above max_speed."""
+    if not math.isfinite(max_speed) or max_speed <= 0.0:
+        raise ValueError("Ready-to-Home maximum speed must be finite and positive")
+    result = [(0.0, samples[0][1])]
+    for index in range(1, len(samples)):
+        previous_time, previous_positions = samples[index - 1]
+        current_time, current_positions = samples[index]
+        original_interval = current_time - previous_time
+        largest_delta = max(
+            abs(current_positions[side][joint] - previous_positions[side][joint])
+            for side in SIDES
+            for joint in range(JOINT_COUNT)
+        )
+        interval = max(original_interval, largest_delta / max_speed)
+        result.append((result[-1][0] + interval, current_positions))
+    return result
 
 
 def capture_document(targets):
@@ -689,8 +732,8 @@ class InitialPoseReset(Node):
             for joint in range(JOINT_COUNT)
         )
 
-    def _play_absolute_samples(self, samples, speed_scale, rate=50.0):
-        source_times = [sample[0] * speed_scale for sample in samples]
+    def _play_absolute_samples(self, samples, rate=50.0):
+        source_times = [sample[0] for sample in samples]
         period = 1.0 / rate
         started = time.monotonic()
         while rclpy.ok():
@@ -765,30 +808,37 @@ class InitialPoseReset(Node):
                     f"Trajectory end does not match {TASKS[task]} Home "
                     f"({last_error:.4f} rad)"
                 )
-            maximum_speed = max(
-                abs(samples[index][1][side][joint] - samples[index - 1][1][side][joint])
-                / (samples[index][0] - samples[index - 1][0])
-                for index in range(1, len(samples))
-                for side in SIDES
-                for joint in range(JOINT_COUNT)
-            )
-            if maximum_speed > TRAJECTORY_MAX_RECORDED_SPEED:
+            maximum_step = maximum_trajectory_step(samples)
+            if maximum_step > TRAJECTORY_MAX_RECORDED_STEP:
                 raise RuntimeError(
-                    f"Recorded trajectory contains a {maximum_speed:.3f} rad/s jump"
+                    f"Recorded trajectory contains a {maximum_step:.3f} rad position jump"
                 )
-            speed_scale = max(1.0, maximum_speed / RESET_MAX_SPEED)
+            recorded_speed = maximum_trajectory_speed(samples)
+            samples = retime_trajectory(samples, READY_TO_HOME_MAX_SPEED)
+            replay_speed = maximum_trajectory_speed(samples)
+            if replay_speed > READY_TO_HOME_MAX_SPEED + 1e-9:
+                raise RuntimeError(
+                    f"Retimed trajectory contains a {replay_speed:.3f} rad/s jump"
+                )
+            if recorded_speed > READY_TO_HOME_MAX_SPEED:
+                self.get_logger().info(
+                    "Ready-to-Home locally retimed recorded peak "
+                    f"{recorded_speed:.3f} rad/s to {replay_speed:.3f} rad/s."
+                )
             self._set_active(True)
             time.sleep(0.25)
-            duration = self._play_absolute_samples(samples, speed_scale)
+            duration = self._play_absolute_samples(samples)
             _, error = self._move(
                 SIDES,
-                targets=self.task_targets[task],
+                # The absolute recording, rather than the separately saved
+                # task Home, defines the final commanded pose for playback.
+                targets=samples[-1][1],
                 max_speed=RESET_MAX_SPEED,
                 max_acceleration=RESET_MAX_ACCELERATION,
             )
             response.success = True
             response.message = (
-                f"Ready to {TASKS[task]} Home completed in {duration:.1f} s "
+                f"Ready to {TASKS[task]} trajectory completed in {duration:.1f} s "
                 f"(maximum error {error:.4f} rad)."
             )
         except (OSError, RuntimeError, ValueError) as exception:
@@ -819,7 +869,11 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        node._set_active(False)
+        # rclpy's SIGINT handler can invalidate the context before spin()
+        # returns. Publishing after that point raises RCLError and makes an
+        # otherwise orderly container stop look like a node crash.
+        if rclpy.ok():
+            node._set_active(False)
         executor.shutdown()
         node.destroy_node()
         if rclpy.ok():

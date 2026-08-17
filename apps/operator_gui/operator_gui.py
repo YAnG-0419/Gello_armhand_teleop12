@@ -57,7 +57,7 @@ PEDAL_BINDINGS = {
     "A": ("toggle", "arm", "right"),
     "B": ("toggle", "hand", "right"),
 }
-PRESET_KEYS = ("Q", "W", "E")
+PRESET_KEYS = ("W", "E")
 HAND_KEY_HINTS = {"left": "R", "right": "B"}
 
 
@@ -274,7 +274,7 @@ class OperatorWindow(QMainWindow):
         self.action_buttons.append(self.capture_ready_button)
         ready_layout.addWidget(self.capture_ready_button)
         ready_layout.addWidget(self._button("Move both arms to Ready", "move_ready"))
-        self.ready_to_home_button = QPushButton("Ready to Home")
+        self.ready_to_home_button = QPushButton("Ready to Home (Q)")
         self.ready_to_home_button.setFocusPolicy(Qt.NoFocus)
         self.ready_to_home_button.clicked.connect(
             lambda: self._send(
@@ -293,7 +293,7 @@ class OperatorWindow(QMainWindow):
         preset_layout = QHBoxLayout(preset_box)
         self.preset_buttons: dict[str, QPushButton] = {}
         preset_labels = {
-            "q": "Preset 1: left kuai1 (Q)",
+            "q": "Preset 1: left kuai1",
             "w": "Preset 2: unconfigured (W)",
             "e": "Preset 3: unconfigured (E)",
         }
@@ -463,6 +463,10 @@ class OperatorWindow(QMainWindow):
             shortcut.activated.connect(slot)
             self.shortcuts.append(shortcut)
         self.preset_shortcuts = []
+        self.ready_to_home_shortcut = QShortcut(QKeySequence("Q"), self)
+        self.ready_to_home_shortcut.setContext(Qt.WindowShortcut)
+        self.ready_to_home_shortcut.setAutoRepeat(False)
+        self.ready_to_home_shortcut.activated.connect(self._shortcut_ready_to_home)
         for key in PRESET_KEYS:
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.setContext(Qt.WindowShortcut)
@@ -471,6 +475,10 @@ class OperatorWindow(QMainWindow):
                 lambda selected=key.lower(): self._shortcut_preset(selected)
             )
             self.preset_shortcuts.append(shortcut)
+
+    def _shortcut_ready_to_home(self) -> None:
+        if self.connection_state == "connected":
+            self._send("ready_to_home", {"task": self._selected_task()})
 
     def _shortcut_preset(self, key: str) -> None:
         if self.connection_state == "connected":

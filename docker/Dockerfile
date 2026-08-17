@@ -114,6 +114,7 @@ RUN git -C src/franka_ros2 apply /tmp/franka_ros2_restore_thread_scheduler.patch
 # Optional local integrations are installed late so changes to them do not
 # invalidate the expensive libfranka/vendor/LeRobot layers above.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-humble-rmw-cyclonedds-cpp \
         ros-humble-moveit-kinematics \
         ros-humble-moveit-planners-ompl \
         ros-humble-moveit-ros-move-group \

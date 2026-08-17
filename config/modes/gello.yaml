@@ -8,12 +8,17 @@ left:
   direction_correction: [1, 1, 1, -1, 1, -1, 1]
   # FR3 joint displacement per radian of calibrated GELLO displacement.
   joint_sensitivity: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  # Per-engagement relative travel caps [rad], one per joint.
+  max_relative_delta: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
 right:
   port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTALZ24C-if00-port0
   expected_serial: FTALZ24C
   # 2026-08-01 hardware trial: reverse right J2/J4 from the historical mapping.
   direction_correction: [1, 1, 1, -1, 1, -1, 1]
-  joint_sensitivity: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.9]
+  joint_sensitivity: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 1.2]
+  # Full spans of the FR3 limits used by the safety gateway. The mapper still
+  # clips every target to the absolute lower/upper limit for the current pose.
+  max_relative_delta: [5.8014800334, 3.6721800334, 5.8014800334, 2.9600829334, 5.7526067, 4.1818107, 6.1016667]
 
 baudrate: 57600
 joint_ids: [1, 2, 3, 4, 5, 6, 7]
@@ -21,6 +26,4 @@ standard_signs: [1, -1, 1, -1, 1, 1, 1]
 ready_timeout: 5.0
 stale_timeout: 0.25
 max_joint_jump: 0.35
-# Full operational range; FR3 joint limits and the ROS safety gateway remain active.
-max_relative_delta: 1.5
 max_target_velocity: 0.7

@@ -205,12 +205,10 @@ if [[ -f "$REPO_ROOT/docker/.env" ]]; then
   else
     fail "TELEOP_DATA_ROOT is missing or not writable: ${data_root:-unset}"
   fi
-  cpu_set="$(awk -F= '$1 == "FRANKA_CPUSET" {sub(/^[^=]*=/, ""); print; exit}' \
-    "$REPO_ROOT/docker/.env")"
-  if [[ -n "$cpu_set" ]] && taskset -c "$cpu_set" true >/dev/null 2>&1; then
-    pass "FRANKA_CPUSET is valid on this host: $cpu_set"
+  if "$REPO_ROOT/ops/diagnostics/check_franka_cpu_layout.sh"; then
+    pass "Franka CPU/SMT layout is internally consistent"
   else
-    fail "FRANKA_CPUSET is invalid on this host: ${cpu_set:-unset}"
+    fail "Franka CPU/SMT layout is unsafe"
   fi
 else
   fail "docker/.env is missing"

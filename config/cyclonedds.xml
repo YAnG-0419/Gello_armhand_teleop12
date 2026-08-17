@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <Discovery>
+      <!--
+        This launch briefly runs more than ten ROS processes in one domain.
+        With ROS_LOCALHOST_ONLY, Cyclone uses unicast participant indices on
+        loopback; keep the bound finite while leaving enough startup headroom.
+      -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

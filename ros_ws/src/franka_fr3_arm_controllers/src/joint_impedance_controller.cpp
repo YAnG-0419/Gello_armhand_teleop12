@@ -15,6 +15,7 @@
 #include <Eigen/Eigen>
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <franka_fr3_arm_controllers/joint_impedance_controller.hpp>
@@ -22,6 +23,7 @@
 #include <unordered_map>
 
 using std::placeholders::_1;
+using namespace std::chrono_literals;
 
 namespace franka_fr3_arm_controllers {
 
@@ -89,9 +91,9 @@ controller_interface::return_type JointImpedanceController::update(
     gello_position_values_valid_ = false;
     hold_position_ = q_;
     motion_generator_initialized_ = false;
-    initial_target_rejection_logged_ = false;
     move_to_start_position_finished_ = false;
     motion_generator_.reset();
+    command_status_.store(CommandStatus::kTimedOut, std::memory_order_relaxed);
     q_goal = hold_position_;
   }
 
@@ -221,6 +223,11 @@ CallbackReturn JointImpedanceController::on_configure(
   joint_state_subscriber_ = get_node()->create_subscription<sensor_msgs::msg::JointState>(
       "gello/joint_states", 1,
       [this](const sensor_msgs::msg::JointState& msg) { jointStateCallback_(msg); });
+  // Never call a normal ROS logger from update(): it can take middleware and
+  // console locks and block the 1 kHz FCI loop. Report lock-free status written
+  // by the realtime path from this executor timer instead.
+  command_status_timer_ =
+      get_node()->create_wall_timer(1s, [this]() { reportCommandStatus_(); });
 
   return CallbackReturn::SUCCESS;
 }
@@ -243,6 +250,7 @@ CallbackReturn JointImpedanceController::on_activate(
   gello_position_values_valid_ = false;
   applied_goal_valid_ = false;
   motion_generator_.reset();
+  command_status_.store(CommandStatus::kWaiting, std::memory_order_relaxed);
 
   return CallbackReturn::SUCCESS;
 }
@@ -283,10 +291,7 @@ void JointImpedanceController::validateGelloPositions_(const rclcpp::Time& sourc
       (time_since_last_joint_state < max_time_diff && time_since_msg_stamp >= 0.0 &&
        time_since_msg_stamp < max_time_diff);
   if (!gello_position_values_valid_) {
-    RCLCPP_WARN(get_node()->get_logger(),
-                "Gello position values are not valid. Time since last joint state: %f // Time "
-                "since message stamp: %f",
-                time_since_last_joint_state, time_since_msg_stamp);
+    command_status_.store(CommandStatus::kInvalidTimestamp, std::memory_order_relaxed);
   }
   last_joint_state_time_ = source_stamp;
 }
@@ -306,9 +311,6 @@ void JointImpedanceController::updateJointStates_() {
 
 bool JointImpedanceController::initializeMotionGenerator_() {
   if (!gello_position_values_valid_) {
-    // Only send a warning once every 10 seconds in order not to spam the log
-    RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 10 * 1000,
-                         "Waiting for valid joint states...");
     return false;
   }
 
@@ -317,21 +319,46 @@ bool JointImpedanceController::initializeMotionGenerator_() {
   for (int i = 0; i < num_joints; ++i) {
     q_goal(i) = gello_position_values_[i];
     if (std::abs(q_goal(i) - q_(i)) > max_initial_target_delta_) {
-      if (!initial_target_rejection_logged_) {
-        RCLCPP_ERROR(get_node()->get_logger(),
-                     "Rejected initial target: joint %d delta %.3f exceeds %.3f rad.", i + 1,
-                     std::abs(q_goal(i) - q_(i)), max_initial_target_delta_);
-        initial_target_rejection_logged_ = true;
-      }
+      command_status_.store(CommandStatus::kInitialTargetRejected, std::memory_order_relaxed);
       gello_position_values_valid_ = false;
       return false;
     }
   }
   const double motion_generator_speed_factor = 0.2;
-  initial_target_rejection_logged_ = false;
   motion_generator_ = std::make_unique<MotionGenerator>(motion_generator_speed_factor, q_, q_goal);
   start_time_ = get_node()->now();
+  command_status_.store(CommandStatus::kActive, std::memory_order_relaxed);
   return true;
+}
+
+void JointImpedanceController::reportCommandStatus_() {
+  const auto status = command_status_.load(std::memory_order_relaxed);
+  if (status == last_reported_command_status_) {
+    return;
+  }
+  last_reported_command_status_ = status;
+  switch (status) {
+    case CommandStatus::kWaiting:
+      RCLCPP_INFO(get_node()->get_logger(),
+                  "Holding current position while waiting for valid joint commands.");
+      break;
+    case CommandStatus::kInvalidTimestamp:
+      RCLCPP_WARN(get_node()->get_logger(), "Rejected joint command with an invalid timestamp.");
+      break;
+    case CommandStatus::kInitialTargetRejected:
+      RCLCPP_ERROR(get_node()->get_logger(),
+                   "Rejected initial target because a joint delta exceeds the configured limit.");
+      break;
+    case CommandStatus::kActive:
+      RCLCPP_INFO(get_node()->get_logger(), "Accepted joint command stream.");
+      break;
+    case CommandStatus::kTimedOut:
+      RCLCPP_WARN(get_node()->get_logger(),
+                  "Joint command stream timed out; holding the current position.");
+      break;
+    case CommandStatus::kInactive:
+      break;
+  }
 }
 
 }  // namespace franka_fr3_arm_controllers

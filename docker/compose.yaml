@@ -2,14 +2,22 @@ x-runtime: &runtime
   image: franka-upper-body-teleop:latest
   network_mode: host
   ipc: host
+  # Default every non-FCI service to housekeeping CPUs.  Real robot services
+  # override this explicitly below; keeping the default here prevents a new
+  # helper container from silently entering the isolated realtime cores.
+  cpuset: ${HOUSEKEEPING_CPUSET:?Missing HOUSEKEEPING_CPUSET in docker/.env}
   volumes:
     - ..:/workspace/franka_upper_body_teleop
     - ${TELEOP_DATA_ROOT:?Missing TELEOP_DATA_ROOT in docker/.env}:/data
   environment:
     # All DDS participants live on this machine. Binding every interface let
-    # RTPS multicast/unicast leak onto the FCI robot subnets (172.16.0/1.x)
-    # and stall publishers behind slow interfaces, causing intermittent
-    # multi-second state gaps and communication_constraints_violation.
+    # Keep RTPS multicast/unicast off the dedicated FCI robot subnets
+    # (172.16.0/1.x).  The prior all-interface Fast DDS setup was correlated
+    # with intermittent state gaps and communication_constraints_violation.
+    # Cyclone DDS is selected explicitly for every service so participants do
+    # not silently fall back to the Humble default (Fast DDS).
+    - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    - CYCLONEDDS_URI=file:///workspace/franka_upper_body_teleop/config/cyclonedds.xml
     - ROS_LOCALHOST_ONLY=1
     - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
   working_dir: /workspace/franka_upper_body_teleop
@@ -18,7 +26,14 @@ services:
   franka-control:
     <<: *runtime
     privileged: true
-    cpuset: ${FRANKA_CPUSET:?Missing FRANKA_CPUSET in docker/.env}
+    # ROS 2 launch performs its orderly node/controller shutdown on SIGINT.
+    # Docker's default SIGTERM left launch running until the timeout and then
+    # reported exit 137 even though the robots had already stopped.
+    stop_signal: SIGINT
+    stop_grace_period: 30s
+    # Teleop has a host-specific layout that keeps both controller managers
+    # off the physical cores used by the two FCI IRQs.
+    cpuset: ${FRANKA_TELEOP_CPUSET:?Missing FRANKA_TELEOP_CPUSET in docker/.env}
     ulimits:
       rtprio: 99
       rttime: -1
@@ -42,7 +57,8 @@ services:
     # targeted by name.
     profiles: [fake]
     privileged: true
-    cpuset: ${FRANKA_CPUSET:?Missing FRANKA_CPUSET in docker/.env}
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     ulimits:
       rtprio: 99
       rttime: -1
@@ -60,6 +76,8 @@ services:
 
   hand-control:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     # Privileged host networking exposes the two O30i USB-CANFD adapters.
     # Defaults match the physical pair: O30i on BOTH sides (left swapped from
     # G20 to O30i, 2026-08-04); the bridge listens on host UDP 5570.
@@ -101,6 +119,8 @@ services:
     <<: *runtime
     profiles: [hand-ui]
     environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///workspace/franka_upper_body_teleop/config/cyclonedds.xml
       - ROS_LOCALHOST_ONLY=1
       - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
       - PYTHONPATH=/workspace/franka_upper_body_teleop/apps/hand_ui
@@ -123,6 +143,8 @@ services:
     <<: *runtime
     profiles: [moveit]
     environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///workspace/franka_upper_body_teleop/config/cyclonedds.xml
       - ROS_LOCALHOST_ONLY=1
       - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
       - PYTHONPATH=/workspace/franka_upper_body_teleop
@@ -141,6 +163,8 @@ services:
 
   teleop-control:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     command:
       - ros2
       - launch
@@ -150,10 +174,11 @@ services:
 
   moveit-ik:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     # Read-only MoveIt service for preset-action IK/collision prechecks during
     # teleop. move_group.launch.py starts no ros2_control/controller manager.
-    # Stay off the Franka realtime cores (FRANKA_CPUSET).
-    cpuset: ${PRESET_IK_CPUSET:?Missing PRESET_IK_CPUSET in docker/.env}
+    # It inherits HOUSEKEEPING_CPUSET and stays off the Franka realtime cores.
     command:
       - ros2
       - launch
@@ -168,8 +193,9 @@ services:
     # Long-lived Arm UI IK helper. Operator Q/W/E talks to this TCP server
     # instead of `docker compose run --rm tools`, which was starving
     # franka-control on the realtime CPUs.
-    cpuset: ${PRESET_IK_CPUSET:?Missing PRESET_IK_CPUSET in docker/.env}
     environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///workspace/franka_upper_body_teleop/config/cyclonedds.xml
       - ROS_LOCALHOST_ONLY=1
       - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
       - PYTHONPATH=/workspace/franka_upper_body_teleop
@@ -188,8 +214,12 @@ services:
 
   moveit-fake:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     profiles: [moveit]
     environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///workspace/franka_upper_body_teleop/config/cyclonedds.xml
       - ROS_LOCALHOST_ONLY=1
       - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
       - DISPLAY=${DISPLAY:-}
@@ -210,6 +240,8 @@ services:
 
   moveit-real:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     profiles: [moveit]
     privileged: true
     cpuset: ${FRANKA_CPUSET:?Missing FRANKA_CPUSET in docker/.env}
@@ -222,6 +254,8 @@ services:
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=file:///workspace/franka_upper_body_teleop/config/cyclonedds.xml
       - ROS_LOCALHOST_ONLY=1
       - ROS_DOMAIN_ID=${TELEOP_ROS_DOMAIN_ID:?Missing TELEOP_ROS_DOMAIN_ID in docker/.env}
       - DISPLAY=${DISPLAY:-}
@@ -241,6 +275,8 @@ services:
 
   pico-bridge:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     # Optional legacy arm input; mutually exclusive with the other UDP bridges.
     profiles: [pico]
     command:
@@ -253,6 +289,8 @@ services:
 
   gello-bridge:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     # Default joint-input adapter. The host operator owns both GELLO serial
     # ports and sends canonical 14-joint targets over the existing UDP link.
     command:
@@ -265,6 +303,8 @@ services:
 
   vive-bridge:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     profiles: [vive]
     command:
       - ros2
@@ -276,6 +316,8 @@ services:
 
   orbbec:
     <<: *runtime
+    stop_signal: SIGINT
+    stop_grace_period: 30s
     command:
       - ros2
       - launch

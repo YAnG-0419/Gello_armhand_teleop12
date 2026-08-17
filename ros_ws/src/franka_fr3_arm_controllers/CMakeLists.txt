@@ -25,6 +25,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(controller_manager REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
@@ -33,6 +34,16 @@ find_package(franka_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(franka_semantic_components REQUIRED)
 find_package(realtime_tools REQUIRED)
+
+add_executable(
+        franka_ros2_control_node
+        src/franka_ros2_control_node.cpp)
+ament_target_dependencies(
+        franka_ros2_control_node
+        controller_manager
+        rclcpp
+        realtime_tools
+)
 
 add_library(
         ${PROJECT_NAME}
@@ -68,6 +79,12 @@ install(
 )
 
 install(
+        TARGETS
+        franka_ros2_control_node
+        DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
         DIRECTORY include/
         DESTINATION include
 )
@@ -89,6 +106,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     test_reset_to_initial_pose
     test/test_reset_to_initial_pose.py
+  )
+  ament_add_pytest_test(
+    test_launch_startup_order
+    test/test_launch_startup_order.py
   )
 endif()
 

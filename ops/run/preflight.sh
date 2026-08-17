@@ -56,4 +56,5 @@ conda run --no-capture-output -n base python -c \
   docker compose config --quiet
 )
 echo "[PASS] Docker Compose configuration"
+"$REPO_ROOT/ops/diagnostics/check_franka_cpu_layout.sh"
 echo "Preflight passed. No robot, hand, or motor command was sent."

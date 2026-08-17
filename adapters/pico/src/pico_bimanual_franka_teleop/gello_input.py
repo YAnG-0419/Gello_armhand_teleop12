@@ -21,6 +21,7 @@ class GelloSideConfig:
     expected_serial: str
     direction_correction: tuple[int, ...]
     joint_sensitivity: tuple[float, ...]
+    max_relative_delta: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,6 @@ class GelloConfig:
     ready_timeout: float
     stale_timeout: float
     max_joint_jump: float
-    max_relative_delta: float
     max_target_velocity: float
 
 
@@ -55,6 +55,17 @@ def _seven_sensitivities(value, field: str) -> tuple[float, ...]:
     return result
 
 
+def _seven_positive_values(value, field: str) -> tuple[float, ...]:
+    result = tuple(float(item) for item in value)
+    if (
+        len(result) != 7
+        or not all(np.isfinite(item) for item in result)
+        or any(item <= 0.0 for item in result)
+    ):
+        raise ValueError(f"{field} must contain seven finite positive values")
+    return result
+
+
 def load_gello_config(path: str | Path) -> GelloConfig:
     """Load the strict, hardware-identity-aware GELLO configuration."""
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
@@ -67,7 +78,6 @@ def load_gello_config(path: str | Path) -> GelloConfig:
         "ready_timeout",
         "stale_timeout",
         "max_joint_jump",
-        "max_relative_delta",
         "max_target_velocity",
     }
     if not isinstance(raw, dict) or set(raw) != required:
@@ -80,6 +90,7 @@ def load_gello_config(path: str | Path) -> GelloConfig:
             "expected_serial",
             "direction_correction",
             "joint_sensitivity",
+            "max_relative_delta",
         }
         if not isinstance(selected, dict) or set(selected) != expected:
             raise ValueError(f"{side} GELLO keys must be exactly {sorted(expected)}")
@@ -98,6 +109,10 @@ def load_gello_config(path: str | Path) -> GelloConfig:
                 selected["joint_sensitivity"],
                 f"{side}.joint_sensitivity",
             ),
+            max_relative_delta=_seven_positive_values(
+                selected["max_relative_delta"],
+                f"{side}.max_relative_delta",
+            ),
         )
 
     joint_ids = tuple(int(value) for value in raw["joint_ids"])
@@ -109,7 +124,6 @@ def load_gello_config(path: str | Path) -> GelloConfig:
             "ready_timeout",
             "stale_timeout",
             "max_joint_jump",
-            "max_relative_delta",
             "max_target_velocity",
         )
     }
@@ -369,7 +383,12 @@ class DualGelloJointInput:
     ) -> None:
         self.config = config
         self.operator = operator
-        self.max_relative_delta = config.max_relative_delta
+        self.max_relative_delta = {
+            side: np.asarray(
+                getattr(config, side).max_relative_delta, dtype=float
+            )
+            for side in SIDES
+        }
         self.max_target_velocity = config.max_target_velocity
         self.joint_sensitivity = {
             side: np.asarray(

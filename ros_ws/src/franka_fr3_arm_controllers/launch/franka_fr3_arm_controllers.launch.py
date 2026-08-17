@@ -15,7 +15,15 @@
 import os
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    LogInfo,
+    OpaqueFunction,
+    RegisterEventHandler,
+    Shutdown,
+)
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -80,6 +88,104 @@ def validate_workcell(configs, path):
     return configs
 
 
+def joint_impedance_spawner(config):
+    """Create the command-controller spawner for one already configured arm."""
+    return Node(
+        package="controller_manager",
+        executable="spawner",
+        namespace=config["namespace"],
+        arguments=["joint_impedance_controller", "--controller-manager-timeout", "30"],
+        parameters=[
+            PathJoinSubstitution(
+                [
+                    FindPackageShare("franka_fr3_arm_controllers"),
+                    "config",
+                    "controllers.yaml",
+                ]
+            )
+        ],
+        output="screen",
+    )
+
+
+def continue_after_success(event, _context, next_action, completed_step, next_step):
+    """Start the next control step only when its prerequisite exited cleanly."""
+    if event.returncode == 0:
+        return [
+            LogInfo(msg=f"{completed_step} completed; starting {next_step}."),
+            next_action,
+        ]
+    reason = (
+        f"{completed_step} exited with code {event.returncode}; "
+        f"refusing to start {next_step}."
+    )
+    return [LogInfo(msg=reason), Shutdown(reason=reason)]
+
+
+def shutdown_if_failed(event, _context, completed_step):
+    """End bringup if the final command controller could not activate."""
+    if event.returncode == 0:
+        return [LogInfo(msg=f"{completed_step} completed.")]
+    reason = f"{completed_step} exited with code {event.returncode}."
+    return [LogInfo(msg=reason), Shutdown(reason=reason)]
+
+
+def controller_activation_sequence(configs, collision_setter=None):
+    """Build an ordered, fail-closed activation chain for the two arms.
+
+    Collision settings are a non-realtime FCI operation.  The effort interface
+    starts libfranka ActiveControl, so both collision services must complete
+    before either joint-impedance controller can claim its effort interfaces.
+    """
+    left_spawner = joint_impedance_spawner(configs["LEFT"])
+    right_spawner = joint_impedance_spawner(configs["RIGHT"])
+
+    actions = [
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=left_spawner,
+                on_exit=lambda event, context: continue_after_success(
+                    event,
+                    context,
+                    right_spawner,
+                    "Left joint-impedance controller activation",
+                    "right joint-impedance controller",
+                ),
+            )
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=right_spawner,
+                on_exit=lambda event, context: shutdown_if_failed(
+                    event,
+                    context,
+                    "Right joint-impedance controller activation",
+                ),
+            )
+        ),
+    ]
+    if collision_setter is None:
+        actions.append(left_spawner)
+        return actions
+
+    actions.insert(
+        0,
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=collision_setter,
+                on_exit=lambda event, context: continue_after_success(
+                    event,
+                    context,
+                    left_spawner,
+                    "Collision threshold configuration",
+                    "left joint-impedance controller",
+                ),
+            )
+        ),
+    )
+    return actions
+
+
 def generate_robot_nodes(context):
     config_file_name = LaunchConfiguration("robot_config_file").perform(context)
     if os.path.isabs(config_file_name):
@@ -90,8 +196,15 @@ def generate_robot_nodes(context):
         ).perform(context)
         config_file = os.path.join(package_config_dir, "config", config_file_name)
     configs = validate_workcell(load_yaml(config_file), config_file)
+    fake_modes = {config["use_fake_hardware"] for config in configs.values()}
+    if len(fake_modes) != 1:
+        raise ValueError(
+            f"{config_file}: mixed real and fake arms are not supported by "
+            "the shared collision-threshold bringup"
+        )
     nodes = []
-    for item_name, config in configs.items():
+    for side in ("LEFT", "RIGHT"):
+        config = configs[side]
         namespace = config["namespace"]
         nodes.append(
             IncludeLaunchDescription(
@@ -116,24 +229,23 @@ def generate_robot_nodes(context):
                 }.items(),
             )
         )
-        nodes.append(
-            Node(
-                package="controller_manager",
-                executable="spawner",
-                namespace=namespace,
-                arguments=["joint_impedance_controller", "--controller-manager-timeout", "30"],
-                parameters=[
-                    PathJoinSubstitution(
-                        [
-                            FindPackageShare("franka_fr3_arm_controllers"),
-                            "config",
-                            "controllers.yaml",
-                        ]
-                    )
-                ],
-                output="screen",
-            )
-        )
+
+    # The fake profile has no FCI collision service.  Keep its controller
+    # bringup available while preserving the same serial activation behavior.
+    if fake_modes == {"true"}:
+        nodes.extend(controller_activation_sequence(configs))
+        return nodes
+
+    collision_setter = Node(
+        package="franka_fr3_arm_controllers",
+        executable="set_bi_collision_behavior.py",
+        name="collision_behavior_setter",
+        output="screen",
+    )
+    # Register the complete chain before starting the one-shot process: a
+    # fast failure must still prevent command-controller activation.
+    nodes.extend(controller_activation_sequence(configs, collision_setter))
+    nodes.append(collision_setter)
     return nodes
 
 

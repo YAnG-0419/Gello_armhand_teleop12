@@ -33,6 +33,69 @@ def test_reset_duration_scales_with_large_move() -> None:
     assert math.isclose(RESET.reset_duration(2.0), 18.75)
 
 
+def test_main_does_not_publish_after_context_shutdown(monkeypatch) -> None:
+    calls = []
+
+    class FakeNode:
+        def _set_active(self, active):
+            calls.append(("active", active))
+
+        def destroy_node(self):
+            calls.append(("destroy",))
+
+    class FakeExecutor:
+        def __init__(self, num_threads):
+            calls.append(("executor", num_threads))
+
+        def add_node(self, node):
+            calls.append(("add", node))
+
+        def spin(self):
+            calls.append(("spin",))
+
+        def shutdown(self):
+            calls.append(("executor_shutdown",))
+
+    node = FakeNode()
+    monkeypatch.setattr(RESET, "get_package_share_directory", lambda _package: "/tmp")
+    monkeypatch.setattr(RESET, "load_targets", lambda _path: {})
+    monkeypatch.setattr(RESET.rclpy, "init", lambda: calls.append(("init",)))
+    monkeypatch.setattr(RESET.rclpy, "ok", lambda: False)
+    monkeypatch.setattr(
+        RESET.rclpy,
+        "shutdown",
+        lambda: calls.append(("rclpy_shutdown",)),
+    )
+    monkeypatch.setattr(RESET, "InitialPoseReset", lambda _path, _targets: node)
+    monkeypatch.setattr(RESET, "MultiThreadedExecutor", FakeExecutor)
+
+    RESET.main()
+
+    # The initial state publication is allowed while the context is valid;
+    # cleanup must not try a second publication after SIGINT invalidates it.
+    assert calls.count(("active", False)) == 1
+    assert ("executor_shutdown",) in calls
+    assert ("destroy",) in calls
+    assert ("rclpy_shutdown",) not in calls
+
+
+def test_retime_trajectory_preserves_path_and_only_extends_fast_intervals() -> None:
+    positions = lambda value: {"left": [value] * 7, "right": [-value] * 7}
+    samples = [
+        (0.0, positions(0.0)),
+        (0.02, positions(0.01)),
+        (0.12, positions(0.02)),
+    ]
+
+    retimed = RESET.retime_trajectory(samples, max_speed=0.25)
+
+    assert [sample[1] for sample in retimed] == [sample[1] for sample in samples]
+    assert math.isclose(retimed[0][0], 0.0)
+    assert math.isclose(retimed[1][0], 0.04)
+    assert math.isclose(retimed[2][0], 0.14)
+    assert RESET.maximum_trajectory_speed(retimed) <= 0.25 + 1e-9
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

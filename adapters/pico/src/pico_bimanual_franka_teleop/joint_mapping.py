@@ -14,7 +14,7 @@ class RelativeJointMapper:
         self,
         lower_limits: np.ndarray,
         upper_limits: np.ndarray,
-        max_relative_delta: float,
+        max_relative_delta: float | np.ndarray,
         joint_sensitivity: np.ndarray | None = None,
         max_target_velocity: float | None = None,
         nominal_dt: float = 0.01,
@@ -23,8 +23,17 @@ class RelativeJointMapper:
         self.upper_limits = np.asarray(upper_limits, dtype=float)
         if self.lower_limits.shape != (7,) or self.upper_limits.shape != (7,):
             raise ValueError("Joint limits must each contain 7 values")
-        if max_relative_delta <= 0:
-            raise ValueError("max_relative_delta must be positive")
+        relative_delta = np.asarray(max_relative_delta, dtype=float)
+        if relative_delta.ndim == 0:
+            relative_delta = np.full(7, float(relative_delta), dtype=float)
+        if (
+            relative_delta.shape != (7,)
+            or not np.all(np.isfinite(relative_delta))
+            or np.any(relative_delta <= 0.0)
+        ):
+            raise ValueError(
+                "max_relative_delta must be a positive scalar or seven positive values"
+            )
         if max_target_velocity is not None and max_target_velocity <= 0:
             raise ValueError("max_target_velocity must be positive")
         if nominal_dt <= 0:
@@ -40,7 +49,7 @@ class RelativeJointMapper:
             or np.any(sensitivity <= 0.0)
         ):
             raise ValueError("Joint sensitivity must contain seven positive values")
-        self.max_relative_delta = float(max_relative_delta)
+        self.max_relative_delta = relative_delta.copy()
         self.joint_sensitivity = sensitivity.copy()
         self.max_target_velocity = (
             None if max_target_velocity is None else float(max_target_velocity)

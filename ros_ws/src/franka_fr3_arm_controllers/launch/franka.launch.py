@@ -60,8 +60,8 @@ def generate_robot_nodes(context):
             output="screen",
         ),
         Node(
-            package="controller_manager",
-            executable="ros2_control_node",
+            package="franka_fr3_arm_controllers",
+            executable="franka_ros2_control_node",
             prefix=f"taskset -c {controller_cpus}",
             namespace=namespace,
             parameters=[
