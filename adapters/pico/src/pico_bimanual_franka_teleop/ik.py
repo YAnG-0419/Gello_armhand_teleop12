@@ -150,6 +150,14 @@ class BimanualPinkIK:
         # not silently rewrite a pose retained by a mapper or debug logger.
         return Pose(transform.translation.copy(), transform.rotation.copy())
 
+    def named_frame_pose(self, q: np.ndarray, frame: str) -> Pose:
+        """Return any model frame pose without changing the control frame."""
+        if not self.model.existFrame(frame):
+            raise ValueError(f"Unknown model frame: {frame}")
+        self.update(q)
+        transform = self.configuration.get_transform_frame_to_world(frame)
+        return Pose(transform.translation.copy(), transform.rotation.copy())
+
     def frame_poses(self, q: np.ndarray) -> dict[str, Pose]:
         """Return both end-effector poses from one FK update."""
         self.update(q)

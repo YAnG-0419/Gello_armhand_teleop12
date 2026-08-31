@@ -22,6 +22,7 @@ class GelloSideConfig:
     direction_correction: tuple[int, ...]
     joint_sensitivity: tuple[float, ...]
     max_relative_delta: tuple[float, ...]
+    joint_limit_margin: tuple[float, ...] = (0.0,) * 7
 
 
 @dataclass(frozen=True)
@@ -49,9 +50,9 @@ def _seven_sensitivities(value, field: str) -> tuple[float, ...]:
     if (
         len(result) != 7
         or not all(np.isfinite(item) for item in result)
-        or any(item < 0.1 or item > 2.0 for item in result)
+        or any(item < 0.1 or item > 2.2 for item in result)
     ):
-        raise ValueError(f"{field} must contain seven finite values in [0.1, 2.0]")
+        raise ValueError(f"{field} must contain seven finite values in [0.1, 2.2]")
     return result
 
 
@@ -63,6 +64,17 @@ def _seven_positive_values(value, field: str) -> tuple[float, ...]:
         or any(item <= 0.0 for item in result)
     ):
         raise ValueError(f"{field} must contain seven finite positive values")
+    return result
+
+
+def _seven_nonnegative_values(value, field: str) -> tuple[float, ...]:
+    result = tuple(float(item) for item in value)
+    if (
+        len(result) != 7
+        or not all(np.isfinite(item) for item in result)
+        or any(item < 0.0 for item in result)
+    ):
+        raise ValueError(f"{field} must contain seven finite nonnegative values")
     return result
 
 
@@ -91,6 +103,7 @@ def load_gello_config(path: str | Path) -> GelloConfig:
             "direction_correction",
             "joint_sensitivity",
             "max_relative_delta",
+            "joint_limit_margin",
         }
         if not isinstance(selected, dict) or set(selected) != expected:
             raise ValueError(f"{side} GELLO keys must be exactly {sorted(expected)}")
@@ -112,6 +125,10 @@ def load_gello_config(path: str | Path) -> GelloConfig:
             max_relative_delta=_seven_positive_values(
                 selected["max_relative_delta"],
                 f"{side}.max_relative_delta",
+            ),
+            joint_limit_margin=_seven_nonnegative_values(
+                selected["joint_limit_margin"],
+                f"{side}.joint_limit_margin",
             ),
         )
 
@@ -386,6 +403,12 @@ class DualGelloJointInput:
         self.max_relative_delta = {
             side: np.asarray(
                 getattr(config, side).max_relative_delta, dtype=float
+            )
+            for side in SIDES
+        }
+        self.joint_limit_margin = {
+            side: np.asarray(
+                getattr(config, side).joint_limit_margin, dtype=float
             )
             for side in SIDES
         }

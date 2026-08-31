@@ -18,7 +18,10 @@ Each side anchors independently on its GUI engage edge:
 ```text
 raw_delta = calibrated_gello_now - gello_at_engage
 scaled_delta = raw_delta * joint_sensitivity
-target = robot_at_engage + clip(scaled_delta, -max_relative_delta, max_relative_delta)
+relative_target = robot_at_engage + clip(scaled_delta, -max_relative_delta, max_relative_delta)
+soft_lower = physical_lower + joint_limit_margin
+soft_upper = physical_upper - joint_limit_margin
+target = clip(relative_target, soft_lower, soft_upper)
 ```
 
 Disengaging and re-engaging captures fresh anchors, so an absolute GELLO/FR3
@@ -28,26 +31,36 @@ ordered by GELLO motor IDs 1-7. A value of `2.0` maps one degree of calibrated
 GELLO displacement to two degrees of FR3 target displacement; `0.5` provides
 half-scale fine control. Direction remains exclusively controlled by
 `standard_signs` and `direction_correction`. Sensitivity is restricted to
-0.1-2.0 and is applied before the relative-displacement limit.
+0.1-2.2 and is applied before the relative-displacement limit.
 
-The operational `max_relative_delta` is 1.5 rad per joint and GELLO targets
-slew at 0.5 rad/s. The unchanged ROS safety gateway additionally enforces FR3
-joint limits, first-target distance, its 0.5 rad/s outer slew ceiling, command
+The left-side `max_relative_delta` is 1.5 rad per joint. The right-side values
+remain the seven different full FR3 physical spans. Independently, both arms
+keep 1% of each physical span clear at each limit end, retaining the central
+98% absolute range. If engagement starts outside that soft range, a stationary
+GELLO holds the measured pose and outward commands are blocked while retreat
+toward the safe range remains available. The GELLO mapper is configured at
+0.8 rad/s, while the unchanged ROS safety gateway enforces a 0.7 rad/s outer
+slew ceiling plus the hard FR3 joint limits, first-target distance, command
 freshness, reset exclusion, and contact-torque gating.
 
 GELLO motor 8 is never opened. MANUS exclusively owns both dexterous hands.
 
-## Verified historical identities
+## Current verified identities
 
-`config/modes/gello.yaml` contains the previous hardware mapping:
+`config/modes/gello.yaml` identifies the current OpenRB-150 pair by stable USB
+serial rather than transient `ttyACM` enumeration:
 
-- left: `FTATCZ4W`
-- right: `FTALZ24C`
+- left: `4303A73A5157375037202020FF100616`
+- right: `17E84ADC5157375037202020FF10131E`
 
-At the 2026-08-01 check, both identities were enumerated: `FTATCZ4W` as
-`ttyUSB1` and `FTALZ24C` as `ttyUSB0`. The current login session had not yet
-picked up its `dialout` membership, although `/etc/group` was correct. Never
-infer left/right from `ttyUSB0` or `ttyUSB1`.
+Both identities, motor IDs 1-7, model number 1200, and live joint streams were
+verified on 2026-08-17. Never infer left/right from `ttyACM0` or `ttyACM1`.
+The current replacement-pair `direction_correction` vectors are
+`[1,1,1,1,1,1,1]` for both sides after the final right-J2 reversal and before
+`standard_signs` is applied.
+The current right-side sensitivity vector is `[1.3,2.2,1.3,1.0,1.0,1.0,1.6]`.
+The GELLO mapper uses `0.8 rad/s`; the outer safety gateway retains the
+effective `0.7 rad/s` ceiling.
 
 Run the read-only check after reconnecting both units:
 

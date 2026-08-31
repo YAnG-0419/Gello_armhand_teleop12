@@ -1,24 +1,28 @@
-# Historical identities from the verified dual-GELLO deployment. Always run
+# Stable identities for the currently installed dual-GELLO pair. Always run
 # ops/diagnostics/check_gello_ports.py after reconnecting hardware; never infer sides
-# from ttyUSB enumeration order.
+# from ttyACM enumeration order.
 left:
-  port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTATCZ4W-if00-port0
-  expected_serial: FTATCZ4W
-  # Correction measured after applying the standard Franka GELLO signs.
-  direction_correction: [1, 1, 1, -1, 1, -1, 1]
+  port: /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_4303A73A5157375037202020FF100616-if00
+  expected_serial: 4303A73A5157375037202020FF100616
+  # 2026-08-17 replacement OpenRB assembly physical-direction verification.
+  direction_correction: [1, 1, 1, 1, 1, 1, 1]
   # FR3 joint displacement per radian of calibrated GELLO displacement.
   joint_sensitivity: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   # Per-engagement relative travel caps [rad], one per joint.
   max_relative_delta: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+  # Keep 1% of each physical span clear at both joint-limit ends.
+  joint_limit_margin: [0.0580148003, 0.0367218003, 0.0580148003, 0.0296008293, 0.0575260670, 0.0418181070, 0.0610166670]
 right:
-  port: /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTALZ24C-if00-port0
-  expected_serial: FTALZ24C
-  # 2026-08-01 hardware trial: reverse right J2/J4 from the historical mapping.
-  direction_correction: [1, 1, 1, -1, 1, -1, 1]
-  joint_sensitivity: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 1.2]
+  port: /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_17E84ADC5157375037202020FF10131E-if00
+  expected_serial: 17E84ADC5157375037202020FF10131E
+  # 2026-08-17 replacement OpenRB assembly physical-direction verification.
+  direction_correction: [1, 1, 1, 1, 1, 1, 1]
+  joint_sensitivity: [1.3, 2.2, 1.3, 0.8, 1.0, 1.0, 1.6]
   # Full spans of the FR3 limits used by the safety gateway. The mapper still
   # clips every target to the absolute lower/upper limit for the current pose.
   max_relative_delta: [5.8014800334, 3.6721800334, 5.8014800334, 2.9600829334, 5.7526067, 4.1818107, 6.1016667]
+  # Keep 1% of each physical span clear at both joint-limit ends.
+  joint_limit_margin: [0.0580148003, 0.0367218003, 0.0580148003, 0.0296008293, 0.0575260670, 0.0418181070, 0.0610166670]
 
 baudrate: 57600
 joint_ids: [1, 2, 3, 4, 5, 6, 7]
@@ -26,4 +30,4 @@ standard_signs: [1, -1, 1, -1, 1, 1, 1]
 ready_timeout: 5.0
 stale_timeout: 0.25
 max_joint_jump: 0.35
-max_target_velocity: 0.7
+max_target_velocity: 0.8

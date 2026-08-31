@@ -18,11 +18,37 @@ class RelativeJointMapper:
         joint_sensitivity: np.ndarray | None = None,
         max_target_velocity: float | None = None,
         nominal_dt: float = 0.01,
+        joint_limit_margin: float | np.ndarray = 0.0,
     ) -> None:
-        self.lower_limits = np.asarray(lower_limits, dtype=float)
-        self.upper_limits = np.asarray(upper_limits, dtype=float)
-        if self.lower_limits.shape != (7,) or self.upper_limits.shape != (7,):
+        hard_lower_limits = np.asarray(lower_limits, dtype=float)
+        hard_upper_limits = np.asarray(upper_limits, dtype=float)
+        if hard_lower_limits.shape != (7,) or hard_upper_limits.shape != (7,):
             raise ValueError("Joint limits must each contain 7 values")
+        if (
+            not np.all(np.isfinite(hard_lower_limits))
+            or not np.all(np.isfinite(hard_upper_limits))
+            or np.any(hard_lower_limits >= hard_upper_limits)
+        ):
+            raise ValueError("Joint lower limits must be finite and below upper limits")
+        limit_margin = np.asarray(joint_limit_margin, dtype=float)
+        if limit_margin.ndim == 0:
+            limit_margin = np.full(7, float(limit_margin), dtype=float)
+        if (
+            limit_margin.shape != (7,)
+            or not np.all(np.isfinite(limit_margin))
+            or np.any(limit_margin < 0.0)
+        ):
+            raise ValueError(
+                "joint_limit_margin must be a nonnegative scalar or seven "
+                "nonnegative values"
+            )
+        self.hard_lower_limits = hard_lower_limits.copy()
+        self.hard_upper_limits = hard_upper_limits.copy()
+        self.joint_limit_margin = limit_margin.copy()
+        self.lower_limits = hard_lower_limits + limit_margin
+        self.upper_limits = hard_upper_limits - limit_margin
+        if np.any(self.lower_limits >= self.upper_limits):
+            raise ValueError("joint_limit_margin leaves no usable joint range")
         relative_delta = np.asarray(max_relative_delta, dtype=float)
         if relative_delta.ndim == 0:
             relative_delta = np.full(7, float(relative_delta), dtype=float)
@@ -99,10 +125,16 @@ class RelativeJointMapper:
             -self.max_relative_delta,
             self.max_relative_delta,
         )
+        # A joint may already be outside the soft range when engagement begins.
+        # Holding the leader must hold the measured pose, not pull the robot
+        # inward automatically. While outside, use the live measurement as the
+        # temporary outer boundary so commands can only retreat toward safety.
+        effective_lower_limits = np.minimum(self.lower_limits, measured)
+        effective_upper_limits = np.maximum(self.upper_limits, measured)
         desired = np.clip(
             self._robot_anchor + delta,
-            self.lower_limits,
-            self.upper_limits,
+            effective_lower_limits,
+            effective_upper_limits,
         )
         if self.max_target_velocity is None:
             target = desired

@@ -112,9 +112,8 @@ GELLO_SOFTWARE_ROOT=/home/descfly/llx/gello_software \
   ./ops/setup/setup_gello_driver.sh
 ```
 
-当前机器使用 Conda 环境 `gello-upper-body-teleop`。GELLO 的串口、舵机 ID、
-符号和方向修正复用 `/home/descfly/llx/gello_franka` 的标定；硬件和装配未变化
-时不需要重新标定。
+当前机器使用 Conda 环境 `gello-upper-body-teleop`。GELLO 使用稳定的 USB
+序列号识别左右侧；更换硬件后必须更新身份并重新验证左右侧和关节方向。
 
 如需使用 Wuji，再安装其可选依赖：
 
@@ -133,19 +132,26 @@ GELLO_SOFTWARE_ROOT=/home/descfly/llx/gello_software \
 
 ## 启动前检查
 
-标准模式、Wuji 模式和 MoveIt 真机模式会自动运行 preflight，也可以单独执行：
+标准模式和 Wuji 模式会自动运行完整 preflight（含 GELLO 端口和 MANUS 标定）。
+MoveIt 真机模式只跑机械臂基础设施检查，不要求 GELLO 或 MANUS。也可以单独执行：
 
 ```bash
 ./ops/run/preflight.sh
 ```
 
-仅检查机械臂环境：
+仅检查机械臂环境（仍包含 GELLO 端口，跳过 MANUS）：
 
 ```bash
 ./ops/run/preflight.sh --arms-only
 ```
 
-preflight 检查 Docker、Compose、ROS workspace、Conda、GUI、GELLO 端口以及
+MoveIt 真机等价检查：
+
+```bash
+./ops/run/preflight.sh --arms-only --skip-gello
+```
+
+完整 preflight 检查 Docker、Compose、ROS workspace、Conda、GUI、GELLO 端口以及
 MANUS 标定文件；检查过程不会发送机器人、灵巧手或 GELLO 电机命令。
 
 ## 标准遥操：GELLO + O30i
@@ -363,8 +369,9 @@ docker compose ps
 
 ## 关键配置
 
-- `config/modes/gello.yaml`：左右 GELLO 身份、方向、`1.5 rad` 增量范围和
-  `0.5 rad/s` GELLO 专用限速。
+- `config/modes/gello.yaml`：左右 GELLO 身份、方向、分侧逐关节增量范围、
+  每端 `1%` 的绝对软限位余量和 `0.8 rad/s` GELLO 映射限速；安全网关仍以
+  `0.7 rad/s` 作为最终输出上限。
 - `config/workcell/current.yaml`：双 FR3 地址、arm ID 和命名空间。
 - `config/modes/teleop_control.yaml`：ROS 安全网关、限速和接触力矩 gating。
 - `config/modes/pico.yaml`：共享 UDP 与控制周期配置；tracker 兼容入口仍保留。

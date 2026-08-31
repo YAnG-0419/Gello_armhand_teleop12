@@ -58,6 +58,7 @@ class DualFr3HardwareTeleop:
         operator: OperatorState,
         hands: HandController | None = None,
         debug_logger=None,
+        dataset_recorder=None,
         reset_invoker=None,
         capture_home_invoker=None,
         ready_invoker=None,
@@ -92,6 +93,7 @@ class DualFr3HardwareTeleop:
                 arm_source, "max_target_velocity", None
             )
             sensitivity_by_side = getattr(arm_source, "joint_sensitivity", {})
+            limit_margin_by_side = getattr(arm_source, "joint_limit_margin", {})
             self.mappers = {
                 side: RelativeJointMapper(
                     LOWER_LIMITS[index : index + 7],
@@ -106,6 +108,11 @@ class DualFr3HardwareTeleop:
                     ),
                     max_target_velocity=max_target_velocity,
                     nominal_dt=self.dt,
+                    joint_limit_margin=(
+                        limit_margin_by_side.get(side, np.zeros(7, dtype=float))
+                        if isinstance(limit_margin_by_side, dict)
+                        else limit_margin_by_side
+                    ),
                 )
                 for side, index in (("left", 0), ("right", 7))
             }
@@ -121,6 +128,7 @@ class DualFr3HardwareTeleop:
 
         self.hands = hands
         self.debug_logger = debug_logger
+        self.dataset_recorder = dataset_recorder
         # Reset to the captured initial pose, requested from the keyboard. The
         # operator process is deliberately ROS-free, so the reset is delegated
         # to a blocking callable (a `ros2 service call` in the container) run on
@@ -798,13 +806,42 @@ class DualFr3HardwareTeleop:
                             feed_reader() if feed_reader is not None else None
                         ),
                     )
-                # Only copy engagement into the independent hand worker here;
-                # arm timing never waits for hand I/O or retargeting.
+                hand_activations = {side: False for side in SIDES}
                 if self.hands is not None:
                     hand_activation_reader = getattr(
                         self.operator, "poll_hands", self.operator.poll
                     )
-                    self.hands.set_active(hand_activation_reader())
+                    hand_activations = hand_activation_reader()
+                    self.hands.set_active(hand_activations)
+                if self.dataset_recorder is not None:
+                    try:
+                        hand_feedback = (
+                            None
+                            if self.hands is None
+                            else self.hands.feedback_snapshot("left")
+                        )
+                        recorded_at = time.monotonic()
+                        self.dataset_recorder.record(
+                            wall_time_ns=time.time_ns(),
+                            monotonic_time_s=recorded_at,
+                            arm_q=np.asarray(q, dtype=float)[:7],
+                            hand_feedback=hand_feedback,
+                            ee_pose=self.ik.named_frame_pose(
+                                q, "left_fr3v2_link8"
+                            ),
+                            arm_active=(
+                                sample is not None
+                                and bool(sample.activations.get("left", False))
+                            ),
+                            hand_active=bool(hand_activations.get("left", False)),
+                        )
+                    except Exception as error:  # noqa: BLE001 - never stop control
+                        print(f"dataset recording disabled: {error}")
+                        try:
+                            self.dataset_recorder.close()
+                        except Exception as close_error:  # noqa: BLE001
+                            print(f"dataset finalization FAILED: {close_error}")
+                        self.dataset_recorder = None
                 now = time.monotonic()
                 if now >= next_status_report:
                     input_summary = (
@@ -839,6 +876,16 @@ class DualFr3HardwareTeleop:
                 if remaining > 0.0:
                     time.sleep(remaining)
         finally:
+            if self.dataset_recorder is not None:
+                try:
+                    self.dataset_recorder.close()
+                    print(
+                        f"dataset saved: {self.dataset_recorder.output} "
+                        f"({self.dataset_recorder.sample_count} samples, "
+                        f"{self.dataset_recorder.dropped_samples} dropped)"
+                    )
+                except Exception as error:  # noqa: BLE001 - close hardware first
+                    print(f"dataset finalization FAILED: {error}")
             if self.debug_logger is not None:
                 self.debug_logger.close()
             # Close the hand pipeline before the SDK client it reads from.

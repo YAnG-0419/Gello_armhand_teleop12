@@ -160,6 +160,16 @@ def main() -> None:
         help="write live canonical landmarks, emitted hand joints, and thumb "
         "fidelity metrics to JSONL (requires a hand source)",
     )
+    parser.add_argument(
+        "--record-left-dataset",
+        type=Path,
+        default=None,
+        metavar="EPISODE.npz",
+        help=(
+            "record measured left FR3 joints, left Wuji Hand 2 joints, and "
+            "left link8 pose into one synchronized NPZ episode"
+        ),
+    )
     parser.add_argument("--hand-host", default="127.0.0.1")
     parser.add_argument(
         "--hand-port",
@@ -285,6 +295,13 @@ def main() -> None:
             parser.error("--wuji-kp and --wuji-kd must not be negative")
         if args.wuji_current_limit <= 0.0:
             parser.error("--wuji-current-limit must be positive")
+    if args.record_left_dataset is not None:
+        if args.hand_source != "wuji":
+            parser.error("--record-left-dataset requires --hand-source wuji")
+        if args.wuji_sides == "right":
+            parser.error("--record-left-dataset requires the left Wuji side")
+        if args.wuji_left_model != "wuji_hand_2":
+            parser.error("--record-left-dataset requires left Wuji Hand 2")
 
     if args.hand_source == "pico" and args.arm_source == "controllers":
         parser.error(
@@ -318,6 +335,7 @@ def main() -> None:
     pico_session = None
     arm_source = None
     hands = None
+    dataset_recorder = None
     try:
         # Wuji SDK connection can hold the Python interpreter for multiple
         # seconds while it negotiates the network device.  Start its pipeline
@@ -494,6 +512,15 @@ def main() -> None:
             hands = HandWorker(
                 hand_pipeline, tick_rate=config.host.control_rate
             )
+        if args.record_left_dataset is not None:
+            from apps.left_wuji_dataset_recorder import LeftWujiDatasetRecorder
+
+            dataset_recorder = LeftWujiDatasetRecorder(
+                args.record_left_dataset,
+                hand_joint_names=hand_pipeline.joint_names["left"],
+                control_rate_hz=config.host.control_rate,
+            )
+            print(f"left teleop dataset -> {dataset_recorder.output}")
 
         teleop = DualFr3HardwareTeleop(
             command_host=config.udp.command_host,
@@ -510,6 +537,7 @@ def main() -> None:
             operator=ui,
             hands=hands,
             debug_logger=debug_logger,
+            dataset_recorder=dataset_recorder,
             reset_invoker=invoke_reset,
             capture_home_invoker=invoke_capture_home,
             ready_invoker=invoke_ready,
@@ -529,6 +557,11 @@ def main() -> None:
             pass
     finally:
         try:
+            if dataset_recorder is not None:
+                try:
+                    dataset_recorder.close()
+                except Exception as error:  # noqa: BLE001 - continue safe shutdown
+                    print(f"dataset finalization FAILED: {error}", file=sys.stderr)
             if hands is not None:
                 hands.close()
             if arm_source is not None:

@@ -71,6 +71,23 @@ class HandWorker:
             )
         return positions
 
+    def feedback_snapshot(
+        self, side: str
+    ) -> tuple[tuple[float, ...], float] | None:
+        """Return cached positions and their monotonic receipt time.
+
+        Unlike ``feedback_position``, this exposes a stale sample so a dataset
+        recorder can preserve timing and mark validity without fabricating data.
+        """
+        if side not in self.sides:
+            raise ValueError(f"Invalid hand side: {side}")
+        with self._lock:
+            snapshot = self._feedback.get(side)
+        if snapshot is None:
+            return None
+        positions, received_at = snapshot
+        return tuple(positions), float(received_at)
+
     def request_pose(self, positions: dict[str, tuple[float, ...]]) -> None:
         selected = {side: tuple(values) for side, values in positions.items()}
         if not selected or set(selected).difference(self.sides):

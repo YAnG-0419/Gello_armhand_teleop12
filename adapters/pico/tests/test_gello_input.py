@@ -25,19 +25,28 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def test_checked_in_config_preserves_verified_identities_and_directions():
     config = load_gello_config(REPO_ROOT / "config" / "modes" / "gello.yaml")
 
-    assert config.left.expected_serial == "FTATCZ4W"
-    assert config.right.expected_serial == "FTALZ24C"
+    assert config.left.expected_serial == "4303A73A5157375037202020FF100616"
+    assert config.right.expected_serial == "17E84ADC5157375037202020FF10131E"
     assert config.joint_ids == (1, 2, 3, 4, 5, 6, 7)
-    assert config.left.direction_correction == (1, 1, 1, -1, 1, -1, 1)
-    assert config.right.direction_correction == (1, 1, 1, -1, 1, -1, 1)
+    assert config.left.direction_correction == (1, 1, 1, 1, 1, 1, 1)
+    assert config.right.direction_correction == (1, 1, 1, 1, 1, 1, 1)
     assert config.left.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
-    assert config.right.joint_sensitivity == (0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 1.2)
+    assert config.right.joint_sensitivity == (1.3, 2.2, 1.3, 1.0, 1.0, 1.0, 1.6)
     assert config.left.max_relative_delta == (1.5,) * 7
+    physical_spans = hardware.UPPER_LIMITS[7:14] - hardware.LOWER_LIMITS[7:14]
     np.testing.assert_allclose(
         config.right.max_relative_delta,
-        hardware.UPPER_LIMITS[7:14] - hardware.LOWER_LIMITS[7:14],
+        physical_spans,
     )
-    assert config.max_target_velocity == 0.7
+    np.testing.assert_allclose(
+        config.left.joint_limit_margin,
+        physical_spans * 0.01,
+    )
+    np.testing.assert_allclose(
+        config.right.joint_limit_margin,
+        physical_spans * 0.01,
+    )
+    assert config.max_target_velocity == 0.8
 
 
 def test_relative_mapper_has_no_engage_jump_and_reanchors():
@@ -99,6 +108,71 @@ def test_relative_mapper_applies_per_joint_displacement_limits():
     target = mapper.update(np.ones(7), True, np.zeros(7))
 
     np.testing.assert_allclose(target, limits)
+
+
+def test_relative_mapper_insets_each_absolute_joint_limit():
+    margins = np.linspace(0.05, 0.35, 7)
+    mapper = RelativeJointMapper(
+        lower_limits=np.full(7, -2.0),
+        upper_limits=np.full(7, 2.0),
+        max_relative_delta=5.0,
+        joint_limit_margin=margins,
+    )
+    mapper.update(np.zeros(7), True, np.zeros(7))
+
+    upper_target = mapper.update(np.full(7, 10.0), True, np.zeros(7))
+    np.testing.assert_allclose(upper_target, 2.0 - margins)
+
+    mapper.reset()
+    mapper.update(np.zeros(7), True, np.zeros(7))
+    lower_target = mapper.update(np.full(7, -10.0), True, np.zeros(7))
+    np.testing.assert_allclose(lower_target, -2.0 + margins)
+
+
+def test_relative_mapper_rejects_margin_that_expands_or_eliminates_range():
+    with pytest.raises(ValueError, match="nonnegative"):
+        RelativeJointMapper(
+            lower_limits=np.full(7, -1.0),
+            upper_limits=np.full(7, 1.0),
+            max_relative_delta=1.0,
+            joint_limit_margin=-0.1,
+        )
+    with pytest.raises(ValueError, match="no usable joint range"):
+        RelativeJointMapper(
+            lower_limits=np.full(7, -1.0),
+            upper_limits=np.full(7, 1.0),
+            max_relative_delta=1.0,
+            joint_limit_margin=1.0,
+        )
+
+
+def test_relative_mapper_holds_outside_soft_range_and_preserves_retreat():
+    mapper = RelativeJointMapper(
+        lower_limits=np.full(7, -2.0),
+        upper_limits=np.full(7, 2.0),
+        max_relative_delta=2.0,
+        joint_limit_margin=0.5,
+    )
+    signs = np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0])
+    measured = signs * 1.8
+    np.testing.assert_array_equal(mapper.update(np.zeros(7), True, measured), measured)
+
+    held = mapper.update(np.zeros(7), True, measured)
+    np.testing.assert_array_equal(held, measured)
+    blocked_outward = mapper.update(signs * 0.5, True, measured)
+    np.testing.assert_array_equal(blocked_outward, measured)
+    retreat = mapper.update(signs * -0.5, True, measured)
+    np.testing.assert_allclose(retreat, signs * 1.3)
+
+    # While the robot is still outside, an outward reversal can never command
+    # beyond its live measured position. Once measured inside, the configured
+    # soft boundary applies again.
+    still_outside = signs * 1.7
+    blocked_at_measurement = mapper.update(signs * 0.5, True, still_outside)
+    np.testing.assert_allclose(blocked_at_measurement, still_outside)
+    inside = signs * 1.4
+    clipped_to_soft_limit = mapper.update(signs * 0.5, True, inside)
+    np.testing.assert_allclose(clipped_to_soft_limit, signs * 1.5)
 
 
 def test_relative_mapper_applies_gello_target_velocity_limit():
@@ -471,7 +545,10 @@ def test_hardware_coordinator_anchors_joint_input_to_measured_state(monkeypatch)
             "left": np.full(7, 0.5),
             "right": np.full(7, 2.0),
         }
-
+        joint_limit_margin = {
+            "left": np.linspace(0.01, 0.07, 7),
+            "right": np.linspace(0.08, 0.14, 7),
+        }
         def sample(self):
             return JointTeleopSample(
                 {"left": np.full(7, 1.0), "right": np.full(7, -1.0)},
@@ -554,7 +631,14 @@ def test_hardware_coordinator_anchors_joint_input_to_measured_state(monkeypatch)
     np.testing.assert_allclose(
         teleop.mappers["right"].max_relative_delta, np.linspace(0.3, 0.9, 7)
     )
-
+    np.testing.assert_allclose(
+        teleop.mappers["left"].joint_limit_margin,
+        np.linspace(0.01, 0.07, 7),
+    )
+    np.testing.assert_allclose(
+        teleop.mappers["right"].joint_limit_margin,
+        np.linspace(0.08, 0.14, 7),
+    )
     with pytest.raises(KeyboardInterrupt):
         teleop.run()
 

@@ -113,6 +113,9 @@ def test_hand_worker_caches_feedback_and_serializes_home_pose_requests():
         time.sleep(0.005)
 
     assert worker.feedback_position("left") == tuple([0.2] * 20)
+    positions, received_at = worker.feedback_snapshot("left")
+    assert positions == tuple([0.2] * 20)
+    assert received_at <= time.monotonic()
     worker.close()
     assert pipeline.requested == [target]
     assert pipeline.closed

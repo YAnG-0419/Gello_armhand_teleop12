@@ -4,15 +4,23 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 TELEOP_CONDA_ENV="${TELEOP_CONDA_ENV:-gello-upper-body-teleop}"
 CHECK_HANDS=true
+CHECK_GELLO=true
 
-if [[ "${1:-}" == "--arms-only" ]]; then
-  CHECK_HANDS=false
+while (($# > 0)); do
+  case "$1" in
+    --arms-only)
+      CHECK_HANDS=false
+      ;;
+    --skip-gello)
+      CHECK_GELLO=false
+      ;;
+    *)
+      echo "Usage: $0 [--arms-only] [--skip-gello]" >&2
+      exit 2
+      ;;
+  esac
   shift
-fi
-if (($# != 0)); then
-  echo "Usage: $0 [--arms-only]" >&2
-  exit 2
-fi
+done
 
 fail() {
   echo "[FAIL] $*" >&2
@@ -46,8 +54,10 @@ command -v conda >/dev/null || fail "conda is not available"
 command -v docker >/dev/null || fail "docker is not available"
 docker info >/dev/null 2>&1 || fail "Docker daemon is unavailable"
 
-run_with_dialout conda run --no-capture-output -n "$TELEOP_CONDA_ENV" \
-  python "$REPO_ROOT/ops/diagnostics/check_gello_ports.py"
+if [[ "$CHECK_GELLO" == true ]]; then
+  run_with_dialout conda run --no-capture-output -n "$TELEOP_CONDA_ENV" \
+    python "$REPO_ROOT/ops/diagnostics/check_gello_ports.py"
+fi
 conda run --no-capture-output -n base python -c \
   "import PySide6; print('[PASS] operator GUI: PySide6 ready')"
 

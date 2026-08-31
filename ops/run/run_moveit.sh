@@ -23,7 +23,7 @@ for service in franka-control fake-franka-control teleop-control gello-bridge pi
 done
 
 if [[ "$1" == "--real" ]]; then
-  "$REPO_ROOT/ops/run/preflight.sh"
+  "$REPO_ROOT/ops/run/preflight.sh" --arms-only --skip-gello
   service=moveit-real
 else
   service=moveit-fake
