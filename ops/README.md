@@ -1,6 +1,8 @@
 # Operations
 
-- `run/`：标准遥操、仅双臂、Wuji、手动 UI、MoveIt 等运行入口。
+- `run/`：标准遥操、仅双臂、Wuji、手动 UI、MoveIt 等运行入口。Harvest
+  采集入口 `start_recording.sh` / `convert_recording.sh` 是独立只读进程，
+  不替代 `start_wuji_teleop.sh`。
 - `setup/`：Conda、本地包、Docker/ROS workspace 和 GELLO 驱动安装。
 - `diagnostics/`：只读检查或显式诊断工具；可能移动硬件的工具会在自身文档中
   标明。

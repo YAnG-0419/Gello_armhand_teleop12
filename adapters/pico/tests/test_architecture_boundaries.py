@@ -121,6 +121,66 @@ def test_hand_worker_caches_feedback_and_serializes_home_pose_requests():
     assert pipeline.closed
 
 
+def test_telemetry_failure_never_stops_hand_worker():
+    class FeedbackPipeline:
+        sides = ("left",)
+        feedback_sides = ("left",)
+        joint_names = {"left": tuple(f"joint_{index}" for index in range(20))}
+        status = type("Status", (), {"errors": 0, "last_error": None})()
+
+        def __init__(self):
+            self.ticks = 0
+            self.closed = False
+
+        def tick(self, *, active):
+            self.ticks += 1
+
+        def request_open(self, *, sides, duration):
+            return None
+
+        def feedback_position(self, side):
+            return np.full(20, 0.2)
+
+        def command_snapshot(self, side):
+            now = time.monotonic_ns()
+            return {
+                "positions": tuple([0.1] * 20),
+                "monotonic_ns": now,
+                "valid": True,
+            }
+
+        def close(self):
+            self.closed = True
+
+    class FailedTelemetry:
+        def __init__(self):
+            self.offers = 0
+
+        def offer(self, **_packet):
+            self.offers += 1
+            raise RuntimeError("receiver is gone")
+
+        def close(self):
+            raise RuntimeError("sender shutdown failed")
+
+    pipeline = FeedbackPipeline()
+    telemetry = FailedTelemetry()
+    worker = HandWorker(
+        pipeline,
+        tick_rate=100.0,
+        telemetry_sender=telemetry,
+    )
+    worker.start()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and telemetry.offers == 0:
+        time.sleep(0.005)
+    worker.close()
+
+    assert telemetry.offers > 0
+    assert pipeline.ticks > 0
+    assert pipeline.closed
+
+
 class _FakePicoClient:
     def __init__(self) -> None:
         self.init_count = 0

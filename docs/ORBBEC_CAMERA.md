@@ -55,6 +55,12 @@ cd /home/descfly/llx/gello_upper_body_teleop
 
 Use the SDK v2 viewer selected by the script, not the old SDK v1 download. Only one Viewer or ROS client may own the camera.
 
+Harvest three-camera collection (`/cam{0,1,2}/color/image_raw`) is a separate
+bringup. Do not run it together with this compose `orbbec` service or
+OrbbecViewer; `./ops/run/start_recording.sh` refuses those conflicts. See
+[data_collection/README.md](../data_collection/README.md).
+
+
 ## FCI isolation
 
 RGB-D traffic and the 1 kHz Franka sessions currently share `enp6s0`. Basic streaming and ping checks passed, but they do not prove worst-case FCI timing. Production data collection should put `192.168.1.53/24` on a dedicated Gigabit NIC and confirm `ip route get 192.168.1.10` selects it.

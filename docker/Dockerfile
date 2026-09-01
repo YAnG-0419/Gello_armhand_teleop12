@@ -124,7 +124,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-joint-trajectory-controller \
         ros-humble-joint-state-publisher \
         ros-humble-rviz2 \
+        python3-opencv \
     && python3 -m pip install --no-cache-dir 'nicegui>=2.24,<3' \
+    && python3 -m pip install --no-cache-dir 'pyarrow==17.0.0' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY entrypoint.sh /entrypoint.sh

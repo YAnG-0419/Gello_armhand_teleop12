@@ -34,6 +34,8 @@ gello_upper_body_teleop/
 │   ├── workcell/                   FR3 地址与工作站拓扑
 │   ├── modes/                      GELLO/PICO/VIVE/安全网关运行参数
 │   └── calibration/                操作员和硬件标定结果
+├── data_collection/                Harvest bag/LeRobot 采集契约与配置
+│   └── docs/DATA_FORMAT.md         54/108 维顺序与 OpenPI 差异
 ├── ros_ws/src/                     ROS 2 workspace 源码
 │   ├── teleop_interfaces/          ArmCommand 等 ROS 消息契约
 │   ├── teleop_core/                FR3 安全网关与统一 topic/joint contract
@@ -43,7 +45,10 @@ gello_upper_body_teleop/
 │   ├── linker_hand_ros2_sdk/       O30i/G20 ROS 硬件节点
 │   ├── lychee_fr3_description/     双 FR3 描述、网格和 RViz 配置
 │   ├── lychee_fr3_moveit_config/   双 FR3 MoveIt 配置
-│   └── teleop_data/                数据记录、回放与 LeRobot 导出
+│   ├── teleop_data/                数据记录、回放与 LeRobot 导出
+│   ├── teleop_data_collector/      Harvest ROS bag 录制与手动 LeRobot 转换
+│   ├── teleop_hand_telemetry/      只读 Wuji UDP→ROS telemetry
+│   └── teleop_camera_bringup/      三相机 SN bringup（EULA 门禁）
 ├── ops/                            日常运维入口
 │   ├── run/                        启动遥操、Wuji、UI、MoveIt 和 preflight
 │   ├── setup/                      环境、Docker/ROS、GELLO 驱动安装
@@ -68,6 +73,7 @@ ops/run ──> teleop_runtime + apps/operator_gui
 
 pico_teleop_bridge ──ArmCommand──> teleop_core 安全网关 ──> 双 FR3
 linker_hand_bridge ──校验/限速后的命令──────────────────> O30i/G20
+Wuji Operator ──只读 UDP 5602──> teleop_hand_telemetry ──> Harvest recorder
 ```
 
 `apps` 只保存 UI，`tasks` 只保存特殊任务，硬件差异统一封装在 `adapters`。
@@ -263,6 +269,9 @@ Wuji Hand 2 的左右地址，防止网络发现选错手：
 
 Wuji 模式继续使用双 GELLO 控制 FR3，使用现有 MANUS bridge 和 Operator GUI
 控制 Wuji 手。退出时会停止机械臂侧服务并尝试 disable、断开 Wuji 设备。
+Wuji 模式下 Operator 默认向本机 UDP 5602 导出只读手 telemetry；未启动采集时
+不影响控制。Harvest 格式采集是独立入口，见
+[data_collection/README.md](data_collection/README.md)。
 
 如果只测试 MANUS 到 Wuji 右手，不启动 Docker、GELLO 或 FR3，使用：
 
@@ -385,5 +394,6 @@ docker compose ps
 - [FR3 相对末端动作示教与遥操接入计划](docs/RELATIVE_ACTION_TEACHING.md)
 - [手动灵巧手 UI](apps/hand_ui/README.md)
 - [Wuji 手集成](adapters/wuji/README.md)
+- [Harvest 数据采集](data_collection/README.md)
 - [Powder weighing 特殊任务](tasks/powderweighing/README.md)
 - [第三方代码与许可证](THIRD_PARTY_NOTICES.md)

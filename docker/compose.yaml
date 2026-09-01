@@ -336,3 +336,18 @@ services:
     stdin_open: true
     tty: true
     command: bash
+
+  data-collection:
+    <<: *runtime
+    profiles: [collection]
+    privileged: true
+    stdin_open: true
+    tty: true
+    stop_signal: SIGINT
+    stop_grace_period: 30s
+    volumes:
+      - ..:/workspace/franka_upper_body_teleop
+      - ${TELEOP_DATA_ROOT:?Missing TELEOP_DATA_ROOT in docker/.env}:/data
+      - /dev:/dev
+    command:
+      - /workspace/franka_upper_body_teleop/ops/run/run_data_collection_container.sh

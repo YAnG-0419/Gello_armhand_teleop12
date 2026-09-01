@@ -16,6 +16,13 @@ The hand retargeting optimizer in `adapters/pico/src/pico_bimanual_franka_teleop
 
 The container downloads pinned upstream releases of libfranka, franka_ros2, and franka_description during the build. Those components remain under their respective upstream licenses.
 
+Harvest three-camera collection retains Orbbec SDK ROS 2 wrapper sources under
+`ros_ws/src/orbbec_camera` and `ros_ws/src/orbbec_camera_msgs`, including their
+Apache-2.0 LICENSE/NOTICE files and the bundled SDK 2.8.6 EULA in
+`ros_ws/src/orbbec_camera/SDK`. Ordinary workspace builds skip that runtime.
+Building or launching it requires an explicit operator-accepted gate; see
+`data_collection/docs/ORBBEC_PROVENANCE.md`.
+
 The optional dual-FR3 MoveIt packages, zero-effort teach controller, and
 NiceGUI hand-control source under `ros_ws/src/lychee_fr3_*`,
 `ros_ws/src/lychee_teach_controllers`, and `apps/hand_ui/barmate` were imported from

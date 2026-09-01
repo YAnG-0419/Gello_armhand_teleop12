@@ -5,4 +5,6 @@
 
 Wuji 和 powderweighing 都是显式可选项。前者通过 `--hand-source wuji` 加载，
 后者只有传入 `--right-hand-strategy-config` 时才包装右手策略，因此不会改变
-默认 O30i 行为。
+默认 O30i 行为。Wuji 模式默认向本机 UDP 5602 发送只读 telemetry；可用
+`--disable-hand-telemetry` 关闭。采集进程是独立的，见
+`data_collection/README.md`。

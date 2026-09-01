@@ -11,3 +11,4 @@ Log/
 /log.txt
 docker/.env
 data/
+data_collection/config/cameras.yaml

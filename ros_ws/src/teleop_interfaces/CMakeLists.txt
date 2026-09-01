@@ -9,6 +9,7 @@ find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ArmCommand.msg"
   "msg/ArmCommandStatus.msg"
+  "msg/HandTelemetryStatus.msg"
   DEPENDENCIES builtin_interfaces std_msgs
 )
 

@@ -16,9 +16,24 @@ from .wuji_retargeting import Retargeter
 
 from .backend import WujiHand2Backend, WujiHandBackend
 
-
 ROOT = Path(__file__).resolve().parent
 MODELS = ("wuji_hand", "wuji_hand_2")
+
+try:
+    from teleop_core.contract import (
+        WUJI_LEFT_JOINT_NAMES,
+        WUJI_RIGHT_JOINT_NAMES,
+        require_exact_joint_names,
+    )
+except ModuleNotFoundError:
+    import sys
+
+    sys.path.insert(0, str(ROOT.parents[1] / "ros_ws" / "src" / "teleop_core"))
+    from teleop_core.contract import (
+        WUJI_LEFT_JOINT_NAMES,
+        WUJI_RIGHT_JOINT_NAMES,
+        require_exact_joint_names,
+    )
 
 
 def _config_path(side: str, model: str) -> Path:
@@ -112,6 +127,10 @@ class WujiHandPipeline:
         self.last_frames = {side: None for side in self.sides}
         self.last_frame_at = {side: None for side in self.sides}
         self.last_feedback = {side: None for side in self.sides}
+        # Read-only observation of commands that were actually accepted by the
+        # SDK backend. HandWorker consumes this cache for telemetry; it never
+        # feeds back into command generation.
+        self.last_commands = {side: None for side in self.sides}
         self.next_due = {side: 0.0 for side in self.sides}
         self.open_until = {side: 0.0 for side in self.sides}
         self.was_following = {side: False for side in self.sides}
@@ -128,6 +147,11 @@ class WujiHandPipeline:
                 self.permutations[side] = _device_permutation(retargeter, path)
                 self.joint_names[side] = _device_joint_names(
                     retargeter, self.permutations[side]
+                )
+                require_exact_joint_names(
+                    self.joint_names[side],
+                    WUJI_LEFT_JOINT_NAMES if side == "left" else WUJI_RIGHT_JOINT_NAMES,
+                    label=f"{side} Wuji device order",
                 )
                 lower = np.asarray(
                     retargeter.optimizer.robot.model.lowerPositionLimit,
@@ -370,6 +394,15 @@ class WujiHandPipeline:
                     status.solve_seconds = time.monotonic() - started
                     command = qpos[self.permutations[side]]
                 self.backends[side].send(command)
+                sent_at = time.monotonic()
+                self.last_commands[side] = {
+                    "joint_names": tuple(self.joint_names[side]),
+                    "positions": tuple(float(value) for value in command),
+                    "monotonic_ns": int(sent_at * 1_000_000_000),
+                    "wall_time_ns": time.time_ns(),
+                    "engaged": bool(following),
+                    "valid": True,
+                }
                 if pose_move is not None and progress >= 1.0:
                     self.pose_moves[side] = None
                 self.next_due[side] = moment + self.interval
@@ -395,6 +428,13 @@ class WujiHandPipeline:
                 self.status.last_error = f"{side} Wuji command failed: {error}"
                 status.sending = False
                 status.fault = self.status.last_error
+
+    def command_snapshot(self, side: str) -> dict | None:
+        """Return the latest command only after the hardware send succeeded."""
+        if side not in self.sides:
+            raise ValueError(f"Wuji side is not configured: {side}")
+        snapshot = self.last_commands[side]
+        return None if snapshot is None else dict(snapshot)
 
     def close(self) -> None:
         for backend in list(getattr(self, "backends", {}).values()):

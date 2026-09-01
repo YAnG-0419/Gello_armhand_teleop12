@@ -185,6 +185,22 @@ def main() -> None:
         "commands above about 100 Hz (default: 30)",
     )
     parser.add_argument(
+        "--hand-telemetry-host",
+        default="127.0.0.1",
+        help="one-way read-only Wuji telemetry destination (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--hand-telemetry-port",
+        type=int,
+        default=5602,
+        help="one-way read-only Wuji telemetry UDP port (default: 5602)",
+    )
+    parser.add_argument(
+        "--disable-hand-telemetry",
+        action="store_true",
+        help="disable the read-only UDP telemetry exporter",
+    )
+    parser.add_argument(
         "--left-hand-model",
         default=None,
         help=(
@@ -256,6 +272,8 @@ def main() -> None:
     )
     if args.hand_debug_log and args.hand_source == "none":
         parser.error("--hand-debug-log requires a hand source")
+    if not 0 < args.hand_telemetry_port < 65536:
+        parser.error("--hand-telemetry-port must be in 1..65535")
     if args.arm_source == "vive-trackers" and not args.vive_config:
         parser.error("--arm-source vive-trackers requires --vive-config")
     if args.arm_source != "vive-trackers" and args.vive_config:
@@ -509,8 +527,23 @@ def main() -> None:
                 ui,
             )
         if hand_pipeline is not None:
+            telemetry_sender = None
+            if args.hand_source == "wuji" and not args.disable_hand_telemetry:
+                from teleop_runtime.hand_telemetry import UdpTelemetrySender
+
+                telemetry_sender = UdpTelemetrySender(
+                    args.hand_telemetry_host,
+                    args.hand_telemetry_port,
+                )
+                print(
+                    "read-only Wuji telemetry -> "
+                    f"udp://{args.hand_telemetry_host}:{args.hand_telemetry_port} "
+                    f"session={telemetry_sender.session_id}"
+                )
             hands = HandWorker(
-                hand_pipeline, tick_rate=config.host.control_rate
+                hand_pipeline,
+                tick_rate=config.host.control_rate,
+                telemetry_sender=telemetry_sender,
             )
         if args.record_left_dataset is not None:
             from apps.left_wuji_dataset_recorder import LeftWujiDatasetRecorder

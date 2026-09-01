@@ -8,7 +8,13 @@ from .types import SIDES
 class HandWorker:
     """Run a hand pipeline outside the deadline-critical arm loop."""
 
-    def __init__(self, pipeline, tick_rate: float = 100.0) -> None:
+    def __init__(
+        self,
+        pipeline,
+        tick_rate: float = 100.0,
+        telemetry_sender=None,
+        telemetry_stale_timeout: float = 0.15,
+    ) -> None:
         if tick_rate <= 0:
             raise ValueError("Hand worker tick rate must be positive")
         self.pipeline = pipeline
@@ -20,6 +26,11 @@ class HandWorker:
         self._pose_requests: list[dict[str, tuple[float, ...]]] = []
         self._cancel_pose_requested = False
         self._feedback: dict[str, tuple[tuple[float, ...], float]] = {}
+        self.telemetry_sender = telemetry_sender
+        if telemetry_stale_timeout <= 0.0:
+            raise ValueError("Telemetry stale timeout must be positive")
+        self.telemetry_stale_timeout = float(telemetry_stale_timeout)
+        self._telemetry_signatures = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -150,12 +161,74 @@ class HandWorker:
                     if len(values) == 20 and all(math.isfinite(value) for value in values):
                         with self._lock:
                             self._feedback[side] = (values, time.monotonic())
+            self._emit_telemetry(active)
             deadline += self.dt
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 deadline = time.monotonic()
                 continue
             self._stop.wait(remaining)
+
+    def _emit_telemetry(self, active: dict[str, bool]) -> None:
+        sender = self.telemetry_sender
+        if sender is None:
+            return
+        command_reader = getattr(self.pipeline, "command_snapshot", None)
+        joint_names = getattr(self.pipeline, "joint_names", {})
+        now = time.monotonic()
+        now_ns = int(now * 1_000_000_000)
+        wall_ns = time.time_ns()
+        for side in self.sides:
+            try:
+                command = None if command_reader is None else command_reader(side)
+                with self._lock:
+                    feedback = self._feedback.get(side)
+                command_time_ns = (
+                    None if command is None else int(command["monotonic_ns"])
+                )
+                state_time_ns = (
+                    None if feedback is None else int(feedback[1] * 1_000_000_000)
+                )
+                command_valid = bool(
+                    command is not None
+                    and command.get("valid", False)
+                    and now_ns - command_time_ns
+                    <= int(self.telemetry_stale_timeout * 1_000_000_000)
+                )
+                state_valid = bool(
+                    feedback is not None
+                    and now_ns - state_time_ns
+                    <= int(self.telemetry_stale_timeout * 1_000_000_000)
+                )
+                signature = (
+                    command_time_ns,
+                    state_time_ns,
+                    bool(active.get(side, False)),
+                    command_valid,
+                    state_valid,
+                )
+                if signature == self._telemetry_signatures.get(side):
+                    continue
+                self._telemetry_signatures[side] = signature
+                sender.offer(
+                    side=side,
+                    source_wall_time_ns=wall_ns,
+                    source_monotonic_ns=now_ns,
+                    joint_names=joint_names[side],
+                    command=(
+                        None if command is None else command["positions"]
+                    ),
+                    command_monotonic_ns=command_time_ns,
+                    state=(None if feedback is None else feedback[0]),
+                    state_monotonic_ns=state_time_ns,
+                    engaged=bool(active.get(side, False)),
+                    command_valid=command_valid,
+                    state_valid=state_valid,
+                )
+            except Exception:
+                # Telemetry is intentionally lossy and cannot fault hand or arm
+                # control.  UdpTelemetrySender accounts for queue/send errors.
+                continue
 
     def close(self) -> None:
         if self._closed:
@@ -165,5 +238,12 @@ class HandWorker:
             self._thread.join(timeout=max(1.0, 5.0 * self.dt))
             if self._thread.is_alive():
                 raise RuntimeError("Hand worker did not stop")
+        telemetry_sender = self.telemetry_sender
+        self.telemetry_sender = None
+        if telemetry_sender is not None:
+            try:
+                telemetry_sender.close()
+            except Exception:
+                pass
         self.pipeline.close()
         self._closed = True

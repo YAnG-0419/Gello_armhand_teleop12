@@ -173,6 +173,10 @@ def test_real_hand2_tick_sends_reordered_command(monkeypatch, side):
 
     assert len(sent) == 1
     assert resets == [side]
+    snapshot = pipeline.command_snapshot(side)
+    assert snapshot is not None
+    assert snapshot["valid"] is True
+    assert snapshot["positions"] == tuple(sent[0].tolist())
     np.testing.assert_array_equal(
         sent[0], source_qpos[HAND2_DEVICE_PERMUTATION]
     )

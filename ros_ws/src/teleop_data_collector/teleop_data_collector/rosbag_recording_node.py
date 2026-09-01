@@ -1,0 +1,502 @@
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import signal
+import subprocess
+import time
+import tempfile
+import json
+from pathlib import Path
+from typing import Any
+
+import rclpy
+from rclpy.node import Node
+
+from .config import load_collector_config
+from .collector_contract import TopicContract, recording_outcome, topic_preflight_failures
+from .bag_validation import inspect_bag
+from .keyboard import KeyboardInterface
+
+
+class RosbagDataCollectorNode(Node):
+    def __init__(self):
+        super().__init__(
+            "teleop_data_collector",
+            allow_undeclared_parameters=True,
+            automatically_declare_parameters_from_overrides=True,
+        )
+        self.config = load_collector_config(self)
+        self.output_dir = Path(_get_string_parameter(self, "output_dir", self.config.data_root))
+        self.bag_prefix = _get_string_parameter(self, "bag_prefix", "episode")
+        self.stop_timeout_sec = _get_positive_float_parameter(
+            self,
+            "bag_stop_timeout_sec",
+            30.0,
+        )
+        self.rosbag_record_args = _get_string_list_parameter(self, "rosbag_record_args", [])
+        self.rosbag_record_default_qos = _get_parameter_prefix_values(
+            self,
+            "rosbag_record_default_qos",
+        )
+
+        configured_topics = (*self.config.topics, *self.config.static_topics)
+        self.topic_names = tuple(dict.fromkeys(topic.topic for topic in configured_topics))
+        if not self.topic_names:
+            raise ValueError("No topics configured for rosbag recording.")
+
+        for topic in self.config.topics:
+            self.get_logger().info(f"Bagging {topic.name}: {topic.topic} [{topic.type_name}]")
+        for topic in self.config.static_topics:
+            self.get_logger().info(
+                f"Bagging static {topic.name}: {topic.topic} [{topic.type_name}]"
+            )
+
+    def preflight_failures(self) -> tuple[str, ...]:
+        available = dict(self.get_topic_names_and_types())
+        configured = tuple(
+            TopicContract(topic.name, topic.topic, topic.type_name, topic.required)
+            for topic in self.config.topics
+        )
+        return topic_preflight_failures(configured, available)
+
+    def postflight(
+        self, bag_dir: Path
+    ) -> tuple[tuple[str, ...], dict[str, Any]]:
+        return inspect_bag(bag_dir, self.config.topics)
+
+
+class RosbagEpisodeRecorder:
+    def __init__(
+        self,
+        node: RosbagDataCollectorNode,
+        output_dir: Path,
+        bag_prefix: str,
+        topics: tuple[str, ...],
+        stop_timeout_sec: float,
+        rosbag_record_args: tuple[str, ...],
+        default_qos: dict[str, Any] | None = None,
+        provenance: dict[str, Any] | None = None,
+        preflight=None,
+        postflight=None,
+    ):
+        self._node = node
+        self._output_dir = output_dir
+        self._bag_prefix = bag_prefix
+        self._topics = topics
+        self._stop_timeout_sec = stop_timeout_sec
+        self._rosbag_record_args = rosbag_record_args
+        self._default_qos = default_qos or {}
+        self._provenance = dict(provenance or {})
+        self._preflight = preflight
+        self._postflight = postflight
+        self._process: subprocess.Popen[bytes] | None = None
+        self._current_bag_dir: Path | None = None
+        self._generated_qos_path: Path | None = None
+        self._state_path: Path | None = None
+        self._last_bag_dir: Path | None = None
+        self._validation_report: dict[str, Any] = {}
+
+    @property
+    def active(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    @property
+    def current_bag_dir(self) -> Path | None:
+        return self._current_bag_dir
+
+    def start(self) -> Path:
+        if self.active:
+            raise RuntimeError("rosbag recording is already active.")
+        ros2 = shutil.which("ros2")
+        if ros2 is None:
+            raise RuntimeError("Could not find the 'ros2' executable in PATH.")
+        failures = tuple(self._preflight() if self._preflight is not None else ())
+        if failures:
+            raise RuntimeError("Recording preflight failed: " + "; ".join(failures))
+
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        bag_dir = self._next_episode_dir()
+        self._last_bag_dir = bag_dir
+        self._state_path = self._output_dir / f".{bag_dir.name}.collection_state.json"
+        self._write_state(
+            bag_dir,
+            state="recording",
+            finalized=False,
+            failures=[],
+        )
+        rosbag_record_args = list(self._rosbag_record_args)
+        if self._default_qos and not _has_qos_overrides_arg(rosbag_record_args):
+            self._generated_qos_path = _write_topic_qos_overrides_file(
+                topics=self._topics,
+                qos=self._default_qos,
+            )
+            rosbag_record_args.extend(
+                ["--qos-profile-overrides-path", str(self._generated_qos_path)]
+            )
+
+        command = [
+            ros2,
+            "bag",
+            "record",
+            "--output",
+            str(bag_dir),
+            *rosbag_record_args,
+            *self._topics,
+        ]
+        self._node.get_logger().info("Starting rosbag record:")
+        self._node.get_logger().info(" ".join(command))
+        try:
+            self._process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            self._remove_generated_qos_file()
+            self._write_state(
+                bag_dir,
+                state="interrupted",
+                finalized=False,
+                failures=["failed to start ros2 bag record"],
+            )
+            raise
+        self._current_bag_dir = bag_dir
+        return bag_dir
+
+    def stop(self, *, interrupted: bool = False) -> Path | None:
+        process = self._process
+        bag_dir = self._current_bag_dir
+        if process is None:
+            return bag_dir
+
+        if process.poll() is not None:
+            self._node.get_logger().warn(
+                f"ros2 bag record already exited with code {process.returncode}."
+            )
+            self._process = None
+            self._current_bag_dir = None
+            self._remove_generated_qos_file()
+            self._write_state(
+                bag_dir,
+                state="interrupted",
+                finalized=False,
+                failures=[f"ros2 bag record exited with code {process.returncode}"],
+            )
+            return bag_dir
+
+        self._node.get_logger().info("Stopping rosbag record. Waiting for bag finalization...")
+        _signal_process_group(process, signal.SIGINT)
+        try:
+            process.wait(timeout=self._stop_timeout_sec)
+        except subprocess.TimeoutExpired:
+            self._node.get_logger().warn(
+                "ros2 bag record did not exit after SIGINT; sending SIGTERM."
+            )
+            _signal_process_group(process, signal.SIGTERM)
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                self._node.get_logger().error("ros2 bag record did not exit; sending SIGKILL.")
+                _signal_process_group(process, signal.SIGKILL)
+                process.wait()
+
+        self._process = None
+        self._current_bag_dir = None
+        self._remove_generated_qos_file()
+        failures = ()
+        validation_report: dict[str, Any] = {}
+        if self._postflight is not None and int(process.returncode or 0) == 0:
+            try:
+                failures, validation_report = self._postflight(bag_dir)
+            except Exception as error:  # a validator failure cannot finalize
+                failures = (f"post-recording validation failed: {error}",)
+        self._validation_report = validation_report
+        outcome = recording_outcome(
+            exit_code=int(process.returncode or 0),
+            stream_failures=failures,
+            interrupted=interrupted,
+        )
+        if outcome.finalized:
+            self._node.get_logger().info(f"Bag saved to {bag_dir}.")
+        else:
+            self._node.get_logger().warn(
+                f"Bag is {outcome.state}; check {bag_dir}."
+            )
+        self._write_state(
+            bag_dir,
+            state=outcome.state,
+            finalized=outcome.finalized,
+            failures=list(outcome.failures),
+            validation_report=validation_report,
+        )
+        return bag_dir
+
+    def mark_discarded(self) -> Path | None:
+        if self.active:
+            self.stop()
+        bag_dir = self._current_bag_dir or self._last_bag_dir
+        if bag_dir is not None:
+            outcome = recording_outcome(exit_code=0, discarded=True)
+            self._write_state(
+                bag_dir,
+                state=outcome.state,
+                finalized=outcome.finalized,
+                failures=list(outcome.failures),
+                validation_report=self._validation_report,
+            )
+        return bag_dir
+
+    def _write_state(
+        self,
+        bag_dir: Path,
+        *,
+        state: str,
+        finalized: bool,
+        failures: list[str],
+        validation_report: dict[str, Any] | None = None,
+    ) -> None:
+        payload = {
+            **self._provenance,
+            "source_bag": str(bag_dir.resolve()),
+            "source_topic_contract": self._provenance.get("topics", {}),
+            "state": state,
+            "finalized": finalized,
+            "failures": failures,
+            "validation_report": validation_report or {},
+            "updated_at_ns": time.time_ns(),
+        }
+        sidecar = self._state_path or self._output_dir / f".{bag_dir.name}.collection_state.json"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        temporary_sidecar = sidecar.with_name(sidecar.name + ".tmp")
+        temporary_sidecar.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_sidecar, sidecar)
+        if bag_dir.is_dir():
+            final_path = bag_dir / "collection_state.json"
+            os.replace(sidecar, final_path)
+            self._state_path = final_path
+        else:
+            self._state_path = sidecar
+
+    def _next_episode_dir(self) -> Path:
+        pattern = re.compile(rf"^{re.escape(self._bag_prefix)}(\d+)$")
+        next_index = 0
+        for path in self._output_dir.iterdir():
+            if not path.is_dir():
+                continue
+            match = pattern.match(path.name)
+            if match:
+                next_index = max(next_index, int(match.group(1)) + 1)
+
+        while True:
+            bag_dir = self._output_dir / f"{self._bag_prefix}{next_index}"
+            if not bag_dir.exists():
+                return bag_dir
+            next_index += 1
+
+    def _remove_generated_qos_file(self) -> None:
+        qos_path = self._generated_qos_path
+        self._generated_qos_path = None
+        if qos_path is None:
+            return
+        try:
+            qos_path.unlink(missing_ok=True)
+        except OSError as exc:
+            self._node.get_logger().warn(f"Failed to remove temporary QoS file {qos_path}: {exc}")
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = RosbagDataCollectorNode()
+    recorder = RosbagEpisodeRecorder(
+        node=node,
+        output_dir=node.output_dir,
+        bag_prefix=node.bag_prefix,
+        topics=node.topic_names,
+        stop_timeout_sec=node.stop_timeout_sec,
+        rosbag_record_args=tuple(node.rosbag_record_args),
+        default_qos=node.rosbag_record_default_qos,
+        provenance=node.config.provenance,
+        preflight=node.preflight_failures,
+        postflight=node.postflight,
+    )
+
+    try:
+        with KeyboardInterface() as keyboard:
+            node.get_logger().info(f"Output directory: {node.output_dir}")
+            node.get_logger().info(f"Configured topics: {len(node.topic_names)}")
+            if not keyboard.enabled:
+                node.get_logger().warn("stdin is not a TTY; SPACE hotkey is disabled.")
+            else:
+                _log_ready_banner(node)
+
+            while rclpy.ok():
+                key = keyboard.get_key()
+                if key == " ":
+                    _toggle_recording(node, recorder)
+                elif key in {"d", "D"}:
+                    discarded = recorder.mark_discarded()
+                    if discarded is not None:
+                        node.get_logger().warn(f"Bag marked discarded (not deleted): {discarded}")
+                if recorder.current_bag_dir is not None and not recorder.active:
+                    recorder.stop()
+                time.sleep(0.05)
+    except KeyboardInterrupt:
+        if recorder.active:
+            node.get_logger().info("Shutting down. Stopping active rosbag recording...")
+            recorder.stop(interrupted=True)
+        else:
+            node.get_logger().info("Shutting down.")
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def _toggle_recording(
+    node: RosbagDataCollectorNode,
+    recorder: RosbagEpisodeRecorder,
+) -> None:
+    if recorder.active:
+        node.get_logger().info(
+            "STOPPING: finalizing and validating the active episode; please wait..."
+        )
+        recorder.stop()
+        _log_ready_banner(node)
+        return
+
+    bag_dir = recorder.start()
+    node.get_logger().info(
+        f"RECORDING: {bag_dir} (press SPACE to stop and validate this episode)"
+    )
+
+
+def _log_ready_banner(node: RosbagDataCollectorNode) -> None:
+    node.get_logger().info("============================================================")
+    node.get_logger().info("READY: 采集器已准备好，可以开始录制。")
+    node.get_logger().info("  SPACE  开始录制 / 停止并校验当前 episode")
+    node.get_logger().info("  D      将最近的 episode 标记为 discarded（不会删除）")
+    node.get_logger().info("  Ctrl-C 退出采集程序；录制中退出会标记为 interrupted")
+    node.get_logger().info("============================================================")
+
+
+def _signal_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return
+
+
+def _get_string_parameter(node: Node, name: str, default: str) -> str:
+    if not node.has_parameter(name):
+        node.declare_parameter(name, default)
+    value = str(node.get_parameter(name).value or "").strip()
+    if not value:
+        raise ValueError(f"ROS parameter '{name}' must be a non-empty string.")
+    return value
+
+
+def _get_positive_float_parameter(node: Node, name: str, default: float) -> float:
+    if not node.has_parameter(name):
+        node.declare_parameter(name, default)
+    value = float(node.get_parameter(name).value)
+    if value <= 0.0:
+        raise ValueError(f"ROS parameter '{name}' must be positive.")
+    return value
+
+
+def _get_string_list_parameter(node: Node, name: str, default: list[str]) -> tuple[str, ...]:
+    if not node.has_parameter(name):
+        node.declare_parameter(name, default)
+    value = node.get_parameter(name).value
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"ROS parameter '{name}' must be a string list.")
+    return tuple(_clean_option(item, name) for item in value)
+
+
+def _get_parameter_prefix_values(node: Node, prefix: str) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for name, parameter in node.get_parameters_by_prefix(prefix).items():
+        if not name:
+            continue
+        values[name] = parameter.value
+    return values
+
+
+def _clean_option(value: Any, parameter_name: str) -> str:
+    option = str(value or "").strip()
+    if not option:
+        raise ValueError(f"ROS parameter '{parameter_name}' cannot contain empty strings.")
+    return option
+
+
+def _has_qos_overrides_arg(args: list[str]) -> bool:
+    return "--qos-profile-overrides-path" in args
+
+
+def _write_topic_qos_overrides_file(
+    *,
+    topics: tuple[str, ...],
+    qos: dict[str, Any],
+) -> Path:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        prefix="teleop_rosbag_qos_",
+        suffix=".yaml",
+        delete=False,
+    ) as file:
+        file.write(_topic_qos_overrides_yaml(topics=topics, qos=qos))
+        return Path(file.name)
+
+
+def _topic_qos_overrides_yaml(
+    *,
+    topics: tuple[str, ...],
+    qos: dict[str, Any],
+) -> str:
+    if not topics:
+        raise ValueError("Cannot generate rosbag QoS overrides without topics.")
+    if not qos:
+        raise ValueError("Cannot generate rosbag QoS overrides without QoS settings.")
+
+    lines: list[str] = []
+    for topic in topics:
+        clean_topic = _clean_option(topic, "topics")
+        lines.append(f"{clean_topic}:")
+        for key in sorted(qos):
+            clean_key = _clean_qos_key(key)
+            lines.append(f"  {clean_key}: {_format_yaml_scalar(qos[key])}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _clean_qos_key(value: Any) -> str:
+    key = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        raise ValueError(f"Invalid QoS override key: {value!r}")
+    return key
+
+
+def _format_yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(value)
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("QoS override values cannot be empty.")
+    return text
+
+
+if __name__ == "__main__":
+    main()
