@@ -33,17 +33,21 @@ def test_gello_schema_is_exact_harvest_54_108_and_three_cameras():
     }
     assert len(_source_names(features["action"])) == 54
     assert len(_source_names(features["observation.state"])) == 108
-    assert {spec.column for spec in _video_specs_from_config(config)} == {
+    videos = {spec.column: spec for spec in _video_specs_from_config(config)}
+    assert set(videos) == {
         "observation.images.cam0",
         "observation.images.cam1",
         "observation.images.cam2",
     }
+    assert videos["observation.images.cam0"].fps == 20
+    assert videos["observation.images.cam1"].fps == 30
+    assert videos["observation.images.cam2"].fps == 30
     depth_specs = _depth_image_specs_from_config(config)
     assert len(depth_specs) == 1
     assert depth_specs[0].column == "observation.depths.cam0"
     assert depth_specs[0].topic == "/cam0/depth/image_raw"
     assert depth_specs[0].format == "raw16"
-    assert depth_specs[0].fps == 10
+    assert depth_specs[0].fps == 20
 
 
 def test_combined_validated_action_splits_sides_by_name_and_normalizes_names():

@@ -23,10 +23,11 @@ software_trigger_period: 0
 
 # color params
 enable_color: true
-color_width: 1280
-color_height: 800
-# The Ethernet Gemini 435Le advertises 1280x800 at 10 fps maximum.
-color_fps: 10
+color_width: 640
+color_height: 400
+# CP4N5630008Z exposes color/640_400_20_mjpg over RTSP. The matching
+# resolution preset must be selected before the SDK enumerates profiles.
+color_fps: 20
 color_format: "ANY"
 enable_color_auto_exposure: true
 color_exposure: 30 # 3ms
@@ -34,13 +35,16 @@ color_gain: 16 # -1 default
 enable_color_undistortion: false
 
 # raw depth params
-# The deployed Ethernet Gemini 435Le advertises 1280x800 depth at 5/10 fps.
-# Preserve the native 16-bit depth image; alignment remains an offline choice.
+# Preserve the native 16-bit samples; alignment remains an offline choice.
 enable_depth: true
-depth_width: 1280
-depth_height: 800
-depth_fps: 10
+depth_width: 640
+depth_height: 400
+depth_fps: 20
 depth_format: "Y16"
+
+# The 435Le SDK filters stream profiles using this device-side preset. Without
+# it, the default 1280x800 preset hides the otherwise valid 640x400@20 streams.
+preset_resolution_config: "640, 400, 1, 1"
 
 depth_registration: false
 align_mode: "HW"

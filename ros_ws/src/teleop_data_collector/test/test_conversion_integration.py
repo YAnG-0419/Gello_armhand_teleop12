@@ -181,7 +181,7 @@ def test_synthetic_finalized_bag_converts_atomically_to_exact_lerobot_v2(
     depth_feature = info["features"]["observation.depths.cam0"]
     assert depth_feature["dtype"] == "image"
     assert depth_feature["info"]["image.format"] == "raw16"
-    assert depth_feature["info"]["image.fps"] == 10
+    assert depth_feature["info"]["image.fps"] == 20
     assert depth_feature["info"]["image.is_depth_map"] is True
     assert "unmatched_by_stream" in metadata["episodes"][0]
 

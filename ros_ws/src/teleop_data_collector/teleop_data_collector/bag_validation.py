@@ -293,9 +293,9 @@ def _inspect_message_content(
         height = int(message.height)
         width = int(message.width)
         step = int(message.step)
-        if (width, height) != (1280, 800):
+        if (width, height) != (640, 400):
             raise ValueError(
-                f"head depth shape must be 1280x800, got {width}x{height}"
+                f"head depth shape must be 640x400, got {width}x{height}"
             )
         if str(message.encoding) != "16UC1":
             raise ValueError(

@@ -40,6 +40,9 @@ def test_recording_contract_has_only_post_gateway_action_and_12_required_streams
     assert "/teleop/arm_commands" not in {item.topic for item in topics}
     assert "/cam0/depth/image_raw" in {item.topic for item in topics}
     assert all(item.max_gap_ms == 150.0 for item in topics)
+    by_topic = {item.topic: item for item in topics}
+    assert by_topic["/cam0/color/image_raw"].min_frequency_hz == 18.0
+    assert by_topic["/cam0/depth/image_raw"].min_frequency_hz == 18.0
 
 
 def test_timing_report_rejects_missing_low_rate_and_stale_interval():
@@ -106,21 +109,21 @@ def test_head_depth_requires_native_packed_16uc1():
     streams = {}
     counters = {}
     valid = SimpleNamespace(
-        width=1280,
-        height=800,
+        width=640,
+        height=400,
         encoding="16UC1",
-        step=2560,
-        data=bytes(1280 * 800 * 2),
+        step=1280,
+        data=bytes(640 * 400 * 2),
     )
     _inspect_message_content(
         "/cam0/depth/image_raw", valid, 100, 90, streams, counters
     )
     invalid = SimpleNamespace(
-        width=1280,
-        height=800,
+        width=640,
+        height=400,
         encoding="32FC1",
-        step=5120,
-        data=bytes(1280 * 800 * 4),
+        step=2560,
+        data=bytes(640 * 400 * 4),
     )
     with pytest.raises(ValueError, match="16UC1"):
         _inspect_message_content(

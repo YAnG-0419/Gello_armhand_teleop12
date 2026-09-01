@@ -1470,7 +1470,7 @@ def _mode_conversion_config(teleoperator: str) -> dict[str, Any]:
             f"observation.images.cam{index}": {
                 "topic": CAMERA_COLOR_TOPIC.format(index=index),
                 "type": "sensor_msgs/msg/Image",
-                "fps": 10 if index == 0 else 30,
+                "fps": 20 if index == 0 else 30,
             }
             for index in range(3)
         },
@@ -1479,7 +1479,7 @@ def _mode_conversion_config(teleoperator: str) -> dict[str, Any]:
                 "topic": "/cam0/depth/image_raw",
                 "type": "sensor_msgs/msg/Image",
                 "format": "raw16",
-                "fps": 10,
+                "fps": 20,
             }
         },
     }

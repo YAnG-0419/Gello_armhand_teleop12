@@ -44,15 +44,21 @@ def test_original_license_notice_and_sdk_eula_are_retained():
     assert all((REPO_ROOT / path).is_file() for path in required)
 
 
-def test_head_camera_preserves_native_raw_depth_without_pointcloud_or_registration():
+def test_head_camera_uses_640x400_20hz_rgb_and_raw_depth_preset():
     path = REPO_ROOT / "ros_ws/src/teleop_camera_bringup/config/camera_primary_params.yaml"
     params = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert (params["color_width"], params["color_height"], params["color_fps"]) == (
+        640,
+        400,
+        20,
+    )
     assert params["enable_depth"] is True
     assert (params["depth_width"], params["depth_height"], params["depth_fps"]) == (
-        1280,
-        800,
-        10,
+        640,
+        400,
+        20,
     )
+    assert params["preset_resolution_config"] == "640, 400, 1, 1"
     assert params["depth_format"] == "Y16"
     assert params["depth_registration"] is False
     assert params["enable_depth_undistortion"] is False

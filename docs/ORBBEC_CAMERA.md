@@ -40,7 +40,7 @@ docker compose exec orbbec timeout 15 ros2 topic hz /camera/color/image_raw
 docker compose exec orbbec timeout 15 ros2 topic hz /camera/depth/image_raw
 ```
 
-Expected topics are `/camera/color/image_raw`, `/camera/color/camera_info`, `/camera/depth/image_raw`, and `/camera/depth/camera_info`. The configured source rate is 10 FPS; Python `ros2 topic hz` can under-report while deserializing 1280×800 images, so `/camera/device_status` is the authoritative source counter.
+Expected topics are `/camera/color/image_raw`, `/camera/color/camera_info`, `/camera/depth/image_raw`, and `/camera/depth/camera_info`. The head-camera collection profile is 640×400 at 20 FPS; Python `ros2 topic hz` can under-report while deserializing images, so `/camera/device_status` is the authoritative source counter.
 
 The image pins the SDK v2 ROS wrapper and applies `docker/patches/orbbec_ros2_skip_uvc_for_network.patch`; removing that patch causes the Ethernet camera to fail on an irrelevant USB/UVC initialization.
 

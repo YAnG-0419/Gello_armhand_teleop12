@@ -14,7 +14,7 @@ videos:
   observation.images.cam0:
     topic: /cam0/color/image_raw
     type: sensor_msgs/msg/Image
-    fps: 10
+    fps: 20
   observation.images.cam1:
     topic: /cam1/color/image_raw
     type: sensor_msgs/msg/Image
@@ -29,4 +29,4 @@ depth_images:
     topic: /cam0/depth/image_raw
     type: sensor_msgs/msg/Image
     format: raw16
-    fps: 10
+    fps: 20

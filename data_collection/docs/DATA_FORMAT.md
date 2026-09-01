@@ -63,7 +63,7 @@ observation.depths.cam0 <- /cam0/depth/image_raw (raw16)
 ```
 
 动作、状态和数据集行使用 30 Hz 时间轴；cam1/cam2 RGB 原生 30 Hz，cam0 RGB
-和原始深度原生 10 Hz。cam0 媒体帧各只存储一次，30 Hz 行按时间戳引用最近且不超过
+和原始深度原生 20 Hz。cam0 媒体帧各只存储一次，30 Hz 行按时间戳引用最近且不超过
 150 ms 的源帧，不生成插值 RGB 或深度。深度不做 D2C 注册、不生成点云、不做去畸变。
 
 cam0/cam1/cam2 的序列号及物理语义写入 `collection_state.json`，并随

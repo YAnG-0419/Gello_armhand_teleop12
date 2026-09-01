@@ -27,7 +27,7 @@ teleop_data_collector:
       history: keep_last
       depth: 100
       # Orbbec color publishers are reliable. Best-effort subscriptions dropped
-      # nearly every 1280x800 frame with Cyclone DDS on this workcell.
+      # nearly every large image frame with Cyclone DDS on this workcell.
       reliability: reliable
       durability: volatile
     topics:
@@ -74,12 +74,12 @@ teleop_data_collector:
       cam0:
         topic: /cam0/color/image_raw
         type: sensor_msgs/msg/Image
-        min_frequency_hz: 10.0
+        min_frequency_hz: 18.0
         max_gap_ms: 150.0
       cam0_depth:
         topic: /cam0/depth/image_raw
         type: sensor_msgs/msg/Image
-        min_frequency_hz: 10.0
+        min_frequency_hz: 18.0
         max_gap_ms: 150.0
       cam1:
         topic: /cam1/color/image_raw
