@@ -2,6 +2,7 @@ from pathlib import Path
 
 import yaml
 from teleop_core.contract import (
+    COMMAND_STATUS_TOPIC,
     DATA_LEFT_ARM_JOINT_NAMES,
     DATA_RIGHT_ARM_JOINT_NAMES,
     DATA_TELEOPERATOR,
@@ -56,6 +57,15 @@ def test_observation_contract_has_exact_harvest_108_order():
     assert len(_flatten(feature)) == 108
 
 
+def test_engagement_contract_is_explicit_and_side_ordered():
+    feature = _contract()["features"]["observation.engaged"]
+    assert feature == {
+        "dimension": 4,
+        "dtype": "float32",
+        "order": ["left_arm", "right_arm", "left_hand", "right_hand"],
+    }
+
+
 def test_action_uses_only_post_gateway_arm_topic():
     topics = _contract()["topics"]
     assert topics["validated_arm_action"]["topic"] == (
@@ -64,6 +74,7 @@ def test_action_uses_only_post_gateway_arm_topic():
     assert all(
         item["topic"] != "/teleop/arm_commands" for item in topics.values()
     )
+    assert topics["arm_command_status"]["topic"] == COMMAND_STATUS_TOPIC
 
 
 def test_joint_mappings_are_explicit_unique_and_side_specific():

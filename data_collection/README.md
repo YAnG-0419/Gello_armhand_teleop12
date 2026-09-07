@@ -86,13 +86,32 @@ ROS_DOMAIN_ID=1 TELEOP_ROS_DOMAIN_ID=1 ./ops/run/start_wuji_teleop.sh \
 数据必须写在仓库外。`--data-root` 若落在 Git 仓库内会被拒绝。
 
 - `SPACE`：开始/停止 episode。开始前检查 topic 名称和 ROS 类型；停止后读取整包，
-  检查消息数、频率、150 ms gap、source header 单调性、joint name、有限值、双侧
+  以 source header 检查消息数、频率、150 ms gap 和单调性；bag receive gap 单独作为
+  传输拥塞告警，不会把源端连续的数据判坏。默认首尾各 1 秒是操作缓冲区；校验只用
+  中间有效 source 区间判断连续性，落在缓冲区内的 receive-time 边界缺口单列为
+  `boundary_warnings`。同时检查 joint name、有限值、双侧
   action、双手、三路 RGB、头部原始深度和 telemetry 丢包计数。
+- 启动时先显示 `WAITING`；所有必需 topic 均已出现、类型匹配并连续稳定 2 秒后，
+  才显示 `READY` 和上述快捷键。看到 `READY` 前不要开始任务动作。
 - `D`：将最近 episode 标记为 `discarded`，不删除源文件。
 - `Ctrl-C`：active episode 标记为 `interrupted`。
 
+现有 Operator 的 `disengage` 同时作为数据语义中的 HOLD。原始 bag 只记录真实
+command 和双侧 engagement 状态；转换时才对明确 disengage 的一侧锁存最后有效
+action。若该侧从 episode 开始即 disengage，则以同侧实测位置初始化。输出额外保存
+`observation.engaged=[左臂,右臂,左手,右手]`，但默认不作为策略输入。
+
 状态只有 `recording`、`finalized`、`incomplete`、`interrupted`、`discarded`。
 缺任一臂、手或相机流不得 `finalized`。
+
+旧 bag 可用相同规则独立重校验；命令只原子更新 `collection_state.json`，不修改
+数据库和 `metadata.yaml`：
+
+```bash
+./ops/run/revalidate_recording.sh \
+  /home/user/franka_teleop_data/bags/gello/episode12 \
+  --trim-start-sec 1 --trim-end-sec 1
+```
 
 ## 手动转换
 
@@ -107,6 +126,8 @@ ROS_DOMAIN_ID=1 TELEOP_ROS_DOMAIN_ID=1 ./ops/run/start_wuji_teleop.sh \
 脚本将源 bag 只读挂载；转换前后比较源文件大小和 mtime。输出写到相邻临时目录，
 54/108 维、joint order、有限值、严格单调时间、三视频、头部 raw16 深度和
 provenance 全部验证通过后才原子发布。失败时不改源 bag，也不暴露目标目录中的部分数据。
+默认转换取所有 required stream 的 source 公共区间，再裁掉首尾各 1 秒；Parquet
+训练时间戳从裁剪后区间的 0 秒重新开始。原始 bag 始终保持完整。
 
 详细 topic、顺序和时间策略见
 [`docs/DATA_FORMAT.md`](docs/DATA_FORMAT.md)。

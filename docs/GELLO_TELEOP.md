@@ -56,9 +56,8 @@ serial rather than transient `ttyACM` enumeration:
 Both identities, motor IDs 1-7, model number 1200, and live joint streams were
 verified on 2026-08-17. Never infer left/right from `ttyACM0` or `ttyACM1`.
 The current replacement-pair `direction_correction` vectors are
-`[1,1,1,1,1,1,1]` for both sides after the final right-J2 reversal and before
-`standard_signs` is applied.
-The current right-side sensitivity vector is `[1.3,2.2,1.3,1.0,1.0,1.0,1.6]`.
+`[1,1,1,1,1,1,1]` on the left and `[1,1,1,1,1,-1,1]` on the right (right J6
+flipped on 2026-09-02) before `standard_signs` is applied.
 The GELLO mapper uses `0.8 rad/s`; the outer safety gateway retains the
 effective `0.7 rad/s` ceiling.
 

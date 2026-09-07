@@ -29,9 +29,9 @@ def test_checked_in_config_preserves_verified_identities_and_directions():
     assert config.right.expected_serial == "17E84ADC5157375037202020FF10131E"
     assert config.joint_ids == (1, 2, 3, 4, 5, 6, 7)
     assert config.left.direction_correction == (1, 1, 1, 1, 1, 1, 1)
-    assert config.right.direction_correction == (1, 1, 1, 1, 1, 1, 1)
-    assert config.left.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
-    assert config.right.joint_sensitivity == (1.3, 2.2, 1.3, 1.0, 1.0, 1.0, 1.6)
+    assert config.right.direction_correction == (1, 1, 1, 1, 1, -1, 1)
+    assert config.left.joint_sensitivity == (0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.9)
+    assert config.right.joint_sensitivity == (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
     assert config.left.max_relative_delta == (1.5,) * 7
     physical_spans = hardware.UPPER_LIMITS[7:14] - hardware.LOWER_LIMITS[7:14]
     np.testing.assert_allclose(

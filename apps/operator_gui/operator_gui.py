@@ -53,9 +53,10 @@ SIDES = ("left", "right")
 PEDAL_BINDINGS = {
     "L": ("toggle", "arm", "left"),
     "R": ("toggle", "hand", "left"),
-    "Space": ("home", "arm", "both"),
+    "Space": ("toggle_hold", "arm", "left"),
     "A": ("toggle", "arm", "right"),
     "B": ("toggle", "hand", "right"),
+    "Q": ("toggle_hold", "arm", "right"),
 }
 PRESET_KEYS = ("W", "E")
 HAND_KEY_HINTS = {"left": "R", "right": "B"}
@@ -168,13 +169,22 @@ class OperatorWindow(QMainWindow):
 
         sides_row = QHBoxLayout()
         self.arm_engage_buttons: dict[str, QPushButton] = {}
+        self.arm_hold_buttons: dict[str, QPushButton] = {}
         self.hand_engage_buttons: dict[str, QPushButton] = {}
         self.capture_home_buttons: dict[str, QPushButton] = {}
         # Compatibility alias used by existing integrations and tests.
         self.engage_buttons = self.arm_engage_buttons
         pedal_keys = {
-            "left": {"arm": "L", "hand": HAND_KEY_HINTS["left"]},
-            "right": {"arm": "A", "hand": HAND_KEY_HINTS["right"]},
+            "left": {
+                "arm": "L",
+                "hold": "Space",
+                "hand": HAND_KEY_HINTS["left"],
+            },
+            "right": {
+                "arm": "A",
+                "hold": "Q",
+                "hand": HAND_KEY_HINTS["right"],
+            },
         }
         for side in SIDES:
             box = QGroupBox(side.capitalize())
@@ -195,6 +205,22 @@ class OperatorWindow(QMainWindow):
             self.arm_engage_buttons[side] = arm_engage
             grid.addWidget(arm_engage, 0, 0)
 
+            arm_hold = QPushButton(f"Hold arm ({keys['hold']})")
+            arm_hold.setCheckable(True)
+            arm_hold.setFocusPolicy(Qt.NoFocus)
+            arm_hold.setMinimumHeight(48)
+            arm_hold.setToolTip(
+                f"Shortcut: {keys['hold']} toggles a stationary hold while "
+                "continuing to publish this arm's measured joints"
+            )
+            arm_hold.clicked.connect(
+                lambda checked, side=side: self._send(
+                    "hold_arm", {"side": side, "enabled": checked}
+                )
+            )
+            self.arm_hold_buttons[side] = arm_hold
+            grid.addWidget(arm_hold, 1, 0)
+
             hand_engage = QPushButton(f"Start hand ({keys['hand']})")
             hand_engage.setCheckable(True)
             hand_engage.setFocusPolicy(Qt.NoFocus)
@@ -209,7 +235,7 @@ class OperatorWindow(QMainWindow):
                 )
             )
             self.hand_engage_buttons[side] = hand_engage
-            grid.addWidget(hand_engage, 1, 0)
+            grid.addWidget(hand_engage, 2, 0)
 
             capture_home = QPushButton("Record arm + hand as Home")
             capture_home.setFocusPolicy(Qt.NoFocus)
@@ -223,10 +249,10 @@ class OperatorWindow(QMainWindow):
             self.capture_home_buttons[side] = capture_home
             self.action_buttons = getattr(self, "action_buttons", [])
             self.action_buttons.append(capture_home)
-            grid.addWidget(capture_home, 2, 0)
+            grid.addWidget(capture_home, 3, 0)
 
             grid.addWidget(
-                self._button("Open hand", "open_hand", {"side": side}), 3, 0
+                self._button("Open hand", "open_hand", {"side": side}), 4, 0
             )
             sides_row.addWidget(box)
         layout.addLayout(sides_row)
@@ -252,7 +278,7 @@ class OperatorWindow(QMainWindow):
         )
         self.task_selector.setToolTip("Select which task Home pose and trajectory to use")
         actions.addWidget(self.task_selector)
-        home_both = QPushButton("Home both arms (Space)")
+        home_both = QPushButton("Home both arms")
         home_both.setFocusPolicy(Qt.NoFocus)
         home_both.clicked.connect(
             lambda: self._send(
@@ -260,9 +286,7 @@ class OperatorWindow(QMainWindow):
             )
         )
         self.action_buttons.append(home_both)
-        home_both.setToolTip(
-            "Pedal/shortcut: Space homes both arms and disengages followers"
-        )
+        home_both.setToolTip("Homes both arms and disengages followers")
         actions.addWidget(home_both)
         layout.addLayout(actions)
 
@@ -274,7 +298,7 @@ class OperatorWindow(QMainWindow):
         self.action_buttons.append(self.capture_ready_button)
         ready_layout.addWidget(self.capture_ready_button)
         ready_layout.addWidget(self._button("Move both arms to Ready", "move_ready"))
-        self.ready_to_home_button = QPushButton("Ready to Home (Q)")
+        self.ready_to_home_button = QPushButton("Ready to Home")
         self.ready_to_home_button.setFocusPolicy(Qt.NoFocus)
         self.ready_to_home_button.clicked.connect(
             lambda: self._send(
@@ -318,8 +342,8 @@ class OperatorWindow(QMainWindow):
         layout.addWidget(preset_box)
 
         shortcut_hint = QLabel(
-            "Foot pedals: L left arm · R left hand · Space home both  |  "
-            "A right arm · B right hand"
+            "Shortcuts: L left arm · R left hand · Space left Hold  |  "
+            "A right arm · B right hand · Q right Hold"
         )
         shortcut_hint.setStyleSheet("color: #666;")
         layout.addWidget(shortcut_hint)
@@ -455,6 +479,8 @@ class OperatorWindow(QMainWindow):
                 slot = lambda side=side, target=target: (
                     self._shortcut_toggle_engage(side, target)
                 )
+            elif action == "toggle_hold":
+                slot = lambda side=side: self._shortcut_toggle_hold(side)
             else:
                 slot = lambda side=side: self._shortcut_home(side)
             shortcut = QShortcut(QKeySequence(key), self)
@@ -463,10 +489,6 @@ class OperatorWindow(QMainWindow):
             shortcut.activated.connect(slot)
             self.shortcuts.append(shortcut)
         self.preset_shortcuts = []
-        self.ready_to_home_shortcut = QShortcut(QKeySequence("Q"), self)
-        self.ready_to_home_shortcut.setContext(Qt.WindowShortcut)
-        self.ready_to_home_shortcut.setAutoRepeat(False)
-        self.ready_to_home_shortcut.activated.connect(self._shortcut_ready_to_home)
         for key in PRESET_KEYS:
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.setContext(Qt.WindowShortcut)
@@ -475,10 +497,6 @@ class OperatorWindow(QMainWindow):
                 lambda selected=key.lower(): self._shortcut_preset(selected)
             )
             self.preset_shortcuts.append(shortcut)
-
-    def _shortcut_ready_to_home(self) -> None:
-        if self.connection_state == "connected":
-            self._send("ready_to_home", {"task": self._selected_task()})
 
     def _shortcut_preset(self, key: str) -> None:
         if self.connection_state == "connected":
@@ -497,6 +515,12 @@ class OperatorWindow(QMainWindow):
             self._send(f"disengage_{target}", {"side": side})
         else:
             self._send(f"engage_{target}", {"side": side})
+
+    def _shortcut_toggle_hold(self, side: str) -> None:
+        if self.connection_state != "connected":
+            return
+        held = self.arm_hold_buttons[side].isChecked()
+        self._send("hold_arm", {"side": side, "enabled": not held})
 
     def _shortcut_home(self, side: str) -> None:
         if self.connection_state == "connected":
@@ -586,6 +610,14 @@ class OperatorWindow(QMainWindow):
                 button.setChecked(False)
                 key_hint = "L" if side == "left" else "A"
                 button.setText(f"Start arm ({key_hint})")
+                button.blockSignals(False)
+        for side, button in self.arm_hold_buttons.items():
+            button.setEnabled(ready)
+            if not ready:
+                button.blockSignals(True)
+                button.setChecked(False)
+                key_hint = "Space" if side == "left" else "Q"
+                button.setText(f"Hold arm ({key_hint})")
                 button.blockSignals(False)
         for button in getattr(self, "capture_home_buttons", {}).values():
             button.setEnabled(ready)
@@ -684,6 +716,16 @@ class OperatorWindow(QMainWindow):
             elif command == "status":
                 self._apply_status(response.get("result", {}))
 
+    def closeEvent(self, event) -> None:
+        for timer in (
+            self.poll_timer,
+            self.health_timer,
+            self.reconnect_timer,
+        ):
+            timer.stop()
+        self.socket.abort()
+        super().closeEvent(event)
+
     # -------------------------------------------------------------- status
     def _apply_status(self, status: dict) -> None:
         self.last_status_at = time.monotonic()
@@ -691,6 +733,7 @@ class OperatorWindow(QMainWindow):
             self._set_connection_state("connected")
         self.status_label.setPlainText(str(status.get("status_line", "-")))
         active = status.get("active", {})
+        arm_hold = status.get("arm_hold", {})
         for side, button in self.arm_engage_buttons.items():
             engaged = bool(active.get(side))
             button.blockSignals(True)
@@ -700,6 +743,18 @@ class OperatorWindow(QMainWindow):
                 f"Arm running ({key_hint})"
                 if engaged
                 else f"Start arm ({key_hint})"
+            )
+            button.setEnabled(not bool(arm_hold.get(side)))
+            button.blockSignals(False)
+        for side, button in self.arm_hold_buttons.items():
+            held = bool(arm_hold.get(side))
+            key_hint = "Space" if side == "left" else "Q"
+            button.blockSignals(True)
+            button.setChecked(held)
+            button.setText(
+                f"Release Hold ({key_hint})"
+                if held
+                else f"Hold arm ({key_hint})"
             )
             button.blockSignals(False)
         hand_active = status.get("hand_active", {})
@@ -717,10 +772,13 @@ class OperatorWindow(QMainWindow):
         for side, button in self.capture_home_buttons.items():
             button.setEnabled(
                 not self.arm_engage_buttons[side].isChecked()
+                and not self.arm_hold_buttons[side].isChecked()
                 and not self.hand_engage_buttons[side].isChecked()
             )
         both_stopped = not any(
             button.isChecked() for button in self.arm_engage_buttons.values()
+        ) and not any(
+            button.isChecked() for button in self.arm_hold_buttons.values()
         )
         self.capture_ready_button.setEnabled(both_stopped)
         feedback = status.get("feedback", [])

@@ -39,6 +39,10 @@ class OperatorConsole:
         # existing arm input source. Hands have independent ownership so a
         # pedal can start/stop MANUS following without moving the FR3.
         self.active = {side: False for side in SIDES}
+        # A held arm remains an active command source, but ignores leader
+        # motion and repeatedly sends the target captured by the coordinator.
+        self.arm_hold = {side: False for side in SIDES}
+        self._arm_hold_resume = {side: False for side in SIDES}
         self.hand_active = {side: False for side in SIDES}
         self.requests = {
             "open_hands": False,
@@ -77,6 +81,10 @@ class OperatorConsole:
         with self._lock:
             return dict(self.hand_active)
 
+    def poll_holds(self) -> dict[str, bool]:
+        with self._lock:
+            return dict(self.arm_hold)
+
     def take_requests(self) -> dict[str, bool]:
         with self._lock:
             taken = self.requests
@@ -91,8 +99,29 @@ class OperatorConsole:
         with self._lock:
             if target in {"arm", "both"}:
                 self.active[side] = engaged
+                # Start/stop is an explicit exit from hold. Re-engagement is
+                # re-anchored by the relative mapper on the next control tick.
+                self.arm_hold[side] = False
+                self._arm_hold_resume[side] = False
             if target in {"hand", "both"}:
                 self.hand_active[side] = engaged
+
+    def set_hold(self, side: str, held: bool) -> None:
+        if side not in self.sides:
+            raise ValueError(f"{side} is not configured for this run")
+        if not isinstance(held, bool):
+            raise ValueError("enabled must be a boolean")
+        with self._lock:
+            if held:
+                if not self.arm_hold[side]:
+                    self._arm_hold_resume[side] = self.active[side]
+                self.active[side] = False
+                self.arm_hold[side] = True
+            else:
+                self.arm_hold[side] = False
+                self.active[side] = self._arm_hold_resume[side]
+                self._arm_hold_resume[side] = False
+        self.show(f"{side} arm: {'holding target' if held else 'hold released'}")
 
     def request(self, name: str, value=True) -> None:
         with self._lock:
@@ -103,6 +132,8 @@ class OperatorConsole:
     def disable_all(self, reason: str) -> None:
         with self._lock:
             self.active = {side: False for side in SIDES}
+            self.arm_hold = {side: False for side in SIDES}
+            self._arm_hold_resume = {side: False for side in SIDES}
             self.hand_active = {side: False for side in SIDES}
         self.show(f"all sides disengaged: {reason}")
 
@@ -110,6 +141,8 @@ class OperatorConsole:
         """Deny the selected arm path without changing independent hand state."""
         with self._lock:
             self.active[side] = False
+            self.arm_hold[side] = False
+            self._arm_hold_resume[side] = False
         self.show(f"{side} arm: {reason}")
 
     def deny_hand(self, side: str, reason: str) -> None:
@@ -137,6 +170,7 @@ class OperatorConsole:
                 "status_line": self._status_line,
                 "feedback": list(self._feedback),
                 "active": dict(self.active),
+                "arm_hold": dict(self.arm_hold),
                 "hand_active": dict(self.hand_active),
                 "sides": list(self.sides),
             }
@@ -260,6 +294,9 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
             ),
             "disengage_arm": lambda: self.keyboard.set_active(
                 _require_side(arguments), False, target="arm"
+            ),
+            "hold_arm": lambda: self.keyboard.set_hold(
+                _require_side(arguments), arguments.get("enabled")
             ),
             "engage_hand": lambda: self.keyboard.set_active(
                 _require_side(arguments), True, target="hand"

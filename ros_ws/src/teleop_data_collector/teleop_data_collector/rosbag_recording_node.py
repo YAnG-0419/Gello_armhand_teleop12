@@ -64,7 +64,12 @@ class RosbagDataCollectorNode(Node):
     def postflight(
         self, bag_dir: Path
     ) -> tuple[tuple[str, ...], dict[str, Any]]:
-        return inspect_bag(bag_dir, self.config.topics)
+        return inspect_bag(
+            bag_dir,
+            self.config.topics,
+            trim_start_sec=self.config.trim_start_sec,
+            trim_end_sec=self.config.trim_end_sec,
+        )
 
 
 class RosbagEpisodeRecorder:
@@ -105,6 +110,10 @@ class RosbagEpisodeRecorder:
     @property
     def current_bag_dir(self) -> Path | None:
         return self._current_bag_dir
+
+    @property
+    def last_bag_dir(self) -> Path | None:
+        return self._last_bag_dir
 
     def start(self) -> Path:
         if self.active:
@@ -257,6 +266,7 @@ class RosbagEpisodeRecorder:
         failures: list[str],
         validation_report: dict[str, Any] | None = None,
     ) -> None:
+        report = validation_report or {}
         payload = {
             **self._provenance,
             "source_bag": str(bag_dir.resolve()),
@@ -264,7 +274,10 @@ class RosbagEpisodeRecorder:
             "state": state,
             "finalized": finalized,
             "failures": failures,
-            "validation_report": validation_report or {},
+            "validation_report": report,
+            "validation_policy": "source_header_continuity_trimmed_boundary_v3",
+            "boundary_warnings": list(report.get("boundary_warnings") or []),
+            "transport_warnings": list(report.get("transport_warnings") or []),
             "updated_at_ns": time.time_ns(),
         }
         sidecar = self._state_path or self._output_dir / f".{bag_dir.name}.collection_state.json"
@@ -331,7 +344,7 @@ def main(args=None):
             node.get_logger().info(f"Configured topics: {len(node.topic_names)}")
             if not keyboard.enabled:
                 node.get_logger().warn("stdin is not a TTY; SPACE hotkey is disabled.")
-            else:
+            if _wait_for_required_topics(node):
                 _log_ready_banner(node)
 
             while rclpy.ok():
@@ -341,7 +354,9 @@ def main(args=None):
                 elif key in {"d", "D"}:
                     discarded = recorder.mark_discarded()
                     if discarded is not None:
-                        node.get_logger().warn(f"Bag marked discarded (not deleted): {discarded}")
+                        node.get_logger().warn(
+                            f"Bag marked discarded (not deleted): {discarded}"
+                        )
                 if recorder.current_bag_dir is not None and not recorder.active:
                     recorder.stop()
                 time.sleep(0.05)
@@ -382,6 +397,54 @@ def _log_ready_banner(node: RosbagDataCollectorNode) -> None:
     node.get_logger().info("  D      将最近的 episode 标记为 discarded（不会删除）")
     node.get_logger().info("  Ctrl-C 退出采集程序；录制中退出会标记为 interrupted")
     node.get_logger().info("============================================================")
+
+
+def _wait_for_required_topics(
+    node: RosbagDataCollectorNode,
+    *,
+    stable_sec: float = 2.0,
+    poll_sec: float = 0.1,
+    status_interval_sec: float = 5.0,
+) -> bool:
+    """Wait until every required topic has passed preflight continuously.
+
+    Camera drivers continue printing initialization messages after the collector
+    process starts.  Keeping the operator banner behind this gate makes READY
+    mean that the complete configured input graph is present, rather than only
+    that the collector process itself has entered its keyboard loop.
+    """
+    node.get_logger().info(
+        "WAITING: 正在等待机械臂、Wuji 手和相机数据源准备完成..."
+    )
+    ready_since: float | None = None
+    last_status_at = float("-inf")
+    previous_failures: tuple[str, ...] | None = None
+
+    while rclpy.ok():
+        failures = node.preflight_failures()
+        now = time.monotonic()
+        if failures:
+            ready_since = None
+            if (
+                failures != previous_failures
+                or now - last_status_at >= status_interval_sec
+            ):
+                node.get_logger().info(
+                    "Still waiting for required topics: " + "; ".join(failures)
+                )
+                last_status_at = now
+        else:
+            if ready_since is None:
+                ready_since = now
+                node.get_logger().info(
+                    f"All required topics found; confirming stability for {stable_sec:.1f}s..."
+                )
+            elif now - ready_since >= stable_sec:
+                return True
+
+        previous_failures = failures
+        time.sleep(poll_sec)
+    return False
 
 
 def _signal_process_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:

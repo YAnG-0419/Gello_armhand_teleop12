@@ -4,6 +4,9 @@ teleoperator: gello
 units: radian
 
 topics:
+  arm_command_status:
+    topic: /teleop/arm_command_status
+    type: teleop_interfaces/msg/ArmCommandStatus
   validated_arm_action:
     topic: /teleop/validated_arm_commands
     type: sensor_msgs/msg/JointState
@@ -158,6 +161,14 @@ features:
       - {name: left_hand.velocity, count: 20, joints: *left_hand_source}
       - {name: right_hand.position, count: 20, joints: *right_hand_source}
       - {name: right_hand.velocity, count: 20, joints: *right_hand_source}
+  observation.engaged:
+    dimension: 4
+    dtype: float32
+    order:
+      - left_arm
+      - right_arm
+      - left_hand
+      - right_hand
   images:
     observation.images.cam0: /cam0/color/image_raw
     observation.images.cam1: /cam1/color/image_raw

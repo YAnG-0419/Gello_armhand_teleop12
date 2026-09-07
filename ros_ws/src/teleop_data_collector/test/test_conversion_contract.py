@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,11 +9,14 @@ from teleop_core.contract import (
     VALIDATED_COMMAND_TOPIC,
 )
 from teleop_data_collector.rosbag_to_lerobot import (
+    EpisodeConverter,
+    SamplingSpec,
     _depth_image_specs_from_config,
     _feature_specs_from_config,
     _message_to_source_value,
     _mode_conversion_config,
     _source_names,
+    _trim_source_window,
     _video_specs_from_config,
 )
 
@@ -33,6 +37,12 @@ def test_gello_schema_is_exact_harvest_54_108_and_three_cameras():
     }
     assert len(_source_names(features["action"])) == 54
     assert len(_source_names(features["observation.state"])) == 108
+    assert _source_names(features["observation.engaged"]) == [
+        "left_arm",
+        "right_arm",
+        "left_hand",
+        "right_hand",
+    ]
     videos = {spec.column: spec for spec in _video_specs_from_config(config)}
     assert set(videos) == {
         "observation.images.cam0",
@@ -48,6 +58,22 @@ def test_gello_schema_is_exact_harvest_54_108_and_three_cameras():
     assert depth_specs[0].topic == "/cam0/depth/image_raw"
     assert depth_specs[0].format == "raw16"
     assert depth_specs[0].fps == 20
+
+
+def test_source_window_trims_both_edges_and_rejects_short_episode():
+    assert _trim_source_window(
+        10_000_000_000,
+        15_000_000_000,
+        trim_start_ns=1_000_000_000,
+        trim_end_ns=1_000_000_000,
+    ) == (11_000_000_000, 14_000_000_000)
+    with pytest.raises(ValueError, match="removes the complete"):
+        _trim_source_window(
+            10_000_000_000,
+            11_500_000_000,
+            trim_start_ns=1_000_000_000,
+            trim_end_ns=1_000_000_000,
+        )
 
 
 def test_combined_validated_action_splits_sides_by_name_and_normalizes_names():
@@ -98,3 +124,99 @@ def test_partial_named_side_is_rejected():
             expected_joint_names=list(LEFT_COMMAND_JOINT_NAMES),
             allow_extra_joint_names=True,
         )
+
+
+def test_status_messages_become_side_ordered_engagement_values():
+    arm_status = SimpleNamespace(accepted_sides=["right"])
+    assert _message_to_source_value(
+        "teleop_interfaces/msg/ArmCommandStatus",
+        arm_status,
+        "accepted_sides.left",
+    ) == [0.0]
+    assert _message_to_source_value(
+        "teleop_interfaces/msg/ArmCommandStatus",
+        arm_status,
+        "accepted_sides.right",
+    ) == [1.0]
+
+    hand_status = SimpleNamespace(side="left", engaged=False)
+    assert _message_to_source_value(
+        "teleop_interfaces/msg/HandTelemetryStatus",
+        hand_status,
+        "engaged.left",
+    ) == [0.0]
+    assert _message_to_source_value(
+        "teleop_interfaces/msg/HandTelemetryStatus",
+        hand_status,
+        "engaged.right",
+    ) is None
+
+
+def test_disengaged_sources_hold_last_action_or_seed_from_measured_state():
+    features = _feature_specs_from_config(_mode_conversion_config("gello"))
+    converter = EpisodeConverter(
+        bag_path=Path("bag"),
+        output_dir=Path("output"),
+        episode_index=0,
+        global_start_index=0,
+        storage_id=None,
+        feature_specs=features,
+        video_specs=[],
+        depth_image_specs=[],
+        pointcloud_specs=[],
+        static_topic_specs=[],
+        sampling=SamplingSpec(
+            "fixed_hz",
+            frequency_hz=30,
+            max_staleness_ns=150_000_000,
+        ),
+        fps=30,
+        task_index=0,
+        chunk_size=1000,
+        compression=None,
+    )
+    values = {
+        ("observation.engaged", 0): [0.0],
+        ("observation.engaged", 1): [1.0],
+        ("observation.engaged", 2): [0.0],
+        ("observation.engaged", 3): [1.0],
+        ("observation.state", 0): [*map(float, range(7)), *([0.0] * 7)],
+        ("observation.state", 2): [*map(float, range(20, 40)), *([0.0] * 20)],
+        ("action", 1): list(map(float, range(10, 17))),
+        ("action", 3): list(map(float, range(40, 60))),
+    }
+    times = {key: 100 for key in values}
+
+    held_values, held_times = converter._apply_hold_policy(100, values, times)
+    assert held_values[("action", 0)] == list(map(float, range(7)))
+    assert held_values[("action", 2)] == list(map(float, range(20, 40)))
+    assert held_times[("action", 0)] == 100
+
+    values[("observation.state", 0)] = [*([99.0] * 7), *([0.0] * 7)]
+    held_values, _ = converter._apply_hold_policy(120, values, times)
+    assert held_values[("action", 0)] == list(map(float, range(7)))
+
+    # The right side then disengages after having real commands. Its HOLD must
+    # latch that command, rather than track later measured-state drift.
+    values[("observation.engaged", 1)] = [0.0]
+    times[("observation.engaged", 1)] = 130
+    values[("observation.state", 1)] = [*([55.0] * 7), *([0.0] * 7)]
+    held_values, _ = converter._apply_hold_policy(130, values, times)
+    assert held_values[("action", 1)] == list(map(float, range(10, 17)))
+    values[("observation.state", 1)] = [*([66.0] * 7), *([0.0] * 7)]
+    held_values, _ = converter._apply_hold_policy(140, values, times)
+    assert held_values[("action", 1)] == list(map(float, range(10, 17)))
+
+    # Re-engagement becomes effective only together with the first new action;
+    # a status/action ordering gap must not expose a stale pre-HOLD target.
+    values[("observation.engaged", 1)] = [1.0]
+    times[("observation.engaged", 1)] = 200_000_000
+    aligned_values, _ = converter._apply_hold_policy(200_000_000, values, times)
+    assert aligned_values[("observation.engaged", 1)] == [0.0]
+    assert aligned_values[("action", 1)] == list(map(float, range(10, 17)))
+
+    values[("action", 1)] = [77.0] * 7
+    times[("action", 1)] = 201_000_000
+    aligned_values, _ = converter._apply_hold_policy(201_000_000, values, times)
+    assert aligned_values[("observation.engaged", 1)] == [1.0]
+    assert aligned_values[("action", 1)] == [77.0] * 7

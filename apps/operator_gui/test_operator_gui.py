@@ -23,13 +23,14 @@ from pico_bimanual_franka_teleop.control_server import (
 from apps.operator_gui.operator_gui import PEDAL_BINDINGS, PRESET_KEYS, OperatorWindow
 
 
-def test_five_pedal_bindings_match_the_workcell_layout():
+def test_shortcut_bindings_match_the_workcell_layout():
     assert PEDAL_BINDINGS == {
         "L": ("toggle", "arm", "left"),
         "R": ("toggle", "hand", "left"),
-        "Space": ("home", "arm", "both"),
+        "Space": ("toggle_hold", "arm", "left"),
         "A": ("toggle", "arm", "right"),
         "B": ("toggle", "hand", "right"),
+        "Q": ("toggle_hold", "arm", "right"),
     }
     assert PRESET_KEYS == ("W", "E")
 
@@ -61,9 +62,39 @@ def test_shortcuts_send_independent_arm_hand_and_home_both_commands(tmp_path):
     assert sent == [
         ("engage_arm", {"side": "left"}),
         ("engage_hand", {"side": "left"}),
-        ("home_arm", {"side": "both", "task": "powder_weighing"}),
+        ("hold_arm", {"side": "left", "enabled": True}),
         ("engage_arm", {"side": "right"}),
         ("engage_hand", {"side": "right"}),
+        ("hold_arm", {"side": "right", "enabled": True}),
+    ]
+
+
+def test_hold_button_sends_latched_publish_command(tmp_path):
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    sent = []
+    try:
+        window.socket.abort()
+        window.reconnect_timer.stop()
+        window.connection_state = "connected"
+        window._send = lambda command, arguments=None: sent.append(
+            (command, arguments or {})
+        )
+        window.arm_hold_buttons["left"].setEnabled(True)
+        window.arm_hold_buttons["left"].click()
+        window.arm_hold_buttons["left"].click()
+        application.processEvents()
+    finally:
+        window.poll_timer.stop()
+        window.health_timer.stop()
+        window.reconnect_timer.stop()
+        window.socket.abort()
+        window.close()
+
+    assert sent == [
+        ("hold_arm", {"side": "left", "enabled": True}),
+        ("hold_arm", {"side": "left", "enabled": False}),
     ]
 
 
@@ -131,7 +162,7 @@ def test_task_selection_drives_home_and_ready_to_home(tmp_path):
     ]
 
 
-def test_q_shortcut_starts_ready_to_home_and_w_e_run_presets(tmp_path):
+def test_w_e_shortcuts_run_presets(tmp_path):
     QSettings.setPath(
         QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
     )
@@ -145,7 +176,6 @@ def test_q_shortcut_starts_ready_to_home_and_w_e_run_presets(tmp_path):
         window._send = lambda command, arguments=None: sent.append(
             (command, arguments or {})
         )
-        window.ready_to_home_shortcut.activated.emit()
         for shortcut in window.preset_shortcuts:
             shortcut.activated.emit()
             application.processEvents()
@@ -157,7 +187,6 @@ def test_q_shortcut_starts_ready_to_home_and_w_e_run_presets(tmp_path):
         window.close()
 
     assert sent == [
-        ("ready_to_home", {"task": "powder_weighing"}),
         ("run_preset", {"key": "w"}),
         ("run_preset", {"key": "e"}),
     ]

@@ -4,7 +4,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from teleop_core.contract import DATA_TELEOPERATORS, VALIDATED_COMMAND_TOPIC
+from teleop_core.contract import (
+    COMMAND_STATUS_TOPIC,
+    DATA_TELEOPERATORS,
+    VALIDATED_COMMAND_TOPIC,
+    WUJI_TELEMETRY_STATUS_TOPIC,
+)
 
 
 SUPPORTED_TELEOPERATORS = DATA_TELEOPERATORS
@@ -63,6 +68,10 @@ def validate_recording_contract(config: Mapping[str, Any]) -> None:
         "timestamp_policy",
     ):
         _text(config, field)
+    for field in ("trim_start_sec", "trim_end_sec"):
+        value = float(config.get(field, 0.0))
+        if value < 0.0:
+            raise ValueError(f"{field} must be non-negative")
     for field in ("calibration_ids", "device_identities"):
         value = config.get(field)
         if not isinstance(value, Mapping) or not value:
@@ -74,6 +83,11 @@ def validate_recording_contract(config: Mapping[str, Any]) -> None:
         raise ValueError(
             "recording contract is missing the safety-gateway output"
         )
+    for status_topic in (COMMAND_STATUS_TOPIC, WUJI_TELEMETRY_STATUS_TOPIC):
+        if status_topic not in required_topics:
+            raise ValueError(
+                f"recording contract is missing HOLD status topic {status_topic}"
+            )
     forbidden = {"/teleop/arm_commands", "/target_robot/joint_commands"}
     if forbidden & {topic.topic for topic in topics}:
         raise ValueError("recording contract includes a pre-gateway/control-bus topic")

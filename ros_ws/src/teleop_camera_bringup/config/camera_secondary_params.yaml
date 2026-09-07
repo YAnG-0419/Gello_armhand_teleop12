@@ -24,8 +24,8 @@ software_trigger_period: 0
 
 # color params
 enable_color: true
-color_width: 1280
-color_height: 800
+color_width: 640
+color_height: 480
 color_fps: 30
 color_format: "ANY"
 enable_color_auto_exposure: true

@@ -64,3 +64,17 @@ def test_head_camera_uses_640x400_20hz_rgb_and_raw_depth_preset():
     assert params["enable_depth_undistortion"] is False
     assert params["enable_point_cloud"] is False
     assert params["enable_colored_point_cloud"] is False
+
+
+def test_wrist_cameras_use_640x480_30hz_rgb_only():
+    path = (
+        REPO_ROOT
+        / "ros_ws/src/teleop_camera_bringup/config/camera_secondary_params.yaml"
+    )
+    params = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert (params["color_width"], params["color_height"], params["color_fps"]) == (
+        640,
+        480,
+        30,
+    )
+    assert params["enable_depth"] is False

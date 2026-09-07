@@ -25,6 +25,7 @@ setup(
     entry_points={
         "console_scripts": [
             "rosbag_data_collector = teleop_data_collector.rosbag_recording_node:main",
+            "revalidate_rosbag = teleop_data_collector.revalidate_bag:main",
             "rosbag_to_lerobot = teleop_data_collector.rosbag_to_lerobot:main",
         ]
     },

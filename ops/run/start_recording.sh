@@ -119,6 +119,23 @@ WORKCELL_HASH="$(sha256sum "$REPO_ROOT/config/workcell/current.yaml" | awk '{pri
   exit 2
 }
 docker image inspect franka-upper-body-teleop:latest >/dev/null
+
+ACTIVE_COLLECTORS="$(
+  docker ps \
+    --filter label=com.docker.compose.service=data-collection \
+    --format '{{.Names}}'
+)"
+if [[ -n "$ACTIVE_COLLECTORS" ]]; then
+  echo "Refusing to start a second data-collection instance." >&2
+  echo "Already running: $ACTIVE_COLLECTORS" >&2
+  exit 2
+fi
+if ss -H -lun 'sport = :5602' | awk 'NF { found=1 } END { exit !found }'; then
+  echo "Refusing to start: UDP 127.0.0.1:5602 is already in use." >&2
+  echo "Stop the existing hand telemetry receiver or recording session first." >&2
+  exit 2
+fi
+
 (
   cd "$REPO_ROOT/docker"
   docker compose config --quiet

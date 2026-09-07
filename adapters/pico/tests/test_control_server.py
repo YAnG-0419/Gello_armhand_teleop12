@@ -14,6 +14,7 @@ def test_console_matches_the_input_source_contract():
     console = OperatorConsole()
     assert console.poll() == {"left": False, "right": False}
     assert console.poll_hands() == {"left": False, "right": False}
+    assert console.poll_holds() == {"left": False, "right": False}
     console.active["left"] = True
     console.hand_active["left"] = True
     assert console.poll()["left"] is True
@@ -61,6 +62,16 @@ def test_dispatch_maps_commands_onto_the_console():
         server.dispatch("disengage_arm", {"side": "left"})
         assert console.active["left"] is False
         assert console.hand_active["left"] is True
+        server.dispatch("hold_arm", {"side": "left", "enabled": True})
+        assert console.active["left"] is False
+        assert console.arm_hold["left"] is True
+        server.dispatch("engage_arm", {"side": "left"})
+        assert console.active["left"] is True
+        assert console.arm_hold["left"] is False
+        server.dispatch("hold_arm", {"side": "left", "enabled": True})
+        server.dispatch("hold_arm", {"side": "left", "enabled": False})
+        assert console.arm_hold["left"] is False
+        assert console.active["left"] is True
         server.dispatch("disengage_hand", {"side": "left"})
         assert console.hand_active["left"] is False
         server.dispatch("engage", {"side": "right"})
@@ -91,6 +102,8 @@ def test_dispatch_maps_commands_onto_the_console():
             server.dispatch("engage", {"side": "middle"})
         with pytest.raises(ValueError):
             server.dispatch("run_preset", {"key": "r"})
+        with pytest.raises(ValueError):
+            server.dispatch("hold_arm", {"side": "left", "enabled": "yes"})
         with pytest.raises(ValueError):
             server.dispatch("warp", {})
     finally:

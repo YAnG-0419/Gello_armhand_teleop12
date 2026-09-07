@@ -16,6 +16,7 @@ import pytest
 from pico_bimanual_franka_teleop.hardware import (
     DualFr3HardwareTeleop,
     disengage_sample_sides,
+    latch_new_arm_holds,
     reseed_inactive_joints,
 )
 from pico_bimanual_franka_teleop.ik import BimanualPinkIK, classify_step
@@ -68,6 +69,36 @@ def test_inactive_and_newly_engaging_sides_reseed_independently():
     )
     np.testing.assert_array_equal(result[:7], measured[:7])
     np.testing.assert_array_equal(result[7:], held[7:])
+
+    # A held side must retain the latched command instead of drifting with
+    # measured state while it continues to be published.
+    result = reseed_inactive_joints(
+        held,
+        measured,
+        {"left": False, "right": False},
+        {"left": False, "right": False},
+        {"left": True, "right": False},
+    )
+    np.testing.assert_array_equal(result[:7], held[:7])
+    np.testing.assert_array_equal(result[7:], measured[7:])
+
+
+def test_hold_rising_edge_latches_measured_joints_once():
+    commanded = np.arange(14, dtype=float)
+    measured = commanded + 100.0
+    holds = {"left": True, "right": False}
+
+    latched = latch_new_arm_holds(
+        commanded, measured, holds, {"left": False, "right": False}
+    )
+    np.testing.assert_array_equal(latched[:7], measured[:7])
+    np.testing.assert_array_equal(latched[7:], commanded[7:])
+
+    # Subsequent ticks retain the first latched pose even if feedback changes.
+    retained = latch_new_arm_holds(
+        latched, measured + 50.0, holds, {"left": True, "right": False}
+    )
+    np.testing.assert_array_equal(retained, latched)
 
 
 def test_open_hand_disengages_only_selected_side_before_opening():

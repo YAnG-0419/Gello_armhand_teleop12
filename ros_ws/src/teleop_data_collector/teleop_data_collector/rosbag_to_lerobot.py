@@ -11,11 +11,13 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
 from teleop_core.contract import (
     CAMERA_COLOR_TOPIC,
+    COMMAND_STATUS_TOPIC,
     DATA_LEFT_ARM_JOINT_NAMES,
     DATA_RIGHT_ARM_JOINT_NAMES,
     DATA_TELEOPERATORS,
@@ -26,6 +28,7 @@ from teleop_core.contract import (
     WUJI_LEFT_JOINT_NAMES,
     WUJI_RIGHT_JOINT_NAMES,
     WUJI_STATE_TOPIC,
+    WUJI_TELEMETRY_STATUS_TOPIC,
 )
 
 FORMAT_VERSION = "teleop.harvest.lerobot.v2.0"
@@ -35,6 +38,7 @@ DEFAULT_FPS = 10
 DEFAULT_TASK = "default"
 # Standalone dataloader copied into every converted dataset root.
 DATALOADER_TEMPLATE_NAME = "dataloader_template.py"
+ENGAGEMENT_ACTION_SKEW_NS = 20_000_000
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,8 @@ class SamplingSpec:
     topic: str | None = None
     frequency_hz: float | None = None
     max_staleness_ns: int | None = None
+    trim_start_ns: int = 0
+    trim_end_ns: int = 0
 
 
 @dataclass
@@ -159,6 +165,23 @@ class EpisodeResult:
     stats: dict[str, Any]
     rows_skipped_incomplete: int
     unmatched_by_stream: dict[str, int]
+    source_timeline_start_ns: int
+    source_common_start_ns: int
+    source_common_end_ns: int
+    source_effective_start_ns: int
+    source_effective_end_ns: int
+
+
+@dataclass
+class SourceTimedEvent:
+    source_time_ns: int
+    bag_time_ns: int
+    sequence: int
+    topic: str
+    feature_updates: list[tuple[tuple[str, int], list[float] | list[str]]]
+    video_update: tuple[str, dict[str, Any]] | None = None
+    depth_image_update: tuple[str, dict[str, Any]] | None = None
+    pointcloud_update: tuple[str, dict[str, Any]] | None = None
 
 
 class EpisodeVideoWriter:
@@ -223,9 +246,6 @@ class EpisodeDepthImageWriter:
     def write(
         self,
         message: Any,
-        *,
-        bag_time_ns: int,
-        episode_start_ns: int,
     ) -> dict[str, Any]:
         if self.format not in {"raw16", "raw"}:
             raise ValueError(f"Unsupported depth image format: {self.format}")
@@ -245,7 +265,6 @@ class EpisodeDepthImageWriter:
         self.frame_count += 1
         return {
             "data": bytes(message.data),
-            "timestamp": (bag_time_ns - episode_start_ns) / 1_000_000_000,
             "frame_index": frame_index,
             "format": self.format,
             "encoding": str(message.encoding),
@@ -270,8 +289,6 @@ class EpisodePointCloudWriter:
         *,
         serialized: Any,
         message: Any,
-        bag_time_ns: int,
-        episode_start_ns: int,
     ) -> dict[str, Any]:
         frame_index = self.frame_count
         data: bytes | None = None
@@ -283,7 +300,6 @@ class EpisodePointCloudWriter:
         self.frame_count += 1
         return {
             "data": data,
-            "timestamp": (bag_time_ns - episode_start_ns) / 1_000_000_000,
             "frame_index": frame_index,
             "format": self.primary,
             "point_count": int(message.width) * int(message.height),
@@ -331,6 +347,10 @@ class EpisodeConverter:
         self.chunk_size = chunk_size
         self.compression = compression
         self.unmatched_by_stream: dict[str, int] = defaultdict(int)
+        self._held_action_values: dict[int, list[float] | list[str]] = {}
+        self._engagement_state: dict[int, bool] = {}
+        self._engagement_status_at: dict[int, int] = {}
+        self._engage_transition_at: dict[int, int] = {}
 
     def convert(self) -> EpisodeResult:
         reader, topic_types = _open_reader(self.bag_path, self.storage_id)
@@ -394,61 +414,42 @@ class EpisodeConverter:
             if topic in topic_types
         }
 
-        latest_source_values: dict[tuple[str, int], list[float] | list[str]] = {}
-        latest_source_times_ns: dict[tuple[str, int], int] = {}
-        latest_video_values: dict[str, dict[str, Any]] = {}
-        latest_video_times_ns: dict[str, int] = {}
-        latest_depth_image_values: dict[str, dict[str, Any]] = {}
-        latest_depth_image_times_ns: dict[str, int] = {}
-        latest_pointcloud_values: dict[str, dict[str, Any]] = {}
-        latest_pointcloud_times_ns: dict[str, int] = {}
         message_counts: dict[str, int] = defaultdict(int)
-        rows: list[dict[str, Any]] = []
-        rows_skipped_incomplete = 0
-        episode_start_ns: int | None = None
-        next_sample_ns: int | None = None
         period_ns = _sampling_period_ns(self.sampling)
+        required_timed_topics = {
+            source.topic
+            for feature in self.feature_specs
+            for source in feature.sources
+            if source.required
+        }
+        required_timed_topics.update(
+            spec.topic for spec in self.video_specs if spec.required
+        )
+        required_timed_topics.update(
+            spec.topic for spec in self.depth_image_specs if spec.required
+        )
+        required_timed_topics.update(
+            spec.topic for spec in self.pointcloud_specs if spec.required
+        )
+        if self.sampling.topic is not None:
+            required_timed_topics.add(self.sampling.topic)
+
+        events: list[SourceTimedEvent] = []
+        source_bounds: dict[str, list[int]] = {}
+        last_source_time_by_topic: dict[str, int] = {}
 
         video_writers = self._create_video_writers()
         depth_image_writers = self._create_depth_image_writers()
         pointcloud_writers = self._create_pointcloud_writers()
 
         try:
+            sequence = 0
             while reader.has_next():
                 topic, serialized, bag_time_ns = reader.read_next()
                 if topic not in read_topics:
                     continue
 
                 bag_time_ns = int(bag_time_ns)
-                if episode_start_ns is None:
-                    episode_start_ns = bag_time_ns
-                    if period_ns is not None:
-                        next_sample_ns = bag_time_ns
-
-                if period_ns is not None and next_sample_ns is not None:
-                    while next_sample_ns < bag_time_ns:
-                        row = self._make_row(
-                            sample_time_ns=next_sample_ns,
-                            episode_start_ns=episode_start_ns,
-                            rows_so_far=len(rows),
-                            latest_source_values=latest_source_values,
-                            latest_source_times_ns=latest_source_times_ns,
-                            latest_video_values=latest_video_values,
-                            latest_video_times_ns=latest_video_times_ns,
-                            latest_depth_image_values=latest_depth_image_values,
-                            latest_depth_image_times_ns=latest_depth_image_times_ns,
-                            latest_pointcloud_values=latest_pointcloud_values,
-                            latest_pointcloud_times_ns=latest_pointcloud_times_ns,
-                            active_video_columns=active_video_columns,
-                            active_depth_image_columns=active_depth_image_columns,
-                            active_pointcloud_columns=active_pointcloud_columns,
-                        )
-                        if row is None:
-                            rows_skipped_incomplete += 1
-                        else:
-                            rows.append(row)
-                        next_sample_ns += period_ns
-
                 message = _deserialize_message(serialized, message_classes[topic])
                 message_counts[topic] += 1
 
@@ -458,6 +459,35 @@ class EpisodeConverter:
                         _message_to_metadata_value(topic_types[topic], message),
                     )
 
+                is_timed = (
+                    topic in feature_sources_by_topic
+                    or topic in video_by_topic
+                    or topic in depth_image_by_topic
+                    or topic in pointcloud_by_topic
+                    or topic == self.sampling.topic
+                )
+                if not is_timed:
+                    continue
+                source_time_ns = _message_source_time_ns(message)
+                if source_time_ns is None:
+                    raise ValueError(
+                        f"Source timestamp is missing or zero for {topic}"
+                    )
+                previous_source_time = last_source_time_by_topic.get(topic)
+                if (
+                    previous_source_time is not None
+                    and source_time_ns <= previous_source_time
+                ):
+                    raise ValueError(
+                        f"Source timestamps are not strictly increasing for {topic}"
+                    )
+                last_source_time_by_topic[topic] = source_time_ns
+                bounds = source_bounds.setdefault(
+                    topic, [source_time_ns, source_time_ns]
+                )
+                bounds[1] = source_time_ns
+
+                feature_updates = []
                 for feature, source_index, source in feature_sources_by_topic.get(topic, []):
                     value = _message_to_source_value(
                         topic_types[topic],
@@ -472,87 +502,170 @@ class EpisodeConverter:
                     # value will become stale and the aligned row is rejected.
                     if value is None:
                         continue
-                    latest_source_values[(feature.column, source_index)] = value
-                    latest_source_times_ns[(feature.column, source_index)] = bag_time_ns
+                    feature_updates.append(((feature.column, source_index), value))
 
+                video_update = None
                 if topic in video_by_topic:
                     video_spec = video_by_topic[topic]
-                    latest_video_values[video_spec.column] = video_writers[
-                        video_spec.column
-                    ].write(message)
-                    latest_video_times_ns[video_spec.column] = bag_time_ns
+                    video_update = (
+                        video_spec.column,
+                        video_writers[video_spec.column].write(message),
+                    )
 
+                depth_image_update = None
                 if topic in depth_image_by_topic:
                     depth_image_spec = depth_image_by_topic[topic]
-                    latest_depth_image_values[depth_image_spec.column] = depth_image_writers[
-                        depth_image_spec.column
-                    ].write(
-                        message,
-                        bag_time_ns=bag_time_ns,
-                        episode_start_ns=episode_start_ns,
+                    depth_image_update = (
+                        depth_image_spec.column,
+                        depth_image_writers[depth_image_spec.column].write(message),
                     )
-                    latest_depth_image_times_ns[depth_image_spec.column] = bag_time_ns
 
+                pointcloud_update = None
                 if topic in pointcloud_by_topic:
                     pointcloud_spec = pointcloud_by_topic[topic]
-                    latest_pointcloud_values[pointcloud_spec.column] = pointcloud_writers[
-                        pointcloud_spec.column
-                    ].write(
-                        serialized=serialized,
-                        message=message,
+                    pointcloud_update = (
+                        pointcloud_spec.column,
+                        pointcloud_writers[pointcloud_spec.column].write(
+                            serialized=serialized,
+                            message=message,
+                        ),
+                    )
+                events.append(
+                    SourceTimedEvent(
+                        source_time_ns=source_time_ns,
                         bag_time_ns=bag_time_ns,
-                        episode_start_ns=episode_start_ns,
+                        sequence=sequence,
+                        topic=topic,
+                        feature_updates=feature_updates,
+                        video_update=video_update,
+                        depth_image_update=depth_image_update,
+                        pointcloud_update=pointcloud_update,
                     )
-                    latest_pointcloud_times_ns[pointcloud_spec.column] = bag_time_ns
-
-                if self.sampling.strategy == "topic" and topic == self.sampling.topic:
-                    row = self._make_row(
-                        sample_time_ns=bag_time_ns,
-                        episode_start_ns=episode_start_ns,
-                        rows_so_far=len(rows),
-                        latest_source_values=latest_source_values,
-                        latest_source_times_ns=latest_source_times_ns,
-                        latest_video_values=latest_video_values,
-                        latest_video_times_ns=latest_video_times_ns,
-                        latest_depth_image_values=latest_depth_image_values,
-                        latest_depth_image_times_ns=latest_depth_image_times_ns,
-                        latest_pointcloud_values=latest_pointcloud_values,
-                        latest_pointcloud_times_ns=latest_pointcloud_times_ns,
-                        active_video_columns=active_video_columns,
-                        active_depth_image_columns=active_depth_image_columns,
-                        active_pointcloud_columns=active_pointcloud_columns,
-                    )
-                    if row is None:
-                        rows_skipped_incomplete += 1
-                    else:
-                        rows.append(row)
-
-                if period_ns is not None and next_sample_ns is not None:
-                    while next_sample_ns <= bag_time_ns:
-                        row = self._make_row(
-                            sample_time_ns=next_sample_ns,
-                            episode_start_ns=episode_start_ns,
-                            rows_so_far=len(rows),
-                            latest_source_values=latest_source_values,
-                            latest_source_times_ns=latest_source_times_ns,
-                            latest_video_values=latest_video_values,
-                            latest_video_times_ns=latest_video_times_ns,
-                            latest_depth_image_values=latest_depth_image_values,
-                            latest_depth_image_times_ns=latest_depth_image_times_ns,
-                            latest_pointcloud_values=latest_pointcloud_values,
-                            latest_pointcloud_times_ns=latest_pointcloud_times_ns,
-                            active_video_columns=active_video_columns,
-                            active_depth_image_columns=active_depth_image_columns,
-                            active_pointcloud_columns=active_pointcloud_columns,
-                        )
-                        if row is None:
-                            rows_skipped_incomplete += 1
-                        else:
-                            rows.append(row)
-                        next_sample_ns += period_ns
+                )
+                sequence += 1
         finally:
             for writer in video_writers.values():
                 writer.close()
+
+        missing_source_bounds = required_timed_topics.difference(source_bounds)
+        if missing_source_bounds:
+            raise ValueError(
+                "Required source-time streams have no messages: "
+                + ", ".join(sorted(missing_source_bounds))
+            )
+        required_first_times = [
+            source_bounds[topic][0] for topic in required_timed_topics
+        ]
+        required_last_times = [
+            source_bounds[topic][1] for topic in required_timed_topics
+        ]
+        source_timeline_start_ns = min(required_first_times)
+        common_start_ns = max(required_first_times)
+        common_end_ns = min(required_last_times)
+        if common_end_ns < common_start_ns:
+            raise ValueError("Required streams have no common source-time interval")
+        effective_start_ns, effective_end_ns = _trim_source_window(
+            common_start_ns,
+            common_end_ns,
+            trim_start_ns=self.sampling.trim_start_ns,
+            trim_end_ns=self.sampling.trim_end_ns,
+        )
+        # LeRobot timestamps are relative to the first usable instant, so the
+        # fixed-rate production timeline starts at exactly zero after trimming.
+        output_time_origin_ns = effective_start_ns
+
+        latest_source_values: dict[tuple[str, int], list[float] | list[str]] = {}
+        latest_source_times_ns: dict[tuple[str, int], int] = {}
+        latest_video_values: dict[str, dict[str, Any]] = {}
+        latest_video_times_ns: dict[str, int] = {}
+        latest_depth_image_values: dict[str, dict[str, Any]] = {}
+        latest_depth_image_times_ns: dict[str, int] = {}
+        latest_pointcloud_values: dict[str, dict[str, Any]] = {}
+        latest_pointcloud_times_ns: dict[str, int] = {}
+        rows: list[dict[str, Any]] = []
+        rows_skipped_incomplete = 0
+        next_sample_ns = (
+            _first_grid_time_ns(output_time_origin_ns, effective_start_ns, period_ns)
+            if period_ns is not None
+            else None
+        )
+
+        def emit_row(sample_time_ns: int) -> None:
+            nonlocal rows_skipped_incomplete
+            row = self._make_row(
+                sample_time_ns=sample_time_ns,
+                episode_start_ns=output_time_origin_ns,
+                rows_so_far=len(rows),
+                latest_source_values=latest_source_values,
+                latest_source_times_ns=latest_source_times_ns,
+                latest_video_values=latest_video_values,
+                latest_video_times_ns=latest_video_times_ns,
+                latest_depth_image_values=latest_depth_image_values,
+                latest_depth_image_times_ns=latest_depth_image_times_ns,
+                latest_pointcloud_values=latest_pointcloud_values,
+                latest_pointcloud_times_ns=latest_pointcloud_times_ns,
+                active_video_columns=active_video_columns,
+                active_depth_image_columns=active_depth_image_columns,
+                active_pointcloud_columns=active_pointcloud_columns,
+            )
+            if row is None:
+                rows_skipped_incomplete += 1
+            else:
+                rows.append(row)
+
+        events.sort(key=lambda event: (event.source_time_ns, event.sequence))
+        for source_time_ns, grouped_events in groupby(
+            events, key=lambda event: event.source_time_ns
+        ):
+            if source_time_ns > effective_end_ns:
+                break
+            if next_sample_ns is not None:
+                while next_sample_ns < source_time_ns:
+                    if next_sample_ns >= effective_start_ns:
+                        emit_row(next_sample_ns)
+                    next_sample_ns += period_ns
+
+            sample_on_topic = False
+            for event in grouped_events:
+                for key, value in event.feature_updates:
+                    latest_source_values[key] = value
+                    latest_source_times_ns[key] = source_time_ns
+                if event.video_update is not None:
+                    column, value = event.video_update
+                    latest_video_values[column] = value
+                    latest_video_times_ns[column] = source_time_ns
+                if event.depth_image_update is not None:
+                    column, value = event.depth_image_update
+                    value["timestamp"] = (
+                        source_time_ns - output_time_origin_ns
+                    ) / 1_000_000_000
+                    latest_depth_image_values[column] = value
+                    latest_depth_image_times_ns[column] = source_time_ns
+                if event.pointcloud_update is not None:
+                    column, value = event.pointcloud_update
+                    value["timestamp"] = (
+                        source_time_ns - output_time_origin_ns
+                    ) / 1_000_000_000
+                    latest_pointcloud_values[column] = value
+                    latest_pointcloud_times_ns[column] = source_time_ns
+                sample_on_topic = sample_on_topic or (
+                    self.sampling.strategy == "topic"
+                    and event.topic == self.sampling.topic
+                )
+
+            if source_time_ns < effective_start_ns:
+                continue
+            if sample_on_topic:
+                emit_row(source_time_ns)
+            if next_sample_ns is not None:
+                while next_sample_ns <= source_time_ns:
+                    emit_row(next_sample_ns)
+                    next_sample_ns += period_ns
+
+        if next_sample_ns is not None:
+            while next_sample_ns <= effective_end_ns:
+                emit_row(next_sample_ns)
+                next_sample_ns += period_ns
 
         rows, feature_dims = self._finalize_feature_columns(rows)
         for row_index, row in enumerate(rows):
@@ -596,6 +709,11 @@ class EpisodeConverter:
             stats=stats,
             rows_skipped_incomplete=rows_skipped_incomplete,
             unmatched_by_stream=dict(self.unmatched_by_stream),
+            source_timeline_start_ns=source_timeline_start_ns,
+            source_common_start_ns=common_start_ns,
+            source_common_end_ns=common_end_ns,
+            source_effective_start_ns=effective_start_ns,
+            source_effective_end_ns=effective_end_ns,
         )
 
     def _create_video_writers(self) -> dict[str, EpisodeVideoWriter]:
@@ -644,6 +762,11 @@ class EpisodeConverter:
         active_depth_image_columns: set[str],
         active_pointcloud_columns: set[str],
     ) -> dict[str, Any] | None:
+        latest_source_values, latest_source_times_ns = self._apply_hold_policy(
+            sample_time_ns,
+            latest_source_values,
+            latest_source_times_ns,
+        )
         timestamp = (sample_time_ns - episode_start_ns) / 1_000_000_000
         row: dict[str, Any] = {
             "timestamp": timestamp,
@@ -721,6 +844,119 @@ class EpisodeConverter:
         ):
             return None
         return row
+
+    def _apply_hold_policy(
+        self,
+        sample_time_ns: int,
+        latest_values: Mapping[tuple[str, int], list[float] | list[str]],
+        latest_times_ns: Mapping[tuple[str, int], int],
+    ) -> tuple[
+        dict[tuple[str, int], list[float] | list[str]],
+        dict[tuple[str, int], int],
+    ]:
+        """Materialize an effective action for explicitly disengaged sides.
+
+        The control path remains untouched: disengage still stops hardware
+        commands.  For the offline dataset, each inactive source holds its last
+        validated/sent target.  A side that starts inactive is seeded from the
+        corresponding measured position, never from zeros or the other side.
+        """
+        values = dict(latest_values)
+        times = dict(latest_times_ns)
+        action_feature = next(
+            (item for item in self.feature_specs if item.column == "action"),
+            None,
+        )
+        engaged_feature = next(
+            (
+                item
+                for item in self.feature_specs
+                if item.column == "observation.engaged"
+            ),
+            None,
+        )
+        state_feature = next(
+            (
+                item
+                for item in self.feature_specs
+                if item.column == "observation.state"
+            ),
+            None,
+        )
+        if (
+            action_feature is None
+            or engaged_feature is None
+            or state_feature is None
+            or len(action_feature.sources) != 4
+            or len(engaged_feature.sources) != 4
+            or len(state_feature.sources) != 4
+        ):
+            return values, times
+
+        position_dims = (7, 7, 20, 20)
+        for source_index, position_dim in enumerate(position_dims):
+            engaged_key = (engaged_feature.column, source_index)
+            action_key = (action_feature.column, source_index)
+            engaged_at = times.get(engaged_key)
+            engaged_value = values.get(engaged_key)
+            engagement_is_fresh = (
+                engaged_at is not None
+                and engaged_value is not None
+                and (
+                    self.sampling.max_staleness_ns is None
+                    or sample_time_ns - engaged_at
+                    <= self.sampling.max_staleness_ns
+                )
+            )
+            if not engagement_is_fresh:
+                continue
+
+            active = bool(float(engaged_value[0]))
+            if engaged_at != self._engagement_status_at.get(source_index):
+                previous = self._engagement_state.get(source_index)
+                self._engagement_status_at[source_index] = engaged_at
+                self._engagement_state[source_index] = active
+                if active and previous is not True:
+                    self._engage_transition_at[source_index] = engaged_at
+
+            if active:
+                transition_at = self._engage_transition_at.get(source_index)
+                action_at = times.get(action_key)
+                action_matches_transition = (
+                    transition_at is None
+                    or (
+                        action_at is not None
+                        and action_at + ENGAGEMENT_ACTION_SKEW_NS >= transition_at
+                    )
+                )
+                if not action_matches_transition:
+                    held = self._held_action_values.get(source_index)
+                    if held is not None:
+                        values[action_key] = held
+                        times[action_key] = sample_time_ns
+                        # Export the effective, causally aligned state. The raw
+                        # status transition remains preserved in the source bag.
+                        values[engaged_key] = [0.0]
+                    continue
+                self._engage_transition_at.pop(source_index, None)
+                self._held_action_values.pop(source_index, None)
+                continue
+
+            self._engage_transition_at.pop(source_index, None)
+            if source_index not in self._held_action_values:
+                hold_value = values.get(action_key)
+                if hold_value is None:
+                    state_value = values.get((state_feature.column, source_index))
+                    if state_value is not None and len(state_value) >= position_dim:
+                        hold_value = list(state_value[:position_dim])
+                if hold_value is not None:
+                    self._held_action_values[source_index] = list(hold_value)
+
+            held = self._held_action_values.get(source_index)
+            if held is not None:
+                values[action_key] = held
+                times[action_key] = sample_time_ns
+        return values, times
 
     def _fresh_media_value(
         self,
@@ -939,6 +1175,21 @@ class LeRobotDatasetConverter:
                 "topic": self.sampling.topic,
                 "frequency_hz": self.sampling.frequency_hz,
                 "max_staleness_ns": self.sampling.max_staleness_ns,
+                "trim_start_ns": self.sampling.trim_start_ns,
+                "trim_end_ns": self.sampling.trim_end_ns,
+                "alignment_clock": "source_header",
+            },
+            "action_hold_policy": {
+                "mode": "offline_latched_target",
+                "engagement_feature": "observation.engaged",
+                "source_order": [
+                    "left_arm",
+                    "right_arm",
+                    "left_hand",
+                    "right_hand",
+                ],
+                "initial_hold_seed": "measured_position",
+                "hardware_command_path_modified": False,
             },
             "timing_summary": {
                 "total_rows_skipped_incomplete": sum(
@@ -950,6 +1201,11 @@ class LeRobotDatasetConverter:
                         "rows_skipped_incomplete": result.rows_skipped_incomplete,
                         "message_counts": result.message_counts,
                         "unmatched_by_stream": result.unmatched_by_stream,
+                        "source_timeline_start_ns": result.source_timeline_start_ns,
+                        "source_common_start_ns": result.source_common_start_ns,
+                        "source_common_end_ns": result.source_common_end_ns,
+                        "source_effective_start_ns": result.source_effective_start_ns,
+                        "source_effective_end_ns": result.source_effective_end_ns,
                     }
                     for result in results
                 ],
@@ -966,6 +1222,11 @@ class LeRobotDatasetConverter:
                     "rows_skipped_incomplete": result.rows_skipped_incomplete,
                     "message_counts": result.message_counts,
                     "unmatched_by_stream": result.unmatched_by_stream,
+                    "source_timeline_start_ns": result.source_timeline_start_ns,
+                    "source_common_start_ns": result.source_common_start_ns,
+                    "source_common_end_ns": result.source_common_end_ns,
+                    "source_effective_start_ns": result.source_effective_start_ns,
+                    "source_effective_end_ns": result.source_effective_end_ns,
                     "static_topics": result.static_topics,
                 }
                 for result in results
@@ -1036,6 +1297,9 @@ def main(argv: list[str] | None = None) -> None:
     temporary_output = Path(
         tempfile.mkdtemp(prefix=f".{output_dir.name}.tmp-", dir=output_dir.parent)
     )
+    # mkdtemp creates mode 0700. Conversion normally runs as root in Docker,
+    # so make the atomically published dataset readable by the host data user.
+    temporary_output.chmod(0o755)
     backup_output = output_dir.with_name(f".{output_dir.name}.backup-{uuid.uuid4().hex}")
     source_snapshot = _source_tree_snapshot(bag_paths)
     manifest = None
@@ -1135,7 +1399,11 @@ def _validate_lerobot_v2_output(
     features = info.get("features")
     if not isinstance(features, Mapping):
         raise ValueError("LeRobot output features are missing")
-    expected_shapes = {"action": [54], "observation.state": [108]}
+    expected_shapes = {
+        "action": [54],
+        "observation.state": [108],
+        "observation.engaged": [4],
+    }
     for name, shape in expected_shapes.items():
         feature = features.get(name)
         if not isinstance(feature, Mapping) or feature.get("shape") != shape:
@@ -1153,6 +1421,12 @@ def _validate_lerobot_v2_output(
             *(f"{name}.velocity" for name in WUJI_LEFT_JOINT_NAMES),
             *(f"{name}.position" for name in WUJI_RIGHT_JOINT_NAMES),
             *(f"{name}.velocity" for name in WUJI_RIGHT_JOINT_NAMES),
+        ],
+        "observation.engaged": [
+            "left_arm",
+            "right_arm",
+            "left_hand",
+            "right_hand",
         ],
     }
     for name, expected_names in expected_feature_names.items():
@@ -1211,16 +1485,32 @@ def _validate_lerobot_v2_output(
     if len(parquet_paths) != int(info.get("total_episodes", 0)):
         raise ValueError("LeRobot output parquet episode count is inconsistent")
     for parquet_path in parquet_paths:
-        table = pq.read_table(parquet_path, columns=["timestamp", "action", "observation.state"])
+        table = pq.read_table(
+            parquet_path,
+            columns=[
+                "timestamp",
+                "action",
+                "observation.state",
+                "observation.engaged",
+            ],
+        )
         timestamps = np.asarray(table["timestamp"].to_pylist(), dtype=float)
         if not np.isfinite(timestamps).all() or np.any(np.diff(timestamps) <= 0):
             raise ValueError(f"non-finite or non-monotonic timestamps in {parquet_path}")
-        for column, dimension in (("action", 54), ("observation.state", 108)):
+        for column, dimension in (
+            ("action", 54),
+            ("observation.state", 108),
+            ("observation.engaged", 4),
+        ):
             values = np.asarray(table[column].to_pylist(), dtype=float)
             if values.ndim != 2 or values.shape[1] != dimension:
                 raise ValueError(f"{column} does not have dimension {dimension}")
             if not np.isfinite(values).all():
                 raise ValueError(f"{column} contains non-finite values")
+            if column == "observation.engaged" and not np.isin(
+                values, [0.0, 1.0]
+            ).all():
+                raise ValueError("observation.engaged must contain only 0 or 1")
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -1261,6 +1551,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         type=float,
         help="Omit a source value when its latest message is older than this limit.",
     )
+    parser.add_argument(
+        "--trim-start-sec",
+        type=float,
+        help="Exclude this many seconds from the start of the common source interval.",
+    )
+    parser.add_argument(
+        "--trim-end-sec",
+        type=float,
+        help="Exclude this many seconds from the end of the common source interval.",
+    )
     parser.add_argument("--task", help="Task label stored in meta/tasks.jsonl.")
     parser.add_argument("--robot-type", help="Robot type stored in meta/info.json.")
     parser.add_argument(
@@ -1288,6 +1588,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         parser.error("--sample-topic and --sample-hz are mutually exclusive")
     if args.max_staleness_ms is not None and args.max_staleness_ms <= 0:
         parser.error("--max-staleness-ms must be positive")
+    if args.trim_start_sec is not None and args.trim_start_sec < 0:
+        parser.error("--trim-start-sec must be non-negative")
+    if args.trim_end_sec is not None and args.trim_end_sec < 0:
+        parser.error("--trim-end-sec must be non-negative")
     if args.compression.lower() == "none":
         args.compression = None
     return args
@@ -1458,12 +1762,34 @@ def _mode_conversion_config(teleoperator: str) -> dict[str, Any]:
                 ],
             }
         )
+    engagement_sources = [
+        {
+            "topic": COMMAND_STATUS_TOPIC,
+            "type": "teleop_interfaces/msg/ArmCommandStatus",
+            "field": f"accepted_sides.{side}",
+            "names": [f"{side}_arm"],
+        }
+        for side in ("left", "right")
+    ]
+    engagement_sources.extend(
+        {
+            "topic": WUJI_TELEMETRY_STATUS_TOPIC,
+            "type": "teleop_interfaces/msg/HandTelemetryStatus",
+            "field": f"engaged.{side}",
+            "names": [f"{side}_hand"],
+        }
+        for side in ("left", "right")
+    )
     return {
         "features": {
             "action": {"dtype": "float32", "sources": action_sources},
             "observation.state": {
                 "dtype": "float32",
                 "sources": observation_sources,
+            },
+            "observation.engaged": {
+                "dtype": "float32",
+                "sources": engagement_sources,
             },
         },
         "videos": {
@@ -1694,20 +2020,33 @@ def _sampling_from_args_and_config(
     if max_staleness_ms is None and sampling_config.get("max_staleness_ms") is not None:
         max_staleness_ms = float(sampling_config["max_staleness_ms"])
     max_staleness_ns = int(max_staleness_ms * 1_000_000) if max_staleness_ms is not None else None
+    trim_start_sec = getattr(args, "trim_start_sec", None)
+    trim_end_sec = getattr(args, "trim_end_sec", None)
+    if trim_start_sec is None:
+        trim_start_sec = float(sampling_config.get("trim_start_sec", 0.0))
+    if trim_end_sec is None:
+        trim_end_sec = float(sampling_config.get("trim_end_sec", 0.0))
+    if trim_start_sec < 0.0 or trim_end_sec < 0.0:
+        raise ValueError("sampling trim values must be non-negative")
+    timing_options = {
+        "max_staleness_ns": max_staleness_ns,
+        "trim_start_ns": int(trim_start_sec * 1_000_000_000),
+        "trim_end_ns": int(trim_end_sec * 1_000_000_000),
+    }
 
     if args.sample_topic:
-        return SamplingSpec("topic", topic=args.sample_topic, max_staleness_ns=max_staleness_ns)
+        return SamplingSpec("topic", topic=args.sample_topic, **timing_options)
     if args.sample_hz is not None:
         return SamplingSpec(
             "fixed_hz",
             frequency_hz=args.sample_hz,
-            max_staleness_ns=max_staleness_ns,
+            **timing_options,
         )
     if sampling_config.get("topic") or sampling_config.get("sample_topic"):
         return SamplingSpec(
             "topic",
             topic=str(sampling_config.get("topic") or sampling_config.get("sample_topic")),
-            max_staleness_ns=max_staleness_ns,
+            **timing_options,
         )
     if sampling_config.get("frequency_hz") or sampling_config.get("sample_hz"):
         return SamplingSpec(
@@ -1715,15 +2054,15 @@ def _sampling_from_args_and_config(
             frequency_hz=float(
                 sampling_config.get("frequency_hz") or sampling_config.get("sample_hz")
             ),
-            max_staleness_ns=max_staleness_ns,
+            **timing_options,
         )
     if video_specs or depth_image_specs or pointcloud_specs:
-        return SamplingSpec("fixed_hz", frequency_hz=float(fps), max_staleness_ns=max_staleness_ns)
+        return SamplingSpec("fixed_hz", frequency_hz=float(fps), **timing_options)
     if feature_specs and feature_specs[0].sources:
         return SamplingSpec(
             "topic",
             topic=feature_specs[0].sources[0].topic,
-            max_staleness_ns=max_staleness_ns,
+            **timing_options,
         )
     raise ValueError("No features or videos configured; cannot choose a sampling strategy.")
 
@@ -1769,6 +2108,45 @@ def _sampling_period_ns(sampling: SamplingSpec) -> int | None:
     if period_ns <= 0:
         raise ValueError("fixed_hz sampling period must be at least 1 ns.")
     return period_ns
+
+
+def _trim_source_window(
+    common_start_ns: int,
+    common_end_ns: int,
+    *,
+    trim_start_ns: int,
+    trim_end_ns: int,
+) -> tuple[int, int]:
+    if trim_start_ns < 0 or trim_end_ns < 0:
+        raise ValueError("Source-time trim values must be non-negative")
+    effective_start_ns = common_start_ns + trim_start_ns
+    effective_end_ns = common_end_ns - trim_end_ns
+    if effective_end_ns < effective_start_ns:
+        duration_sec = max(0, common_end_ns - common_start_ns) / 1_000_000_000
+        raise ValueError(
+            "Trim removes the complete common source-time interval "
+            f"({duration_sec:.3f} s available)"
+        )
+    return effective_start_ns, effective_end_ns
+
+
+def _first_grid_time_ns(
+    episode_start_ns: int,
+    common_start_ns: int,
+    period_ns: int,
+) -> int:
+    offset_ns = max(0, common_start_ns - episode_start_ns)
+    periods = (offset_ns + period_ns - 1) // period_ns
+    return episode_start_ns + periods * period_ns
+
+
+def _message_source_time_ns(message: Any) -> int | None:
+    header = getattr(message, "header", None)
+    stamp = getattr(header, "stamp", None)
+    if stamp is None:
+        return None
+    timestamp = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+    return timestamp if timestamp > 0 else None
 
 
 def _episode_schema(
@@ -1975,6 +2353,28 @@ def _message_to_source_value(
                 float(orientation.w),
             ]
         raise ValueError(f"Unsupported PoseStamped field: {selected}")
+
+    if type_name == "teleop_interfaces/msg/ArmCommandStatus":
+        selected = field_name or ""
+        prefix = "accepted_sides."
+        if not selected.startswith(prefix):
+            raise ValueError(f"Unsupported ArmCommandStatus field: {selected}")
+        side = selected.removeprefix(prefix)
+        if side not in {"left", "right"}:
+            raise ValueError(f"Unsupported ArmCommandStatus side: {side}")
+        return [float(side in {str(item) for item in message.accepted_sides})]
+
+    if type_name == "teleop_interfaces/msg/HandTelemetryStatus":
+        selected = field_name or ""
+        prefix = "engaged."
+        if not selected.startswith(prefix):
+            raise ValueError(f"Unsupported HandTelemetryStatus field: {selected}")
+        side = selected.removeprefix(prefix)
+        if side not in {"left", "right"}:
+            raise ValueError(f"Unsupported HandTelemetryStatus side: {side}")
+        if str(message.side) != side:
+            return None
+        return [float(bool(message.engaged))]
 
     if type_name == "std_msgs/msg/Float32MultiArray":
         return _float_list(message.data)

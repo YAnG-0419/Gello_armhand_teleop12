@@ -223,8 +223,9 @@ class LeRobotEpisodeDataset(Dataset):
     Args:
         root: Dataset root containing ``meta/info.json``. Defaults to the
             directory this file lives in.
-        vector_keys: Vector columns to return. Defaults to every vector feature
-            (``observation.state`` and ``action`` for this dataset).
+        vector_keys: Vector columns to return. Defaults to the policy features
+            (``observation.state`` and ``action``). The audit-only
+            ``observation.engaged`` feature must be requested explicitly.
         video_keys: RGB video columns to decode. Defaults to none, because MP4
             seeking dominates the per-item cost; pass ``"all"`` for every one.
         image_keys: Inline depth/tactile columns to decode. Defaults to none;
@@ -255,7 +256,15 @@ class LeRobotEpisodeDataset(Dataset):
             raise ValueError("action_horizon must be >= 1")
         self.action_horizon = action_horizon
 
-        self.vector_keys = list(vector_keys) if vector_keys is not None else self.info.vector_keys()
+        self.vector_keys = (
+            list(vector_keys)
+            if vector_keys is not None
+            else [
+                key
+                for key in self.info.vector_keys()
+                if key != "observation.engaged"
+            ]
+        )
         self.video_keys = _resolve_keys(video_keys, self.info.video_keys(), "video_keys")
         self.image_keys = _resolve_keys(image_keys, self.info.image_keys(), "image_keys")
         _check_known(self.vector_keys, self.info.features, "vector_keys")

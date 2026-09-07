@@ -7,7 +7,7 @@ left:
   # 2026-08-17 replacement OpenRB assembly physical-direction verification.
   direction_correction: [1, 1, 1, 1, 1, 1, 1]
   # FR3 joint displacement per radian of calibrated GELLO displacement.
-  joint_sensitivity: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  joint_sensitivity: [0.7, 0.7, 1.0, 1.0, 1.0, 1.0, 1.0]
   # Per-engagement relative travel caps [rad], one per joint.
   max_relative_delta: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
   # Keep 1% of each physical span clear at both joint-limit ends.
@@ -15,9 +15,10 @@ left:
 right:
   port: /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_17E84ADC5157375037202020FF10131E-if00
   expected_serial: 17E84ADC5157375037202020FF10131E
-  # 2026-08-17 replacement OpenRB assembly physical-direction verification.
+  # 2026-09-02 operator-reported right J6 inversion vs GELLO.
   direction_correction: [1, 1, 1, 1, 1, 1, 1]
-  joint_sensitivity: [1.3, 2.2, 1.3, 0.8, 1.0, 1.0, 1.6]
+  # FR3 joint displacement per radian of calibrated GELLO displacement.
+  joint_sensitivity: [0.7, 0.7, 1.0, 1.0, 1.0, 1.0, 1.0]
   # Full spans of the FR3 limits used by the safety gateway. The mapper still
   # clips every target to the absolute lower/upper limit for the current pose.
   max_relative_delta: [5.8014800334, 3.6721800334, 5.8014800334, 2.9600829334, 5.7526067, 4.1818107, 6.1016667]

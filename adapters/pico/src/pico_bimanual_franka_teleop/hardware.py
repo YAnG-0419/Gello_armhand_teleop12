@@ -22,12 +22,27 @@ PRESET_SETTLE_HOLD_SEC = 0.25
 PRESET_SETTLE_TIMEOUT_SEC = 5.0
 
 
-def reseed_inactive_joints(held, measured, activations, mapper_active):
+def reseed_inactive_joints(
+    held, measured, activations, mapper_active, arm_holds=None
+):
     """Keep every inactive or newly engaging side aligned to hardware."""
     result = np.asarray(held, dtype=float).copy()
     measured = np.asarray(measured, dtype=float)
+    arm_holds = arm_holds or {}
     for side, joints in (("left", slice(0, 7)), ("right", slice(7, 14))):
+        if arm_holds.get(side, False):
+            continue
         if not activations.get(side, False) or not mapper_active.get(side, False):
+            result[joints] = measured[joints]
+    return result
+
+
+def latch_new_arm_holds(held, measured, arm_holds, previous_holds):
+    """Capture measured joints only when a side enters hold mode."""
+    result = np.asarray(held, dtype=float).copy()
+    measured = np.asarray(measured, dtype=float)
+    for side, joints in (("left", slice(0, 7)), ("right", slice(7, 14))):
+        if arm_holds.get(side, False) and not previous_holds.get(side, False):
             result[joints] = measured[joints]
     return result
 
@@ -125,6 +140,7 @@ class DualFr3HardwareTeleop:
                 for side in SIDES
             }
         self.hold_q: np.ndarray | None = None
+        self.arm_holds = {side: False for side in SIDES}
 
         self.hands = hands
         self.debug_logger = debug_logger
@@ -670,6 +686,19 @@ class DualFr3HardwareTeleop:
                 if preset_side is not None:
                     self.operator.set_active(preset_side, False, target="arm")
                     sample = disengage_sample_sides(sample, (preset_side,))
+                hold_reader = getattr(self.operator, "poll_holds", None)
+                arm_holds = (
+                    {side: False for side in SIDES}
+                    if hold_reader is None
+                    else hold_reader()
+                )
+                # Capture measured joints on the rising edge. Using the last
+                # target here could make a lagging robot finish an old move
+                # after Hold was pressed, which is not a true stationary hold.
+                self.hold_q = latch_new_arm_holds(
+                    self.hold_q, q, arm_holds, self.arm_holds
+                )
+                self.arm_holds = dict(arm_holds)
                 if self.reset_thread is None:
                     activations = (
                         {side: False for side in SIDES}
@@ -684,6 +713,7 @@ class DualFr3HardwareTeleop:
                             side: self.mappers[side].active
                             for side in SIDES
                         },
+                        arm_holds,
                     )
                 targets = {}
                 if self.joint_input:
@@ -729,6 +759,16 @@ class DualFr3HardwareTeleop:
                             "position_error"
                         ]:
                             ik_worst[side] = diagnostics
+                # Holding is intentionally still an active command: preserve
+                # hold_q and include that side in every outgoing packet. The
+                # mapper was disengaged above, so GELLO motion is ignored and
+                # a later Start re-anchors instead of jumping.
+                for side, joints in (
+                    ("left", slice(0, 7)),
+                    ("right", slice(7, 14)),
+                ):
+                    if arm_holds.get(side, False):
+                        targets[side] = self.hold_q[joints].copy()
                 finish_preset_after_send: tuple[str, bool] | None = None
                 if self.active_preset is not None:
                     assert self.preset_started_at is not None

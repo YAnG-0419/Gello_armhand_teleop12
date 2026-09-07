@@ -494,6 +494,12 @@ class DualGelloJointInput:
     def sample(self) -> JointTeleopSample | None:
         now = time.monotonic()
         requested = self.operator.poll()
+        hold_reader = getattr(self.operator, "poll_holds", None)
+        held = (
+            {side: False for side in SIDES}
+            if hold_reader is None
+            else hold_reader()
+        )
         positions = {}
         activations = {}
         for side in SIDES:
@@ -507,7 +513,8 @@ class DualGelloJointInput:
             )
             activations[side] = bool(requested.get(side, False) and fresh)
             positions[side] = values
-            if requested.get(side, False) and not fresh and not self._denied[side]:
+            acquiring = requested.get(side, False) or held.get(side, False)
+            if acquiring and not fresh and not self._denied[side]:
                 detail = "GELLO input missing or stale"
                 if error:
                     detail += f": {error}"

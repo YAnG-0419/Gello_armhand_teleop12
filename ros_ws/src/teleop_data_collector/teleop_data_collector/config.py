@@ -21,6 +21,8 @@ class CollectorConfig:
     data_root: str
     topics: tuple[TopicConfig, ...]
     static_topics: tuple[TopicConfig, ...]
+    trim_start_sec: float
+    trim_end_sec: float
     provenance: dict[str, Any]
 
 
@@ -30,6 +32,8 @@ def load_collector_config(node: Node) -> CollectorConfig:
     static_topics = _load_topic_configs(node, "static_topics", default_required=False)
     if not topics:
         raise ValueError("No topics configured. Add entries under ros__parameters.topics.")
+    trim_start_sec = _get_nonnegative_float(node, "trim_start_sec", 0.0)
+    trim_end_sec = _get_nonnegative_float(node, "trim_end_sec", 0.0)
 
     provenance = {
         "bag_contract_version": _get_or_declare(node, "bag_contract_version", 1),
@@ -38,6 +42,8 @@ def load_collector_config(node: Node) -> CollectorConfig:
         "workcell_config_hash": _get_required_string(node, "workcell_config_hash", ""),
         "control_config_id": _get_required_string(node, "control_config_id", ""),
         "timestamp_policy": _get_required_string(node, "timestamp_policy", ""),
+        "trim_start_sec": trim_start_sec,
+        "trim_end_sec": trim_end_sec,
         "calibration_ids": _prefix_values(node, "calibration_ids"),
         "device_identities": _prefix_values(node, "device_identities"),
         "topics": {
@@ -57,6 +63,8 @@ def load_collector_config(node: Node) -> CollectorConfig:
         data_root=data_root,
         topics=tuple(topics),
         static_topics=tuple(static_topics),
+        trim_start_sec=trim_start_sec,
+        trim_end_sec=trim_end_sec,
         provenance=provenance,
     )
 
@@ -115,6 +123,13 @@ def _get_or_declare(node: Node, name: str, default: Any) -> Any:
     if not node.has_parameter(name):
         node.declare_parameter(name, default)
     return node.get_parameter(name).value
+
+
+def _get_nonnegative_float(node: Node, name: str, default: float) -> float:
+    value = float(_get_or_declare(node, name, default))
+    if not value >= 0.0:
+        raise ValueError(f"ROS parameter '{name}' must be non-negative.")
+    return value
 
 
 def _clean_string(value: Any) -> str:
