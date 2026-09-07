@@ -83,6 +83,11 @@ ROS_DOMAIN_ID=1 TELEOP_ROS_DOMAIN_ID=1 ./ops/run/start_wuji_teleop.sh \
   --data-root /home/user/franka_teleop_data
 ```
 
+仍然需要分别启动遥操和采集两个终端。采集器 READY 后，遥操 UI 的“数据采集”区域
+会通过仅监听 `127.0.0.1:5592` 的独立接口自动连接，可直接执行“开始录制”、
+“结束并校验”和“丢弃最近一次”。UI 关闭或连接失败不会停止采集，也不会影响遥操；
+终端里的 `SPACE` 和 `D` 继续作为备用控制。
+
 数据必须写在仓库外。`--data-root` 若落在 Git 仓库内会被拒绝。
 
 - `SPACE`：开始/停止 episode。开始前检查 topic 名称和 ROS 类型；停止后读取整包，

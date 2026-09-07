@@ -306,15 +306,7 @@ def inspect_bag(
     }
     streams: dict[str, StreamSamples] = defaultdict(StreamSamples)
     content_failures: list[str] = []
-    telemetry_counters = {
-        "max_sender_dropped_packets": 0,
-        "max_receiver_lost_packets": 0,
-        "max_receiver_duplicate_packets": 0,
-        "max_receiver_out_of_order_packets": 0,
-        "max_receiver_stale_packets": 0,
-        "max_receiver_invalid_packets": 0,
-        "velocity_sources": set(),
-    }
+    telemetry_counters = {"velocity_sources": set()}
     engagement_samples: dict[str, list[tuple[int, bool]]] = defaultdict(list)
 
     while reader.has_next():
@@ -508,11 +500,12 @@ def inspect_bag(
                 )
             )
 
-    for key, value in telemetry_counters.items():
-        if key == "velocity_sources":
-            continue
-        if int(value) > 0:
-            failures.append(f"hand telemetry reports {key}={value}")
+    for field_name in _TELEMETRY_COUNTER_FIELDS:
+        delta = int(telemetry_counters.get(f"delta_{field_name}", 0))
+        if delta > 0:
+            failures.append(
+                f"hand telemetry reports {field_name}_delta={delta}"
+            )
     velocity_sources = sorted(telemetry_counters["velocity_sources"])
     if velocity_sources and velocity_sources != ["finite_difference"]:
         failures.append(
@@ -663,22 +656,55 @@ def _inspect_message_content(
         virtual.bag_times_ns.append(bag_time_ns)
         if header_ns is not None:
             virtual.header_times_ns.append(header_ns)
-        for field_name in (
-            "sender_dropped_packets",
-            "receiver_lost_packets",
-            "receiver_duplicate_packets",
-            "receiver_out_of_order_packets",
-            "receiver_stale_packets",
-            "receiver_invalid_packets",
-        ):
-            key = f"max_{field_name}"
-            telemetry_counters[key] = max(
-                int(telemetry_counters[key]), int(getattr(message, field_name))
+        for field_name in _TELEMETRY_COUNTER_FIELDS:
+            _update_cumulative_counter(
+                telemetry_counters,
+                field_name,
+                int(getattr(message, field_name)),
             )
         if bool(message.state_valid):
             telemetry_counters["velocity_sources"].add(
                 str(message.state_velocity_source)
             )
+
+
+_TELEMETRY_COUNTER_FIELDS = (
+    "sender_dropped_packets",
+    "receiver_lost_packets",
+    "receiver_duplicate_packets",
+    "receiver_out_of_order_packets",
+    "receiver_stale_packets",
+    "receiver_invalid_packets",
+)
+
+
+def _update_cumulative_counter(
+    counters: dict[str, Any], field_name: str, current: int
+) -> None:
+    """Track only counter growth observed inside this episode.
+
+    Receiver counters live for the complete collector process, so the first
+    observed value is an episode baseline rather than an episode failure.
+    When a sender/session reset makes a counter decrease, its new value is the
+    growth since reset and is therefore included in the episode delta.
+    """
+    if current < 0:
+        raise ValueError(f"hand telemetry counter {field_name} is negative")
+    first_key = f"first_{field_name}"
+    last_key = f"last_{field_name}"
+    delta_key = f"delta_{field_name}"
+    maximum_key = f"max_{field_name}"
+    previous = counters.get(last_key)
+    if first_key not in counters:
+        counters[first_key] = current
+    if previous is not None:
+        counters[delta_key] = int(counters.get(delta_key, 0)) + (
+            current - int(previous) if current >= int(previous) else current
+        )
+    else:
+        counters.setdefault(delta_key, 0)
+    counters[last_key] = current
+    counters[maximum_key] = max(int(counters.get(maximum_key, 0)), current)
 
 
 def _timestamp_in_window(

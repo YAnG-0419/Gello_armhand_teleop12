@@ -47,7 +47,8 @@ ops/run/start_teleop.sh
         │
         └── 宿主机（HOUSEKEEPING_CPUSET，避开 Franka 实时核）
               teleop_runtime.cli     Operator 后端，100 Hz
-              apps/operator_gui      PySide6，JSON-TCP :5590
+              apps/operator_gui      PySide6，遥操 JSON-TCP :5590
+                    └─────────────── 独立采集控制 JSON-TCP 127.0.0.1:5592
 ```
 
 `apps` 只保存 UI，`tasks` 只保存可选任务策略，硬件差异封装在 `adapters`。`teleop_runtime/cli.py` 是唯一的 Operator 后端入口：按 CLI 选择机械臂源与手源，再交给共享协调器 `DualFr3HardwareTeleop`。
@@ -308,6 +309,9 @@ O30i 与 G20 的投影表、极性、量化与 URDF 限位绑在一起；改模�
 ## 10. 操作员协议、Home 与预设
 
 GUI 连 `127.0.0.1:5590`，行分隔 JSON：`{"id","command","arguments"}` → `{"id","ok","result"|"error"}`。服务线程只改 `OperatorConsole` 的激活位和一次性请求；100 Hz 环按自己的节拍读取，与当年键盘轮询相同。
+
+数据采集按钮另连 `127.0.0.1:5592`，只发送 `status/start/stop/discard`。该接口由
+独立 `teleop_data_collector` 进程提供，不经过遥操 backend，也不能发布机器人命令。
 
 | 操作 | 作用对象 |
 | --- | --- |

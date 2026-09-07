@@ -100,13 +100,21 @@ class ConnectionDialog(QDialog):
 
 
 class OperatorWindow(QMainWindow):
-    def __init__(self, host: str | None, port: int | None) -> None:
+    def __init__(
+        self,
+        host: str | None,
+        port: int | None,
+        collection_host: str | None = None,
+        collection_port: int | None = None,
+    ) -> None:
         super().__init__()
         self.settings = QSettings("HSC", "FrankaUpperBodyTeleop")
         self.host = host or str(self.settings.value("host", "127.0.0.1"))
         self.port = int(
             port if port is not None else self.settings.value("port", 5590)
         )
+        self.collection_host = collection_host or "127.0.0.1"
+        self.collection_port = int(collection_port or 5592)
         self.setWindowTitle(f"Teleop operator - {self.host}:{self.port}")
         self.next_request_id = 1
         self.pending: dict[int, str] = {}
@@ -120,12 +128,22 @@ class OperatorWindow(QMainWindow):
         self.disconnect_message: QMessageBox | None = None
         self.capture_dialogs: dict[str, QMessageBox] = {}
         self.ready_capture_dialog: QMessageBox | None = None
+        self.collection_state = "OFFLINE"
+        self.collection_next_request_id = 1
+        self.collection_pending: dict[int, str] = {}
+        self.collection_buffer = b""
 
         self.socket = QTcpSocket(self)
         self.socket.readyRead.connect(self._read_responses)
         self.socket.connected.connect(self._connected)
         self.socket.disconnected.connect(self._socket_disconnected)
         self.socket.errorOccurred.connect(self._socket_error)
+
+        self.collection_socket = QTcpSocket(self)
+        self.collection_socket.readyRead.connect(self._read_collection_responses)
+        self.collection_socket.connected.connect(self._collection_connected)
+        self.collection_socket.disconnected.connect(self._collection_disconnected)
+        self.collection_socket.errorOccurred.connect(self._collection_socket_error)
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(POLL_INTERVAL_MS)
@@ -136,11 +154,18 @@ class OperatorWindow(QMainWindow):
         self.health_timer = QTimer(self)
         self.health_timer.setInterval(POLL_INTERVAL_MS)
         self.health_timer.timeout.connect(self._check_connection_health)
+        self.collection_poll_timer = QTimer(self)
+        self.collection_poll_timer.setInterval(POLL_INTERVAL_MS)
+        self.collection_poll_timer.timeout.connect(self._poll_collection_status)
+        self.collection_reconnect_timer = QTimer(self)
+        self.collection_reconnect_timer.setInterval(RECONNECT_INTERVAL_MS)
+        self.collection_reconnect_timer.timeout.connect(self._connect_collection)
 
         self._build_ui()
         self._install_shortcuts()
         self._set_connection_state("disconnected", "backend is not connected")
         self._connect()
+        self._connect_collection()
 
     # ------------------------------------------------------------------ ui
     def _build_ui(self) -> None:
@@ -166,6 +191,39 @@ class OperatorWindow(QMainWindow):
             QFontDatabase.systemFont(QFontDatabase.FixedFont)
         )
         layout.addWidget(self.status_label, stretch=2)
+
+        collection_box = QGroupBox("数据采集（独立采集终端）")
+        collection_layout = QHBoxLayout(collection_box)
+        self.collection_status_label = QLabel("OFFLINE — 请启动采集终端")
+        self.collection_status_label.setMinimumWidth(330)
+        self.collection_status_label.setStyleSheet(
+            "color: #777; font-weight: bold;"
+        )
+        collection_layout.addWidget(self.collection_status_label, stretch=2)
+        self.collection_start_button = QPushButton("开始录制")
+        self.collection_start_button.setFocusPolicy(Qt.NoFocus)
+        self.collection_start_button.clicked.connect(
+            lambda: self._send_collection("start")
+        )
+        self.collection_stop_button = QPushButton("结束并校验")
+        self.collection_stop_button.setFocusPolicy(Qt.NoFocus)
+        self.collection_stop_button.clicked.connect(
+            lambda: self._send_collection("stop")
+        )
+        self.collection_discard_button = QPushButton("丢弃最近一次")
+        self.collection_discard_button.setFocusPolicy(Qt.NoFocus)
+        self.collection_discard_button.setStyleSheet("color: #a35b00;")
+        self.collection_discard_button.clicked.connect(
+            lambda: self._send_collection("discard")
+        )
+        for button in (
+            self.collection_start_button,
+            self.collection_stop_button,
+            self.collection_discard_button,
+        ):
+            button.setEnabled(False)
+            collection_layout.addWidget(button)
+        layout.addWidget(collection_box)
 
         sides_row = QHBoxLayout()
         self.arm_engage_buttons: dict[str, QPushButton] = {}
@@ -716,14 +774,130 @@ class OperatorWindow(QMainWindow):
             elif command == "status":
                 self._apply_status(response.get("result", {}))
 
+    # ---------------------------------------------------- collection socket
+    def _connect_collection(self) -> None:
+        if self.collection_socket.state() == QAbstractSocket.UnconnectedState:
+            self.collection_socket.connectToHost(
+                self.collection_host, self.collection_port
+            )
+
+    def _collection_connected(self) -> None:
+        self.collection_reconnect_timer.stop()
+        self.collection_pending.clear()
+        self.collection_buffer = b""
+        self.collection_poll_timer.start()
+        self._poll_collection_status()
+
+    def _collection_socket_error(self, _error) -> None:
+        self._set_collection_offline()
+
+    def _collection_disconnected(self) -> None:
+        self._set_collection_offline()
+
+    def _set_collection_offline(self) -> None:
+        self.collection_state = "OFFLINE"
+        self.collection_poll_timer.stop()
+        self.collection_pending.clear()
+        self.collection_buffer = b""
+        self.collection_status_label.setText("OFFLINE — 请启动采集终端")
+        self.collection_status_label.setStyleSheet(
+            "color: #777; font-weight: bold;"
+        )
+        self.collection_start_button.setEnabled(False)
+        self.collection_stop_button.setEnabled(False)
+        self.collection_discard_button.setEnabled(False)
+        if self.collection_socket.state() != QAbstractSocket.UnconnectedState:
+            self.collection_socket.abort()
+        if not self.collection_reconnect_timer.isActive():
+            self.collection_reconnect_timer.start()
+
+    def _send_collection(self, command: str) -> None:
+        if self.collection_socket.state() != QAbstractSocket.ConnectedState:
+            return
+        request_id = self.collection_next_request_id
+        self.collection_next_request_id += 1
+        self.collection_pending[request_id] = command
+        if command == "start":
+            self.collection_status_label.setText("STARTING — 正在启动 rosbag…")
+        elif command == "stop":
+            self.collection_status_label.setText("STOPPING — 正在结束并校验…")
+        elif command == "discard":
+            self.collection_status_label.setText("DISCARDING — 正在标记…")
+        if command != "status":
+            for button in (
+                self.collection_start_button,
+                self.collection_stop_button,
+                self.collection_discard_button,
+            ):
+                button.setEnabled(False)
+        payload = {"id": request_id, "command": command, "arguments": {}}
+        self.collection_socket.write(
+            (json.dumps(payload) + "\n").encode("utf-8")
+        )
+
+    def _poll_collection_status(self) -> None:
+        if self.collection_pending:
+            return
+        self._send_collection("status")
+
+    def _read_collection_responses(self) -> None:
+        self.collection_buffer += bytes(self.collection_socket.readAll())
+        while b"\n" in self.collection_buffer:
+            line, self.collection_buffer = self.collection_buffer.split(b"\n", 1)
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            command = self.collection_pending.pop(response.get("id"), "")
+            if not response.get("ok"):
+                self.feedback.appendPlainText(
+                    f"[collection:{command}] rejected: {response.get('error')}"
+                )
+                self._poll_collection_status()
+                continue
+            self._apply_collection_status(response.get("result", {}))
+
+    def _apply_collection_status(self, status: dict) -> None:
+        state = str(status.get("state") or "UNKNOWN").upper()
+        self.collection_state = state
+        episode = status.get("current_episode") or status.get("last_episode") or "-"
+        elapsed = status.get("elapsed_sec")
+        detail = f" · {episode}"
+        if elapsed is not None:
+            detail += f" · {float(elapsed):.1f}s"
+        failures = list(status.get("failures") or [])
+        warnings = len(status.get("boundary_warnings") or []) + len(
+            status.get("transport_warnings") or []
+        )
+        if failures:
+            detail += f" · {len(failures)} failure(s)"
+        elif warnings:
+            detail += f" · {warnings} warning(s)"
+        self.collection_status_label.setText(f"{state}{detail}")
+        if state == "RECORDING":
+            style = "color: #c22525; font-weight: bold;"
+        elif state in {"READY", "FINALIZED"}:
+            style = "color: #248a3d; font-weight: bold;"
+        elif state in {"INCOMPLETE", "INTERRUPTED", "DISCARDED"}:
+            style = "color: #a35b00; font-weight: bold;"
+        else:
+            style = "color: #777; font-weight: bold;"
+        self.collection_status_label.setStyleSheet(style)
+        self.collection_start_button.setEnabled(bool(status.get("can_start")))
+        self.collection_stop_button.setEnabled(bool(status.get("can_stop")))
+        self.collection_discard_button.setEnabled(bool(status.get("can_discard")))
+
     def closeEvent(self, event) -> None:
         for timer in (
             self.poll_timer,
             self.health_timer,
             self.reconnect_timer,
+            self.collection_poll_timer,
+            self.collection_reconnect_timer,
         ):
             timer.stop()
         self.socket.abort()
+        self.collection_socket.abort()
         super().closeEvent(event)
 
     # -------------------------------------------------------------- status
@@ -804,9 +978,25 @@ def main() -> int:
         default=None,
         help="initial backend port (default: saved value or 5590)",
     )
+    parser.add_argument(
+        "--collection-host",
+        default="127.0.0.1",
+        help="data collector control host (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--collection-port",
+        type=int,
+        default=5592,
+        help="data collector control port (default: 5592)",
+    )
     args = parser.parse_args()
     application = QApplication(sys.argv)
-    window = OperatorWindow(args.host, args.port)
+    window = OperatorWindow(
+        args.host,
+        args.port,
+        collection_host=args.collection_host,
+        collection_port=args.collection_port,
+    )
     window.show()
     return application.exec()
 

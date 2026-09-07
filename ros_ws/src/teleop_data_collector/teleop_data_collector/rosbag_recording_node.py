@@ -5,6 +5,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import tempfile
 import json
@@ -17,6 +18,7 @@ from rclpy.node import Node
 from .config import load_collector_config
 from .collector_contract import TopicContract, recording_outcome, topic_preflight_failures
 from .bag_validation import inspect_bag
+from .collector_control import CollectorController, CollectorControlServer
 from .keyboard import KeyboardInterface
 
 
@@ -40,6 +42,12 @@ class RosbagDataCollectorNode(Node):
             self,
             "rosbag_record_default_qos",
         )
+        self.control_bind_host = _get_string_parameter(
+            self, "control_bind_host", "127.0.0.1"
+        )
+        self.control_port = _get_positive_int_parameter(self, "control_port", 5592)
+        if self.control_bind_host != "127.0.0.1":
+            raise ValueError("control_bind_host must be 127.0.0.1")
 
         configured_topics = (*self.config.topics, *self.config.static_topics)
         self.topic_names = tuple(dict.fromkeys(topic.topic for topic in configured_topics))
@@ -228,7 +236,9 @@ class RosbagEpisodeRecorder:
             interrupted=interrupted,
         )
         if outcome.finalized:
-            self._node.get_logger().info(f"Bag saved to {bag_dir}.")
+            self._node.get_logger().info(
+                _terminal_success(f"Bag saved to {bag_dir}.")
+            )
         else:
             self._node.get_logger().warn(
                 f"Bag is {outcome.state}; check {bag_dir}."
@@ -337,36 +347,46 @@ def main(args=None):
         preflight=node.preflight_failures,
         postflight=node.postflight,
     )
+    controller = CollectorController(node, recorder)
+    control_server = CollectorControlServer(
+        (node.control_bind_host, node.control_port), controller
+    )
+    control_server.start_in_thread()
 
     try:
         with KeyboardInterface() as keyboard:
             node.get_logger().info(f"Output directory: {node.output_dir}")
             node.get_logger().info(f"Configured topics: {len(node.topic_names)}")
+            node.get_logger().info(
+                f"UI control: {node.control_bind_host}:{node.control_port}"
+            )
             if not keyboard.enabled:
                 node.get_logger().warn("stdin is not a TTY; SPACE hotkey is disabled.")
             if _wait_for_required_topics(node):
+                controller.set_ready()
                 _log_ready_banner(node)
 
             while rclpy.ok():
                 key = keyboard.get_key()
                 if key == " ":
-                    _toggle_recording(node, recorder)
+                    _toggle_recording(node, controller)
                 elif key in {"d", "D"}:
-                    discarded = recorder.mark_discarded()
-                    if discarded is not None:
-                        node.get_logger().warn(
-                            f"Bag marked discarded (not deleted): {discarded}"
-                        )
+                    try:
+                        controller.discard()
+                    except RuntimeError as error:
+                        node.get_logger().warn(str(error))
                 if recorder.current_bag_dir is not None and not recorder.active:
-                    recorder.stop()
+                    controller.reconcile_exited_recorder()
                 time.sleep(0.05)
     except KeyboardInterrupt:
         if recorder.active:
             node.get_logger().info("Shutting down. Stopping active rosbag recording...")
-            recorder.stop(interrupted=True)
+            controller.stop_if_present(interrupted=True)
         else:
             node.get_logger().info("Shutting down.")
     finally:
+        control_server.shutdown()
+        control_server.server_close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
@@ -374,20 +394,14 @@ def main(args=None):
 
 def _toggle_recording(
     node: RosbagDataCollectorNode,
-    recorder: RosbagEpisodeRecorder,
+    controller: CollectorController,
 ) -> None:
-    if recorder.active:
-        node.get_logger().info(
-            "STOPPING: finalizing and validating the active episode; please wait..."
-        )
-        recorder.stop()
+    if controller.status()["active"]:
+        controller.stop()
         _log_ready_banner(node)
         return
 
-    bag_dir = recorder.start()
-    node.get_logger().info(
-        f"RECORDING: {bag_dir} (press SPACE to stop and validate this episode)"
-    )
+    controller.start()
 
 
 def _log_ready_banner(node: RosbagDataCollectorNode) -> None:
@@ -461,6 +475,24 @@ def _get_string_parameter(node: Node, name: str, default: str) -> str:
     if not value:
         raise ValueError(f"ROS parameter '{name}' must be a non-empty string.")
     return value
+
+
+def _get_positive_int_parameter(node: Node, name: str, default: int) -> int:
+    if not node.has_parameter(name):
+        node.declare_parameter(name, default)
+    value = int(node.get_parameter(name).value)
+    if value <= 0 or value > 65_535:
+        raise ValueError(f"ROS parameter '{name}' must be in 1..65535.")
+    return value
+
+
+def _terminal_success(text: str, *, color_enabled: bool | None = None) -> str:
+    """Render a successful operator-facing message green on an attached TTY."""
+    if color_enabled is None:
+        color_enabled = sys.stdout.isatty() or sys.stderr.isatty()
+    if not color_enabled:
+        return text
+    return f"\033[1;32m{text}\033[0m"
 
 
 def _get_positive_float_parameter(node: Node, name: str, default: float) -> float:

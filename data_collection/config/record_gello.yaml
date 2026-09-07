@@ -26,6 +26,9 @@ teleop_data_collector:
       cam2_semantic: REPLACE_AT_LAUNCH
     data_root: /collection_data/bags/gello
     bag_prefix: episode
+    # Independent from teleop control (5590) and preset IK (5591).
+    control_bind_host: 127.0.0.1
+    control_port: 5592
     bag_stop_timeout_sec: 30.0
     rosbag_record_args: [--storage, sqlite3, --max-cache-size, "268435456"]
     rosbag_record_default_qos:

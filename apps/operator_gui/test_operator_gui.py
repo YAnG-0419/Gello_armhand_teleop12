@@ -192,6 +192,57 @@ def test_w_e_shortcuts_run_presets(tmp_path):
     ]
 
 
+def test_collection_panel_enables_only_valid_episode_actions(tmp_path):
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    try:
+        window.collection_socket.abort()
+        window.collection_reconnect_timer.stop()
+        window._apply_collection_status(
+            {
+                "state": "READY",
+                "can_start": True,
+                "can_stop": False,
+                "can_discard": False,
+            }
+        )
+        assert window.collection_start_button.isEnabled()
+        assert not window.collection_stop_button.isEnabled()
+
+        window._apply_collection_status(
+            {
+                "state": "RECORDING",
+                "current_episode": "episode5",
+                "elapsed_sec": 2.5,
+                "can_start": False,
+                "can_stop": True,
+                "can_discard": False,
+            }
+        )
+        assert "episode5" in window.collection_status_label.text()
+        assert "2.5s" in window.collection_status_label.text()
+        assert window.collection_stop_button.isEnabled()
+        assert not window.collection_start_button.isEnabled()
+
+        window._apply_collection_status(
+            {
+                "state": "FINALIZED",
+                "last_episode": "episode5",
+                "transport_warnings": ["bag gap"],
+                "can_start": True,
+                "can_stop": False,
+                "can_discard": True,
+            }
+        )
+        assert "1 warning(s)" in window.collection_status_label.text()
+        assert window.collection_start_button.isEnabled()
+        assert window.collection_discard_button.isEnabled()
+    finally:
+        window.close()
+        application.processEvents()
+
+
 def _unused_port() -> int:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))

@@ -95,6 +95,18 @@ def test_velocity_is_derived_only_from_named_monotonic_samples():
         estimator.update("left", tuple(reversed(NAMES)), [0.2] * 20, 1_200_000_000)
 
 
+def test_repeated_state_timestamp_reseeds_velocity_without_invalidating_position():
+    estimator = VelocityEstimator()
+    estimator.update("left", NAMES, [0.0] * 20, 1_000_000_000)
+    repeated = estimator.update("left", NAMES, [0.1] * 20, 1_000_000_000)
+
+    assert repeated.values is None
+    assert repeated.source == "unavailable_nonmonotonic_reset"
+    resumed = estimator.update("left", NAMES, [0.2] * 20, 1_100_000_000)
+    assert resumed.values == pytest.approx((1.0,) * 20)
+    assert resumed.source == "finite_difference"
+
+
 def test_udp_sender_drops_when_full_without_blocking_the_caller():
     import threading
 

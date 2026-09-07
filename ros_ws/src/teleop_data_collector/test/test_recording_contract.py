@@ -12,6 +12,7 @@ from teleop_data_collector.bag_validation import (
     StreamSamples,
     _engaged_action_failures,
     _inspect_message_content,
+    _update_cumulative_counter,
     stream_timing_report,
     timing_failures,
     transport_timing_warnings,
@@ -39,6 +40,8 @@ def test_recording_contract_has_only_post_gateway_action_and_13_required_streams
     assert config["teleoperator"] == "gello"
     assert config["trim_start_sec"] == 1.0
     assert config["trim_end_sec"] == 1.0
+    assert config["control_bind_host"] == "127.0.0.1"
+    assert config["control_port"] == 5592
     assert config["rosbag_record_args"] == [
         "--storage",
         "sqlite3",
@@ -67,6 +70,22 @@ def test_recording_contract_requires_explicit_hold_status_topics():
     del config["topics"]["arm_command_status"]
     with pytest.raises(ValueError, match="HOLD status topic"):
         validate_recording_contract(config)
+
+
+def test_telemetry_counters_use_episode_delta_not_process_lifetime_total():
+    counters = {"velocity_sources": set()}
+    _update_cumulative_counter(counters, "receiver_invalid_packets", 2)
+    _update_cumulative_counter(counters, "receiver_invalid_packets", 2)
+    assert counters["first_receiver_invalid_packets"] == 2
+    assert counters["last_receiver_invalid_packets"] == 2
+    assert counters["delta_receiver_invalid_packets"] == 0
+
+    _update_cumulative_counter(counters, "receiver_invalid_packets", 4)
+    assert counters["delta_receiver_invalid_packets"] == 2
+
+    # Counter reset/session restart: a new value of one is one new event.
+    _update_cumulative_counter(counters, "receiver_invalid_packets", 1)
+    assert counters["delta_receiver_invalid_packets"] == 3
 
 
 def test_timing_report_rejects_missing_low_rate_and_stale_interval():

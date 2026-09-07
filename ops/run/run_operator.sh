@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTROL_HOST="${TELEOP_CONTROL_HOST:-127.0.0.1}"
 CONTROL_PORT="${TELEOP_CONTROL_PORT:-5590}"
+COLLECTION_CONTROL_HOST="${COLLECTION_CONTROL_HOST:-127.0.0.1}"
+COLLECTION_CONTROL_PORT="${COLLECTION_CONTROL_PORT:-5592}"
 CONDA_BASE="$(conda info --base)"
 backend_pid=""
 gui_pid=""
@@ -107,7 +109,9 @@ backend_pid=$!
 
 setsid taskset -c "$HOUSEKEEPING_CPUSET" \
   "$CONDA_BASE/bin/python" "$REPO_ROOT/apps/operator_gui/operator_gui.py" \
-  --host "$CONTROL_HOST" --port "$CONTROL_PORT" &
+  --host "$CONTROL_HOST" --port "$CONTROL_PORT" \
+  --collection-host "$COLLECTION_CONTROL_HOST" \
+  --collection-port "$COLLECTION_CONTROL_PORT" &
 gui_pid=$!
 
 set +e

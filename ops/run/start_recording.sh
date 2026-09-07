@@ -135,6 +135,11 @@ if ss -H -lun 'sport = :5602' | awk 'NF { found=1 } END { exit !found }'; then
   echo "Stop the existing hand telemetry receiver or recording session first." >&2
   exit 2
 fi
+if ss -H -ltn 'sport = :5592' | awk 'NF { found=1 } END { exit !found }'; then
+  echo "Refusing to start: collector UI control TCP port 127.0.0.1:5592 is already in use." >&2
+  echo "Stop the existing recording session first." >&2
+  exit 2
+fi
 
 (
   cd "$REPO_ROOT/docker"

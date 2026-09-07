@@ -252,7 +252,13 @@ class VelocityEstimator:
         if names != old_names:
             raise ValueError(f"{side} hand joint names changed")
         if timestamp <= old_timestamp:
-            raise ValueError(f"{side} hand state timestamp is not monotonic")
+            # A Home/engagement transition can emit a new telemetry envelope
+            # around the same cached feedback sample. The position remains
+            # usable, but deriving velocity from a zero/negative dt is not.
+            # Re-seed this side so the next fresh sample resumes finite
+            # differences without invalidating the complete telemetry packet.
+            self._previous[side] = (names, values, timestamp)
+            return VelocityResult(None, "unavailable_nonmonotonic_reset")
         dt = (timestamp - old_timestamp) / 1_000_000_000.0
         velocity = tuple(
             (value - old_value) / dt
