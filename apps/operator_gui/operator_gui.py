@@ -51,13 +51,12 @@ RECONNECT_INTERVAL_MS = 2000
 STATUS_TIMEOUT_SECONDS = 3.0
 SIDES = ("left", "right")
 PEDAL_BINDINGS = {
-    "L": ("toggle", "arm", "left"),
     "R": ("toggle", "hand", "left"),
     "Space": ("toggle_hold", "arm", "left"),
-    "A": ("toggle", "arm", "right"),
     "B": ("toggle", "hand", "right"),
     "Q": ("toggle_hold", "arm", "right"),
 }
+COLLECTION_SHORTCUTS = {"L": "toggle_recording", "A": "discard"}
 PRESET_KEYS = ("W", "E")
 HAND_KEY_HINTS = {"left": "R", "right": "B"}
 
@@ -200,25 +199,19 @@ class OperatorWindow(QMainWindow):
             "color: #777; font-weight: bold;"
         )
         collection_layout.addWidget(self.collection_status_label, stretch=2)
-        self.collection_start_button = QPushButton("开始录制")
-        self.collection_start_button.setFocusPolicy(Qt.NoFocus)
-        self.collection_start_button.clicked.connect(
-            lambda: self._send_collection("start")
+        self.collection_record_button = QPushButton("开始录制 (L)")
+        self.collection_record_button.setFocusPolicy(Qt.NoFocus)
+        self.collection_record_button.clicked.connect(
+            self._toggle_collection_recording
         )
-        self.collection_stop_button = QPushButton("结束并校验")
-        self.collection_stop_button.setFocusPolicy(Qt.NoFocus)
-        self.collection_stop_button.clicked.connect(
-            lambda: self._send_collection("stop")
-        )
-        self.collection_discard_button = QPushButton("丢弃最近一次")
+        self.collection_discard_button = QPushButton("丢弃最近一次 (A)")
         self.collection_discard_button.setFocusPolicy(Qt.NoFocus)
         self.collection_discard_button.setStyleSheet("color: #a35b00;")
         self.collection_discard_button.clicked.connect(
             lambda: self._send_collection("discard")
         )
         for button in (
-            self.collection_start_button,
-            self.collection_stop_button,
+            self.collection_record_button,
             self.collection_discard_button,
         ):
             button.setEnabled(False)
@@ -234,12 +227,10 @@ class OperatorWindow(QMainWindow):
         self.engage_buttons = self.arm_engage_buttons
         pedal_keys = {
             "left": {
-                "arm": "L",
                 "hold": "Space",
                 "hand": HAND_KEY_HINTS["left"],
             },
             "right": {
-                "arm": "A",
                 "hold": "Q",
                 "hand": HAND_KEY_HINTS["right"],
             },
@@ -248,13 +239,11 @@ class OperatorWindow(QMainWindow):
             box = QGroupBox(side.capitalize())
             grid = QGridLayout(box)
             keys = pedal_keys[side]
-            arm_engage = QPushButton(f"Start arm ({keys['arm']})")
+            arm_engage = QPushButton("Start arm")
             arm_engage.setCheckable(True)
             arm_engage.setFocusPolicy(Qt.NoFocus)
             arm_engage.setMinimumHeight(56)
-            arm_engage.setToolTip(
-                f"Pedal/shortcut: {keys['arm']} toggles arm following"
-            )
+            arm_engage.setToolTip("Click to toggle arm following")
             arm_engage.clicked.connect(
                 lambda checked, side=side: self._send(
                     "engage_arm" if checked else "disengage_arm", {"side": side}
@@ -400,8 +389,8 @@ class OperatorWindow(QMainWindow):
         layout.addWidget(preset_box)
 
         shortcut_hint = QLabel(
-            "Shortcuts: L left arm · R left hand · Space left Hold  |  "
-            "A right arm · B right hand · Q right Hold"
+            "Shortcuts: L 开始/停止录制 · A 丢弃最近一次  |  "
+            "R left hand · Space left Hold · B right hand · Q right Hold"
         )
         shortcut_hint.setStyleSheet("color: #666;")
         layout.addWidget(shortcut_hint)
@@ -528,9 +517,8 @@ class OperatorWindow(QMainWindow):
         return button
 
     def _install_shortcuts(self) -> None:
-        # Foot pedals appear as ordinary keyboard keys. Each press toggles one
-        # follower or homes both arms; auto-repeat is disabled so holding a
-        # pedal cannot retrigger an action.
+        # Foot pedals appear as ordinary keyboard keys. Auto-repeat is disabled
+        # so holding a pedal cannot retrigger an action.
         self.shortcuts = []
         for key, (action, target, side) in PEDAL_BINDINGS.items():
             if action == "toggle":
@@ -555,6 +543,16 @@ class OperatorWindow(QMainWindow):
                 lambda selected=key.lower(): self._shortcut_preset(selected)
             )
             self.preset_shortcuts.append(shortcut)
+        self.collection_shortcuts = []
+        for key, action in COLLECTION_SHORTCUTS.items():
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.setAutoRepeat(False)
+            if action == "toggle_recording":
+                shortcut.activated.connect(self._toggle_collection_recording)
+            else:
+                shortcut.activated.connect(self._discard_collection)
+            self.collection_shortcuts.append(shortcut)
 
     def _shortcut_preset(self, key: str) -> None:
         if self.connection_state == "connected":
@@ -666,8 +664,7 @@ class OperatorWindow(QMainWindow):
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
-                key_hint = "L" if side == "left" else "A"
-                button.setText(f"Start arm ({key_hint})")
+                button.setText("Start arm")
                 button.blockSignals(False)
         for side, button in self.arm_hold_buttons.items():
             button.setEnabled(ready)
@@ -803,8 +800,8 @@ class OperatorWindow(QMainWindow):
         self.collection_status_label.setStyleSheet(
             "color: #777; font-weight: bold;"
         )
-        self.collection_start_button.setEnabled(False)
-        self.collection_stop_button.setEnabled(False)
+        self.collection_record_button.setText("开始录制 (L)")
+        self.collection_record_button.setEnabled(False)
         self.collection_discard_button.setEnabled(False)
         if self.collection_socket.state() != QAbstractSocket.UnconnectedState:
             self.collection_socket.abort()
@@ -825,8 +822,7 @@ class OperatorWindow(QMainWindow):
             self.collection_status_label.setText("DISCARDING — 正在标记…")
         if command != "status":
             for button in (
-                self.collection_start_button,
-                self.collection_stop_button,
+                self.collection_record_button,
                 self.collection_discard_button,
             ):
                 button.setEnabled(False)
@@ -834,6 +830,16 @@ class OperatorWindow(QMainWindow):
         self.collection_socket.write(
             (json.dumps(payload) + "\n").encode("utf-8")
         )
+
+    def _toggle_collection_recording(self) -> None:
+        if not self.collection_record_button.isEnabled():
+            return
+        command = "stop" if self.collection_state == "RECORDING" else "start"
+        self._send_collection(command)
+
+    def _discard_collection(self) -> None:
+        if self.collection_discard_button.isEnabled():
+            self._send_collection("discard")
 
     def _poll_collection_status(self) -> None:
         if self.collection_pending:
@@ -883,8 +889,12 @@ class OperatorWindow(QMainWindow):
         else:
             style = "color: #777; font-weight: bold;"
         self.collection_status_label.setStyleSheet(style)
-        self.collection_start_button.setEnabled(bool(status.get("can_start")))
-        self.collection_stop_button.setEnabled(bool(status.get("can_stop")))
+        can_start = bool(status.get("can_start"))
+        can_stop = bool(status.get("can_stop"))
+        self.collection_record_button.setText(
+            "停止并校验 (L)" if can_stop else "开始录制 (L)"
+        )
+        self.collection_record_button.setEnabled(can_start or can_stop)
         self.collection_discard_button.setEnabled(bool(status.get("can_discard")))
 
     def closeEvent(self, event) -> None:
@@ -912,11 +922,10 @@ class OperatorWindow(QMainWindow):
             engaged = bool(active.get(side))
             button.blockSignals(True)
             button.setChecked(engaged)
-            key_hint = "L" if side == "left" else "A"
             button.setText(
-                f"Arm running ({key_hint})"
+                "Arm running"
                 if engaged
-                else f"Start arm ({key_hint})"
+                else "Start arm"
             )
             button.setEnabled(not bool(arm_hold.get(side)))
             button.blockSignals(False)

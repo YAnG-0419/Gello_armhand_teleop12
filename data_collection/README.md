@@ -84,15 +84,16 @@ ROS_DOMAIN_ID=1 TELEOP_ROS_DOMAIN_ID=1 ./ops/run/start_wuji_teleop.sh \
 ```
 
 仍然需要分别启动遥操和采集两个终端。采集器 READY 后，遥操 UI 的“数据采集”区域
-会通过仅监听 `127.0.0.1:5592` 的独立接口自动连接，可直接执行“开始录制”、
-“结束并校验”和“丢弃最近一次”。UI 关闭或连接失败不会停止采集，也不会影响遥操；
+会通过仅监听 `127.0.0.1:5592` 的独立接口自动连接。一个按钮按当前状态执行
+“开始录制”或“结束并校验”（快捷键 `L`），另一个按钮执行“丢弃最近一次”
+（快捷键 `A`）。UI 关闭或连接失败不会停止采集，也不会影响遥操；
 终端里的 `SPACE` 和 `D` 继续作为备用控制。
 
 数据必须写在仓库外。`--data-root` 若落在 Git 仓库内会被拒绝。
 
 - `SPACE`：开始/停止 episode。开始前检查 topic 名称和 ROS 类型；停止后读取整包，
   以 source header 检查消息数、频率、150 ms gap 和单调性；bag receive gap 单独作为
-  传输拥塞告警，不会把源端连续的数据判坏。默认首尾各 1 秒是操作缓冲区；校验只用
+  传输拥塞告警，不会把源端连续的数据判坏。默认开头 1 秒、结尾 0.2 秒是操作缓冲区；校验只用
   中间有效 source 区间判断连续性，落在缓冲区内的 receive-time 边界缺口单列为
   `boundary_warnings`。同时检查 joint name、有限值、双侧
   action、双手、三路 RGB、头部原始深度和 telemetry 丢包计数。
@@ -115,7 +116,7 @@ action。若该侧从 episode 开始即 disengage，则以同侧实测位置初�
 ```bash
 ./ops/run/revalidate_recording.sh \
   /home/user/franka_teleop_data/bags/gello/episode12 \
-  --trim-start-sec 1 --trim-end-sec 1
+  --trim-start-sec 1 --trim-end-sec 0.2
 ```
 
 ## 手动转换
@@ -131,7 +132,7 @@ action。若该侧从 episode 开始即 disengage，则以同侧实测位置初�
 脚本将源 bag 只读挂载；转换前后比较源文件大小和 mtime。输出写到相邻临时目录，
 54/108 维、joint order、有限值、严格单调时间、三视频、头部 raw16 深度和
 provenance 全部验证通过后才原子发布。失败时不改源 bag，也不暴露目标目录中的部分数据。
-默认转换取所有 required stream 的 source 公共区间，再裁掉首尾各 1 秒；Parquet
+默认转换取所有 required stream 的 source 公共区间，再裁掉开头 1 秒和结尾 0.2 秒；Parquet
 训练时间戳从裁剪后区间的 0 秒重新开始。原始 bag 始终保持完整。
 
 详细 topic、顺序和时间策略见

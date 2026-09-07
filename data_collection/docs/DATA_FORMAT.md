@@ -80,7 +80,7 @@ cam0/cam1/cam2 的序列号及物理语义写入 `collection_state.json`，并�
 ROS bag 同时保留原始消息 header timestamp 与 rosbag receive time。状态 sidecar
 记录每条 required stream 的首末 receive time、source header 首末值、消息数、
 频率、最大内部 gap、首尾 gap 和非单调计数。内部连续性以 source header 时间为准；
-默认从 required stream 的 source 公共区间首尾各裁 1 秒；裁剪区内不参与训练区间的
+默认从 required stream 的 source 公共区间裁掉开头 1 秒和结尾 0.2 秒；裁剪区内不参与训练区间的
 连续性判定。录制窗口首尾覆盖使用 bag receive 时间；超出普通边界容差但仍落在裁剪
 缓冲区内的缺口记为 `boundary_warnings`。bag receive 的内部大 gap 记录为
 `transport_warnings`，用于诊断 DDS/磁盘写入拥塞。
@@ -89,7 +89,7 @@ ROS bag 同时保留原始消息 header timestamp 与 rosbag receive time。状�
 `delta` 判定失败；episode 开始前已经存在且录制期间未增长的历史计数不影响本条数据。
 重复或倒退的手反馈时间戳不参与速度差分，接收器会重建该侧速度基线，同时保留该包的
 position、command 和 status。
-转换先按 source header 排序，取相同公共区间并裁首尾各 1 秒，再从 0 秒构造 30 Hz
+转换先按 source header 排序，取相同公共区间并裁开头 1 秒和结尾 0.2 秒，再从 0 秒构造 30 Hz
 确定性时间线，仅选取不超过 150 ms 的
 最新历史样本，不使用未来样本；metadata 报告每个 source 的 unmatched 数和被跳过
 的不完整行数，以及裁剪前后的绝对 source 时间边界。原始 bag 不被截断或改写。

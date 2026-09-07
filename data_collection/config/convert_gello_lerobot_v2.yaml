@@ -8,7 +8,7 @@ sampling:
   frequency_hz: 30
   max_staleness_ms: 150
   trim_start_sec: 1.0
-  trim_end_sec: 1.0
+  trim_end_sec: 0.2
 
 # Keep each source camera at its native rate. The 30 Hz dataset rows reference
 # media by timestamp; cam0 frames are stored once rather than encoded three times.

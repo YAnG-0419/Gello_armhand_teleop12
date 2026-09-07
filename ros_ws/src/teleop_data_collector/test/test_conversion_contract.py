@@ -13,12 +13,17 @@ from teleop_data_collector.rosbag_to_lerobot import (
     SamplingSpec,
     _depth_image_specs_from_config,
     _feature_specs_from_config,
+    _load_conversion_config,
     _message_to_source_value,
     _mode_conversion_config,
     _source_names,
     _trim_source_window,
     _video_specs_from_config,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+CONVERSION_CONFIG = REPO_ROOT / "data_collection/config/convert_gello_lerobot_v2.yaml"
 
 
 def _joint_state(names, positions):
@@ -58,6 +63,12 @@ def test_gello_schema_is_exact_harvest_54_108_and_three_cameras():
     assert depth_specs[0].topic == "/cam0/depth/image_raw"
     assert depth_specs[0].format == "raw16"
     assert depth_specs[0].fps == 20
+
+
+def test_gello_conversion_config_uses_asymmetric_edge_trim():
+    sampling = _load_conversion_config(CONVERSION_CONFIG)["sampling"]
+    assert sampling["trim_start_sec"] == 1.0
+    assert sampling["trim_end_sec"] == 0.2
 
 
 def test_source_window_trims_both_edges_and_rejects_short_episode():

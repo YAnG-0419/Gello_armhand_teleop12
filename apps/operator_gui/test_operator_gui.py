@@ -20,22 +20,26 @@ from pico_bimanual_franka_teleop.control_server import (
     OperatorConsole,
     OperatorControlServer,
 )
-from apps.operator_gui.operator_gui import PEDAL_BINDINGS, PRESET_KEYS, OperatorWindow
+from apps.operator_gui.operator_gui import (
+    COLLECTION_SHORTCUTS,
+    PEDAL_BINDINGS,
+    PRESET_KEYS,
+    OperatorWindow,
+)
 
 
 def test_shortcut_bindings_match_the_workcell_layout():
     assert PEDAL_BINDINGS == {
-        "L": ("toggle", "arm", "left"),
         "R": ("toggle", "hand", "left"),
         "Space": ("toggle_hold", "arm", "left"),
-        "A": ("toggle", "arm", "right"),
         "B": ("toggle", "hand", "right"),
         "Q": ("toggle_hold", "arm", "right"),
     }
+    assert COLLECTION_SHORTCUTS == {"L": "toggle_recording", "A": "discard"}
     assert PRESET_KEYS == ("W", "E")
 
 
-def test_shortcuts_send_independent_arm_hand_and_home_both_commands(tmp_path):
+def test_teleop_shortcuts_no_longer_toggle_arm_following(tmp_path):
     QSettings.setPath(
         QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
     )
@@ -60,10 +64,8 @@ def test_shortcuts_send_independent_arm_hand_and_home_both_commands(tmp_path):
         window.close()
 
     assert sent == [
-        ("engage_arm", {"side": "left"}),
         ("engage_hand", {"side": "left"}),
         ("hold_arm", {"side": "left", "enabled": True}),
-        ("engage_arm", {"side": "right"}),
         ("engage_hand", {"side": "right"}),
         ("hold_arm", {"side": "right", "enabled": True}),
     ]
@@ -207,8 +209,8 @@ def test_collection_panel_enables_only_valid_episode_actions(tmp_path):
                 "can_discard": False,
             }
         )
-        assert window.collection_start_button.isEnabled()
-        assert not window.collection_stop_button.isEnabled()
+        assert window.collection_record_button.isEnabled()
+        assert window.collection_record_button.text() == "开始录制 (L)"
 
         window._apply_collection_status(
             {
@@ -222,8 +224,8 @@ def test_collection_panel_enables_only_valid_episode_actions(tmp_path):
         )
         assert "episode5" in window.collection_status_label.text()
         assert "2.5s" in window.collection_status_label.text()
-        assert window.collection_stop_button.isEnabled()
-        assert not window.collection_start_button.isEnabled()
+        assert window.collection_record_button.isEnabled()
+        assert window.collection_record_button.text() == "停止并校验 (L)"
 
         window._apply_collection_status(
             {
@@ -236,11 +238,45 @@ def test_collection_panel_enables_only_valid_episode_actions(tmp_path):
             }
         )
         assert "1 warning(s)" in window.collection_status_label.text()
-        assert window.collection_start_button.isEnabled()
+        assert window.collection_record_button.isEnabled()
+        assert window.collection_record_button.text() == "开始录制 (L)"
         assert window.collection_discard_button.isEnabled()
     finally:
         window.close()
         application.processEvents()
+
+
+def test_collection_shortcuts_toggle_recording_and_discard(tmp_path):
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    sent = []
+    try:
+        window.collection_socket.abort()
+        window.collection_reconnect_timer.stop()
+        window._send_collection = lambda command: sent.append(command)
+        shortcuts = {
+            shortcut.key().toString(): shortcut
+            for shortcut in window.collection_shortcuts
+        }
+
+        window._apply_collection_status(
+            {"state": "READY", "can_start": True, "can_stop": False}
+        )
+        shortcuts["L"].activated.emit()
+        window._apply_collection_status(
+            {"state": "RECORDING", "can_start": False, "can_stop": True}
+        )
+        shortcuts["L"].activated.emit()
+        window._apply_collection_status(
+            {"state": "FINALIZED", "can_discard": True}
+        )
+        shortcuts["A"].activated.emit()
+    finally:
+        window.close()
+        application.processEvents()
+
+    assert sent == ["start", "stop", "discard"]
 
 
 def _unused_port() -> int:

@@ -39,7 +39,7 @@ def test_recording_contract_has_only_post_gateway_action_and_13_required_streams
     validate_recording_contract(config)
     assert config["teleoperator"] == "gello"
     assert config["trim_start_sec"] == 1.0
-    assert config["trim_end_sec"] == 1.0
+    assert config["trim_end_sec"] == 0.2
     assert config["control_bind_host"] == "127.0.0.1"
     assert config["control_port"] == 5592
     assert config["rosbag_record_args"] == [
