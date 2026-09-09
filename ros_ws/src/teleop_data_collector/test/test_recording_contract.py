@@ -209,6 +209,18 @@ def test_recording_edge_inside_configured_trim_is_only_a_warning():
     assert all("accepted by" in warning for warning in warnings)
 
 
+@pytest.mark.parametrize("edge", ["leading_gap_ms", "trailing_gap_ms"])
+@pytest.mark.parametrize("gap_ms, accepted", [(250.0, False), (450.0, True), (450.1, False), (6070.2, False)])
+def test_boundary_warning_does_not_claim_failed_gap_is_accepted(edge, gap_ms, accepted):
+    report = {"bag_timing": {"leading_gap_ms": 0.0, "trailing_gap_ms": 0.0}}
+    report["bag_timing"][edge] = gap_ms
+    warnings = boundary_timing_warnings(
+        "arm", report, min_frequency_hz=10.0, max_gap_ms=150.0,
+        trim_start_sec=0.2, trim_end_sec=0.2,
+    )
+    assert bool(warnings) is accepted
+
+
 def test_action_gaps_are_allowed_only_during_explicit_disengagement():
     action_times = [100_000_000, 200_000_000, 800_000_000, 900_000_000]
     engagement = [

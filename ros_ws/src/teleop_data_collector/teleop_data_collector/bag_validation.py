@@ -7,6 +7,8 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
+from .image_metadata import read_image_metadata
+
 from teleop_core.contract import (
     COMMAND_STATUS_TOPIC,
     DATA_LEFT_ARM_JOINT_NAMES,
@@ -209,7 +211,11 @@ def boundary_timing_warnings(
         ("trailing_gap_ms", trim_end_sec),
     ):
         gap = bag[field_name]
-        if gap is not None and gap > base_allowance_ms and trim_sec > 0.0:
+        if (
+            gap is not None
+            and trim_sec > 0.0
+            and base_allowance_ms < gap <= base_allowance_ms + trim_sec * 1_000.0
+        ):
             warnings.append(
                 f"{name}: bag_{field_name} {gap:.1f} ms is outside the "
                 f"untrimmed allowance {base_allowance_ms:.1f} ms; accepted by "
@@ -313,11 +319,24 @@ def inspect_bag(
         topic, serialized, bag_time_ns = reader.read_next()
         if topic not in configured or topic not in message_classes:
             continue
-        message = deserialize_message(serialized, message_classes[topic])
         bag_time_ns = int(bag_time_ns)
         stream = streams[topic]
         stream.bag_times_ns.append(bag_time_ns)
-        header_ns = _message_header_ns(message)
+        try:
+            message = (
+                read_image_metadata(serialized)
+                if actual_types[topic] == "sensor_msgs/msg/Image"
+                else None
+            )
+            if message is None:
+                message = deserialize_message(serialized, message_classes[topic])
+                header_ns = _message_header_ns(message)
+            else:
+                header_ns = message.header_time_ns
+        except ValueError as error:
+            if len(content_failures) < 100:
+                content_failures.append(f"{topic}: {error}")
+            continue
         if header_ns is not None:
             stream.header_times_ns.append(header_ns)
         try:

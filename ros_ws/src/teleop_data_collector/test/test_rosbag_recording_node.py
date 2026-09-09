@@ -1,6 +1,7 @@
 import json
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,12 +23,19 @@ from teleop_data_collector.collector_control import (
 class _Logger:
     def __init__(self):
         self.messages = []
+        self.entries = []
 
     def info(self, message):
         self.messages.append(message)
+        self.entries.append(("info", message))
 
     def warn(self, message):
         self.messages.append(message)
+        self.entries.append(("warn", message))
+
+    def error(self, message):
+        self.messages.append(message)
+        self.entries.append(("error", message))
 
 
 class _Node:
@@ -110,6 +118,77 @@ def test_success_message_is_green_only_for_an_attached_terminal():
         f"\033[1;32m{text}\033[0m"
     )
     assert _terminal_success(text, color_enabled=False) == text
+
+
+@pytest.mark.parametrize("validator_raises", [False, True])
+def test_stop_prints_validation_details_and_preserves_failed_state(tmp_path, monkeypatch, validator_raises):
+    node = _Node([])
+
+    def postflight(_path):
+        if validator_raises:
+            raise ValueError("/cam0: truncated image")
+        return ("/cam1: gap exceeds 150ms",), {
+            "boundary_warnings": ["/cam2: trimmed leading gap"],
+            "transport_warnings": ["/cam0: receive gap"],
+        }
+
+    recorder = rosbag_recording_node.RosbagEpisodeRecorder(
+        node, tmp_path, "episode", (), 30.0, (), postflight=postflight,
+    )
+    bag = tmp_path / "episode0"
+    bag.mkdir()
+    recorder._current_bag_dir = bag
+    recorder._process = SimpleNamespace(poll=lambda: None, wait=lambda **kwargs: 0, returncode=0)
+    monkeypatch.setattr(rosbag_recording_node, "_signal_process_group", lambda *_: None)
+    recorder.stop()
+    state = json.loads((bag / "collection_state.json").read_text())
+    assert state["state"] == "incomplete"
+    assert state["finalized"] is False
+    assert any("Validation finished in" in text for text in node.logger.messages)
+    for failure in state["failures"]:
+        assert f"[validation FAILED] {failure}" in node.logger.messages
+        assert ("error", f"[validation FAILED] {failure}") in node.logger.entries
+    if not validator_raises:
+        assert "[boundary warning] /cam2: trimmed leading gap" in node.logger.messages
+        assert "[transport warning] /cam0: receive gap" in node.logger.messages
+
+
+@pytest.mark.parametrize("has_boundary_warning", [False, True])
+def test_successful_stop_preserves_report_and_summarizes_only_transport_warnings(
+    tmp_path, monkeypatch, has_boundary_warning,
+):
+    node = _Node([])
+    report = {
+        "boundary_warnings": ["/cam2: trimmed leading gap"] if has_boundary_warning else [],
+        "transport_warnings": ["/cam0: receive gap", "/cam1: receive gap"],
+    }
+    recorder = rosbag_recording_node.RosbagEpisodeRecorder(
+        node, tmp_path, "episode", (), 30.0, (), postflight=lambda _: ((), report),
+    )
+    bag = tmp_path / "episode0"
+    bag.mkdir()
+    recorder._current_bag_dir = bag
+    recorder._process = SimpleNamespace(poll=lambda: None, wait=lambda **kwargs: 0, returncode=0)
+    monkeypatch.setattr(rosbag_recording_node, "_signal_process_group", lambda *_: None)
+    recorder.stop()
+
+    state = json.loads((bag / "collection_state.json").read_text())
+    assert state["finalized"] is True
+    assert state["failures"] == []
+    assert state["validation_report"] == report
+    assert state["transport_warnings"] == report["transport_warnings"]
+    summaries = [(level, text) for level, text in node.logger.entries if "[transport info]" in text]
+    if has_boundary_warning:
+        assert not summaries
+        assert ("warn", "[boundary warning] /cam2: trimmed leading gap") in node.logger.entries
+        assert ("warn", "[transport warning] /cam0: receive gap") in node.logger.entries
+    else:
+        assert len(summaries) == 1
+        level, text = summaries[0]
+        assert level == "info"
+        assert "2 receive-timing warnings" in text
+        assert str(bag / "collection_state.json") in text
+        assert not any(level in ("warn", "error") for level, _ in node.logger.entries)
 
 
 def test_ready_waits_for_required_topics_to_stay_stable(monkeypatch):

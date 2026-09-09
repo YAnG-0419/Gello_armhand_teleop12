@@ -8,6 +8,12 @@ MANUS supplies calibrated hand skeletons to the unified operator. Each dynamic s
 - Each glove needs `adapters/manus/config/Calibration_left.mcal` or `Calibration_right.mcal`.
 - The standard models are the full L20-URDF retargeter for the left G20 and the right O30i solver.
 
+The bridge explicitly enables MANUS automatic user assignment on connection.
+Core Integrated otherwise inherits `userSettings.autoAssignment` from the
+machine's saved settings; when it is disabled, gloves can be detected and
+calibrated but produce no raw skeleton frames because no user is assigned.
+This setting affects MANUS input only; robot output still requires engagement.
+
 Build the native bridge:
 
 ```bash

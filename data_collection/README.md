@@ -102,6 +102,16 @@ ROS_DOMAIN_ID=1 TELEOP_ROS_DOMAIN_ID=1 ./ops/run/start_wuji_teleop.sh \
 - `D`：将最近 episode 标记为 `discarded`，不删除源文件。
 - `Ctrl-C`：active episode 标记为 `interrupted`。
 
+停止时终端会显示校验开始、耗时，并逐条打印 `[validation FAILED]` 原因。
+校验通过且只有接收时间抖动时，终端合并为一条 `[transport info]` 普通信息，
+显示告警数量及 `collection_state.json` 路径；详细数值仍完整保存在报告中。
+存在校验失败或裁剪边界告警时，仍逐条打印 `[boundary warning]` 和
+`[transport warning]`。只有确实落在裁剪容许范围内的边界间隔，才会提示裁剪后接受。
+完整结果仍保存在该 episode 的 `collection_state.json`。
+图像校验逐帧读取 CDR 时间戳和格式信息，以只读视图检查像素数据长度，
+避免将整幅像素反序列化成 ROS 数组；不支持的 CDR 编码回退到 ROS 解码器。
+这项优化保留全帧连续性和深度格式检查，仍需从存储中读取原始 bag。
+
 现有 Operator 的 `disengage` 同时作为数据语义中的 HOLD。原始 bag 只记录真实
 command 和双侧 engagement 状态；转换时才对明确 disengage 的一侧锁存最后有效
 action。若该侧从 episode 开始即 disengage，则以同侧实测位置初始化。输出额外保存

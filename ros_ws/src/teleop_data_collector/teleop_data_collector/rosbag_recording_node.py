@@ -225,24 +225,39 @@ class RosbagEpisodeRecorder:
         failures = ()
         validation_report: dict[str, Any] = {}
         if self._postflight is not None and int(process.returncode or 0) == 0:
+            validation_started = time.monotonic()
+            self._node.get_logger().info(f"Validating recorded messages: {bag_dir}")
             try:
                 failures, validation_report = self._postflight(bag_dir)
             except Exception as error:  # a validator failure cannot finalize
                 failures = (f"post-recording validation failed: {error}",)
+            self._node.get_logger().info(
+                f"Validation finished in {time.monotonic() - validation_started:.2f}s."
+            )
         self._validation_report = validation_report
         outcome = recording_outcome(
             exit_code=int(process.returncode or 0),
             stream_failures=failures,
             interrupted=interrupted,
         )
-        if outcome.finalized:
-            self._node.get_logger().info(
-                _terminal_success(f"Bag saved to {bag_dir}.")
-            )
-        else:
+        if not outcome.finalized:
             self._node.get_logger().warn(
                 f"Bag is {outcome.state}; check {bag_dir}."
             )
+        for failure in outcome.failures:
+            self._node.get_logger().error(f"[validation FAILED] {failure}")
+        boundary_warnings = validation_report.get("boundary_warnings", ())
+        transport_warnings = validation_report.get("transport_warnings", ())
+        for warning in boundary_warnings:
+            self._node.get_logger().warn(f"[boundary warning] {warning}")
+        if transport_warnings and outcome.finalized and not boundary_warnings:
+            self._node.get_logger().info(
+                f"[transport info] Validation passed; {len(transport_warnings)} "
+                f"receive-timing warnings. Details: {bag_dir / 'collection_state.json'}"
+            )
+        else:
+            for warning in transport_warnings:
+                self._node.get_logger().warn(f"[transport warning] {warning}")
         self._write_state(
             bag_dir,
             state=outcome.state,
@@ -250,6 +265,10 @@ class RosbagEpisodeRecorder:
             failures=list(outcome.failures),
             validation_report=validation_report,
         )
+        if outcome.finalized:
+            self._node.get_logger().info(
+                _terminal_success(f"Bag saved to {bag_dir}.")
+            )
         return bag_dir
 
     def mark_discarded(self) -> Path | None:

@@ -632,6 +632,16 @@ int32_t litchi_manus_connect(
         return FailAndShutdown("CoreSdk_ConnectToHost", result);
     }
 
+    // Core Integrated inherits the machine's saved settings. With automatic
+    // assignment disabled, gloves can be detected and calibrated without any
+    // user being created, so no raw skeletons are streamed. This bridge owns
+    // the single SDK client and needs its gloves assigned for skeleton input.
+    result = CoreSdk_SetAutoUserAssignment(true);
+    if (result != SDKReturnCode_Success)
+    {
+        return FailAndShutdown("CoreSdk_SetAutoUserAssignment", result);
+    }
+
     result = CoreSdk_SetRawSkeletonHandMotion(HandMotion_None);
     if (result != SDKReturnCode_Success)
     {

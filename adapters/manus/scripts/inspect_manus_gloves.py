@@ -56,14 +56,18 @@ def main() -> int:
             time.sleep(0.01)
         available = bridge.available_sides()
         print(f"gloves reported by the SDK: {list(available) or 'none'}")
+        if not all(counts.values()):
+            native_error = bridge.error()
+            if native_error != "unknown error":
+                print(f"MANUS bridge diagnostic: {native_error}")
         for side in SIDE_CODES:
             state = f"{counts[side]} frames in {args.duration:.0f} s"
             if counts[side] == 0:
                 if side in available:
                     state += (
-                        "   <- connected but no frames: is "
-                        f"Calibration_{side}.mcal present in "
-                        "adapters/manus/config?"
+                        "   <- detected but no frames: check the bridge "
+                        "diagnostic above and "
+                        f"adapters/manus/config/Calibration_{side}.mcal"
                     )
                 else:
                     state += "   <- glove not connected to MANUS Core"
