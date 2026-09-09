@@ -602,7 +602,11 @@ def main() -> None:
             if pico_session is not None:
                 pico_session.close()
         finally:
-            server.close()
+            try:
+                server.close()
+            finally:
+                if debug_logger is not None:
+                    debug_logger.close()
     print("\nteleop stopped")
 
 

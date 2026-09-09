@@ -9,6 +9,7 @@ from teleop_core.safety import LOWER_LIMITS, UPPER_LIMITS
 from .ik import BimanualPinkIK, IKError, classify_step
 from .interfaces import ArmPoseSource, HandController, OperatorState
 from .joint_mapping import RelativeJointMapper
+from .loop_timing import LoopTimingDiagnostics
 from .pose_mapping import RelativePoseMapper
 from .relative_action import PresetAction, SolvedRelativeAction, sample_solved_action
 from .robot_udp import UdpRobotBackend
@@ -558,17 +559,35 @@ class DualFr3HardwareTeleop:
             {} if self.hands is None else {side: 0 for side in self.hands.sides}
         )
         status_summary = getattr(self.arm_source, "status_summary", None)
+        # Temporary stall probes, enabled by the existing --debug-log launch.
+        timing = None
         try:
+            debug_path = getattr(self.debug_logger, "path", None)
+            if debug_path is not None:
+                try:
+                    timing = LoopTimingDiagnostics(
+                        debug_path.with_name(debug_path.stem + ".loop_timing.jsonl"),
+                        session_id=getattr(self.robot, "stream_id", None),
+                        period_sec=self.dt,
+                    )
+                except (OSError, RuntimeError) as error:
+                    self._notify(f"Loop timing diagnostics unavailable: {error}")
             self.robot.wait_for_state(timeout=self.robot_state_wait_timeout)
             if self.hands is not None:
                 start_hands = getattr(self.hands, "start", None)
                 if start_hands is not None:
                     start_hands()
             while True:
+                if timing is not None:
+                    timing.begin_cycle()
                 started_at = time.monotonic()
                 self._service_reset()
                 self._service_capture_home()
+                if timing is not None:
+                    timing.mark("receive_robot_state")
                 q = self.robot.receive_state()
+                if timing is not None:
+                    timing.mark("preset_and_gateway_status")
                 if q is None:
                     if self.preset_thread is not None or self.active_preset is not None:
                         self._stop_preset("robot state missing", resume=False)
@@ -582,10 +601,15 @@ class DualFr3HardwareTeleop:
                     )
                     for mapper in self.mappers.values():
                         mapper.reset()
+                    if timing is not None:
+                        timing.mark("send_command")
                     self.robot.send_command(
                         self.hold_q if self.hold_q is not None else self.ik.configuration.q,
                         (),
                     )
+                    if timing is not None:
+                        timing.command_sent(getattr(self.robot, "sequence", 0) - 1, ())
+                        timing.mark("missing_state_handling")
                     # The arms are disengaged, so the hands stop following too;
                     # a pending open request still streams.
                     if self.hands is not None:
@@ -597,6 +621,8 @@ class DualFr3HardwareTeleop:
                             "Lost fresh dual-FR3 state for "
                             f"{missing_for:.1f}s"
                         )
+                    if timing is not None:
+                        timing.mark("loop_wait")
                     time.sleep(self.dt)
                     continue
                 state_missing_since = None
@@ -620,7 +646,11 @@ class DualFr3HardwareTeleop:
                         )
                     if self.preset_thread is not None or self.active_preset is not None:
                         self._stop_preset("safety gateway fault", resume=False)
+                if timing is not None:
+                    timing.mark("sample_arm_input")
                 sample = self.arm_source.sample()
+                if timing is not None:
+                    timing.mark("operator_requests")
                 requests = self.operator.take_requests()
                 if requests.get("stop_action"):
                     self._stop_preset("operator STOP")
@@ -686,6 +716,8 @@ class DualFr3HardwareTeleop:
                 if preset_side is not None:
                     self.operator.set_active(preset_side, False, target="arm")
                     sample = disengage_sample_sides(sample, (preset_side,))
+                if timing is not None:
+                    timing.mark("target_mapping")
                 hold_reader = getattr(self.operator, "poll_holds", None)
                 arm_holds = (
                     {side: False for side in SIDES}
@@ -815,10 +847,16 @@ class DualFr3HardwareTeleop:
                                 False,
                             )
                 active_sides = tuple(side for side in SIDES if side in targets)
+                if timing is not None:
+                    timing.mark("send_command")
                 self.robot.send_command(self.hold_q, active_sides)
+                if timing is not None:
+                    timing.command_sent(getattr(self.robot, "sequence", 0) - 1, active_sides)
                 if finish_preset_after_send is not None:
                     reason, resume = finish_preset_after_send
                     self._finish_preset(reason, resume=resume)
+                if timing is not None:
+                    timing.mark("debug_log_and_fk")
                 if self.debug_logger is not None:
                     raw_pose_reader = getattr(
                         self.arm_source, "debug_raw_poses", None
@@ -846,6 +884,8 @@ class DualFr3HardwareTeleop:
                             feed_reader() if feed_reader is not None else None
                         ),
                     )
+                if timing is not None:
+                    timing.mark("hand_activation")
                 hand_activations = {side: False for side in SIDES}
                 if self.hands is not None:
                     hand_activation_reader = getattr(
@@ -853,6 +893,8 @@ class DualFr3HardwareTeleop:
                     )
                     hand_activations = hand_activation_reader()
                     self.hands.set_active(hand_activations)
+                if timing is not None:
+                    timing.mark("optional_dataset_recorder")
                 if self.dataset_recorder is not None:
                     try:
                         hand_feedback = (
@@ -882,6 +924,8 @@ class DualFr3HardwareTeleop:
                         except Exception as close_error:  # noqa: BLE001
                             print(f"dataset finalization FAILED: {close_error}")
                         self.dataset_recorder = None
+                if timing is not None:
+                    timing.mark("status_update")
                 now = time.monotonic()
                 if now >= next_status_report:
                     input_summary = (
@@ -912,10 +956,14 @@ class DualFr3HardwareTeleop:
                         line = "STATE | " + " | ".join(parts)
                         self.operator.set_status(line)
                     next_status_report = now + 1.0
+                if timing is not None:
+                    timing.mark("loop_wait")
                 remaining = self.dt - (time.monotonic() - started_at)
                 if remaining > 0.0:
                     time.sleep(remaining)
         finally:
+            if timing is not None:
+                timing.end_cycle()
             if self.dataset_recorder is not None:
                 try:
                     self.dataset_recorder.close()
@@ -926,8 +974,6 @@ class DualFr3HardwareTeleop:
                     )
                 except Exception as error:  # noqa: BLE001 - close hardware first
                     print(f"dataset finalization FAILED: {error}")
-            if self.debug_logger is not None:
-                self.debug_logger.close()
             # Close the hand pipeline before the SDK client it reads from.
             try:
                 if self.hands is not None:
@@ -936,4 +982,12 @@ class DualFr3HardwareTeleop:
                 try:
                     self.robot.close()
                 finally:
-                    self.arm_source.close()
+                    try:
+                        self.arm_source.close()
+                    finally:
+                        try:
+                            if self.debug_logger is not None:
+                                self.debug_logger.close()
+                        finally:
+                            if timing is not None:
+                                timing.close()

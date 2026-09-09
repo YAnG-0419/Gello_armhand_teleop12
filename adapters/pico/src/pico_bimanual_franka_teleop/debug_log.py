@@ -7,13 +7,17 @@ state. With all stages present, an offline analysis can attribute a following
 deficit to the specific link that loses it: input, mapping, IK rate limiting,
 or the real arm lagging the command.
 
-Logging must never affect control: rows are buffered and flushed periodically,
-and any I/O failure disables the logger rather than raising into the loop.
+Arm-follow rows are serialized into a bounded queue. A worker owns all file
+writes and flushes; backpressure drops debug rows instead of blocking control.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import queue
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -51,19 +55,30 @@ def _existing_log_path(path: str | Path) -> Path:
 
 
 class FollowDebugLogger:
-    """Append one row per control tick; safe to leave enabled for whole runs."""
+    """Best-effort arm diagnostics; never wait for disk in ``record``."""
 
-    def __init__(self, path: str | Path, flush_every: int = 100) -> None:
+    def __init__(
+        self, path: str | Path, flush_every: int = 100, *, queue_capacity: int = 256,
+    ) -> None:
         self.path = _existing_log_path(path)
-        self._file = self.path.open("w", encoding="utf-8")
+        self.status_path = self.path.with_name(self.path.stem + ".writer_status.json")
         self._flush_every = int(flush_every)
+        if self._flush_every <= 0 or queue_capacity <= 0:
+            raise ValueError("Debug flush interval and queue capacity must be positive")
+        self._queue = queue.Queue(maxsize=queue_capacity)
+        self._closed = threading.Event()
+        self._close_requested = False
         self._rows = 0
+        self.written_rows = 0
+        self.dropped_rows = 0
+        self.error: str | None = None
         self._failed = False
-        self._file.write(
+        self._header = (
             json.dumps(
                 {
                     "schema": "follow-debug.v6",
                     "written_at": time.time(),
+                    "writer": {"mode": "background", "queue_capacity": queue_capacity},
                     "fields": "t monotonic; q_measured, q_commanded 14 joints; "
                     "per side: engaged, raw_tracker/tracker/target/ee_cmd/"
                     "ee_meas poses with rotations as world-frame rotation "
@@ -79,6 +94,10 @@ class FollowDebugLogger:
             )
             + "\n"
         )
+        self._thread = threading.Thread(
+            target=self._write_rows, name="follow-debug-writer", daemon=True,
+        )
+        self._thread.start()
 
     def record(
         self,
@@ -94,7 +113,10 @@ class FollowDebugLogger:
         ik_diagnostics: dict | None = None,
         feed_state: dict | None = None,
     ) -> None:
-        if self._failed:
+        if self._failed or self._closed.is_set():
+            return
+        if self._queue.full():
+            self.dropped_rows += 1
             return
         try:
             row = {
@@ -127,24 +149,91 @@ class FollowDebugLogger:
                             for joint, margin in diag["limit_joints"]
                         ],
                     }
-            self._file.write(json.dumps(row, separators=(",", ":")) + "\n")
+            # Freeze the snapshot before returning: FK buffers and feed data
+            # may change on the next tick. The worker only handles strings.
+            line = json.dumps(row, separators=(",", ":")) + "\n"
             self._rows += 1
-            if self._rows % self._flush_every == 0:
-                self._file.flush()
-        except Exception:  # noqa: BLE001 - logging must never break control
+            self._queue.put_nowait(line)
+        except queue.Full:
+            self._rows -= 1
+            self.dropped_rows += 1
+        except Exception as error:  # noqa: BLE001 - logging must never break control
+            self.dropped_rows += 1
+            self.error = str(error)
             self._failed = True
-            try:
-                self._file.close()
-            except Exception:  # noqa: BLE001
-                pass
+            self._closed.set()
 
     def close(self) -> None:
-        if not self._failed:
-            try:
-                self._file.flush()
-                self._file.close()
-            except Exception:  # noqa: BLE001
-                pass
+        if self._close_requested:
+            return
+        self._close_requested = True
+        self._closed.set()
+        # Hardware cleanup happens first. A stuck writer cannot hold up exit.
+        self._thread.join(timeout=0.2)
+
+    def _write_status(self, state: str) -> None:
+        payload = {
+            "schema": "follow-debug-writer.v1", "state": state,
+            "updated_at_ns": time.time_ns(), "path": str(self.path),
+            "accepted_rows": self._rows, "written_rows": self.written_rows,
+            "dropped_rows": self.dropped_rows,
+            "pending_rows": self._rows - self.written_rows,
+            "queue_capacity": self._queue.maxsize, "error": self.error,
+        }
+        temporary = self.status_path.with_name(self.status_path.name + ".tmp")
+        try:
+            temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, self.status_path)
+        except OSError:
+            # Disk failures can also prevent saving the diagnostic counters.
+            # The worker reports the underlying log error separately.
+            pass
+
+    @staticmethod
+    def _notice(message: str) -> None:
+        try:
+            print(f"[follow debug] {message}", file=sys.stderr, flush=True)
+        except OSError:
+            pass
+
+    def _write_rows(self) -> None:
+        reported_drops = 0
+        next_status_at = 0.0
+        try:
+            with self.path.open("w", encoding="utf-8") as stream:
+                stream.write(self._header)
+                stream.flush()
+                while not self._closed.is_set() or not self._queue.empty():
+                    try:
+                        line = self._queue.get(timeout=0.05)
+                    except queue.Empty:
+                        line = None
+                    if line is not None:
+                        stream.write(line)
+                        self.written_rows += 1
+                        if self.written_rows % self._flush_every == 0:
+                            stream.flush()
+                    now = time.monotonic()
+                    if now >= next_status_at:
+                        self._write_status("running")
+                        if self.dropped_rows != reported_drops:
+                            self._notice(
+                                f"Dropped {self.dropped_rows} debug rows; writer queue full. "
+                                f"Details: {self.status_path}"
+                            )
+                            reported_drops = self.dropped_rows
+                        next_status_at = now + 5.0
+                stream.flush()
+        except Exception as error:  # noqa: BLE001 - file I/O stays on the worker
+            self.error = str(error)
+            self._failed = True
+            self._closed.set()
+        finally:
+            if self._failed:
+                self._notice(f"Logging disabled: {self.error}")
+            elif self.dropped_rows != reported_drops:
+                self._notice(f"Dropped {self.dropped_rows} debug rows. Details: {self.status_path}")
+            self._write_status("failed" if self._failed else "closed")
 
 
 class HandRetargetDebugLogger:
