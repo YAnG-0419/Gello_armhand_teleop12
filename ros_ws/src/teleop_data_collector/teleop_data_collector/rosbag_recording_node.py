@@ -9,6 +9,7 @@ import sys
 import time
 import tempfile
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,9 @@ class RosbagDataCollectorNode(Node):
         self.config = load_collector_config(self)
         self.output_dir = Path(_get_string_parameter(self, "output_dir", self.config.data_root))
         self.bag_prefix = _get_string_parameter(self, "bag_prefix", "episode")
+        self.quality_dir = Path(_get_string_parameter(
+            self, "quality_dir", "/home/user/franka_teleop_data/数据分类"
+        ))
         self.stop_timeout_sec = _get_positive_float_parameter(
             self,
             "bag_stop_timeout_sec",
@@ -110,6 +114,8 @@ class RosbagEpisodeRecorder:
         self._state_path: Path | None = None
         self._last_bag_dir: Path | None = None
         self._validation_report: dict[str, Any] = {}
+        self._milestones: list[dict[str, Any]] = []
+        self._source_recording_id: str | None = None
 
     @property
     def active(self) -> bool:
@@ -123,6 +129,33 @@ class RosbagEpisodeRecorder:
     def last_bag_dir(self) -> Path | None:
         return self._last_bag_dir
 
+    @property
+    def milestones(self) -> list[dict[str, Any]]:
+        return [dict(marker) for marker in self._milestones]
+
+    def mark_milestone(self) -> dict[str, Any]:
+        if not self.active or self._current_bag_dir is None:
+            raise RuntimeError("no episode is currently recording")
+        timestamp_ns = int(self._node.get_clock().now().nanoseconds)
+        if timestamp_ns <= 0 or (
+            self._milestones and timestamp_ns <= self._milestones[-1]["timestamp_ns"]
+        ):
+            raise RuntimeError("milestone ROS timestamps must be positive and increasing")
+        marker = {
+            "id": f"milestone_{len(self._milestones) + 1}",
+            "timestamp_ns": timestamp_ns,
+            "clock": "ros",
+        }
+        self._milestones.append(marker)
+        try:
+            self._write_state(
+                self._current_bag_dir, state="recording", finalized=False, failures=[]
+            )
+        except Exception:
+            self._milestones.pop()
+            raise
+        return dict(marker)
+
     def start(self) -> Path:
         if self.active:
             raise RuntimeError("rosbag recording is already active.")
@@ -135,6 +168,9 @@ class RosbagEpisodeRecorder:
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
         bag_dir = self._next_episode_dir()
+        self._milestones = []
+        self._source_recording_id = uuid.uuid4().hex
+        self._validation_report = {}
         self._last_bag_dir = bag_dir
         self._state_path = self._output_dir / f".{bag_dir.name}.collection_state.json"
         self._write_state(
@@ -299,6 +335,8 @@ class RosbagEpisodeRecorder:
         payload = {
             **self._provenance,
             "source_bag": str(bag_dir.resolve()),
+            "source_recording_id": self._source_recording_id,
+            "milestones": self.milestones,
             "source_topic_contract": self._provenance.get("topics", {}),
             "state": state,
             "finalized": finalized,
@@ -312,10 +350,10 @@ class RosbagEpisodeRecorder:
         sidecar = self._state_path or self._output_dir / f".{bag_dir.name}.collection_state.json"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         temporary_sidecar = sidecar.with_name(sidecar.name + ".tmp")
-        temporary_sidecar.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        with temporary_sidecar.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary_sidecar, sidecar)
         if bag_dir.is_dir():
             final_path = bag_dir / "collection_state.json"
@@ -380,19 +418,24 @@ def main(args=None):
                 f"UI control: {node.control_bind_host}:{node.control_port}"
             )
             if not keyboard.enabled:
-                node.get_logger().warn("stdin is not a TTY; SPACE hotkey is disabled.")
+                node.get_logger().warn("stdin is not a TTY; keyboard shortcuts are disabled.")
             if _wait_for_required_topics(node):
                 controller.set_ready()
                 _log_ready_banner(node)
 
             while rclpy.ok():
                 key = keyboard.get_key()
-                if key == " ":
+                if key in {"l", "L"}:
                     _toggle_recording(node, controller)
                 elif key in {"d", "D"}:
                     try:
                         controller.discard()
                     except RuntimeError as error:
+                        node.get_logger().warn(str(error))
+                elif key == " ":
+                    try:
+                        controller.mark_milestone()
+                    except (RuntimeError, OSError) as error:
                         node.get_logger().warn(str(error))
                 if recorder.current_bag_dir is not None and not recorder.active:
                     controller.reconcile_exited_recorder()
@@ -426,7 +469,8 @@ def _toggle_recording(
 def _log_ready_banner(node: RosbagDataCollectorNode) -> None:
     node.get_logger().info("============================================================")
     node.get_logger().info("READY: 采集器已准备好，可以开始录制。")
-    node.get_logger().info("  SPACE  开始录制 / 停止并校验当前 episode")
+    node.get_logger().info("  L      开始录制 / 停止并校验当前 episode")
+    node.get_logger().info("  SPACE  记录中间完成标记（继续录制）")
     node.get_logger().info("  D      将最近的 episode 标记为 discarded（不会删除）")
     node.get_logger().info("  Ctrl-C 退出采集程序；录制中退出会标记为 interrupted")
     node.get_logger().info("============================================================")

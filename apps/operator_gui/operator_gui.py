@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
@@ -51,14 +51,12 @@ RECONNECT_INTERVAL_MS = 2000
 STATUS_TIMEOUT_SECONDS = 3.0
 SIDES = ("left", "right")
 PEDAL_BINDINGS = {
-    "R": ("toggle", "hand", "left"),
-    "Space": ("toggle_hold", "arm", "left"),
-    "B": ("toggle", "hand", "right"),
+    "A": ("toggle_hold", "arm", "left"),
     "Q": ("toggle_hold", "arm", "right"),
 }
-COLLECTION_SHORTCUTS = {"L": "toggle_recording", "A": "discard"}
+COLLECTION_SHORTCUTS = {"L": "toggle_recording", "Space": "mark_milestone"}
 PRESET_KEYS = ("W", "E")
-HAND_KEY_HINTS = {"left": "R", "right": "B"}
+ARM_HOLD_KEY_HINTS = {"left": "A", "right": "Q"}
 
 
 class ConnectionDialog(QDialog):
@@ -98,6 +96,65 @@ class ConnectionDialog(QDialog):
         return self.host_field.text().strip(), self.port_field.value()
 
 
+class QualityDialog(QDialog):
+    quality_selected = Signal(str)
+
+    def __init__(self, status: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.episode = str(status["last_episode"])
+        self.selected_quality: str | None = None
+        self.setWindowTitle("数据质量评价")
+        self.setMinimumWidth(440)
+        layout = QVBoxLayout(self)
+        title = QLabel(f"数据编号：{self.episode}")
+        title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(title)
+        self.result_label = QLabel()
+        self.result_label.setWordWrap(True)
+        self.result_label.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.result_label)
+        layout.addWidget(QLabel("请选择数据质量，点击后保存："))
+        row = QHBoxLayout()
+        self.buttons: dict[str, QPushButton] = {}
+        for label in ("优等", "一般", "报错", "放弃"):
+            button = QPushButton(label)
+            button.setMinimumHeight(48)
+            button.setAutoDefault(False)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.clicked.connect(lambda checked=False, label=label: self.quality_selected.emit(label))
+            self.buttons[label] = button
+            row.addWidget(button)
+        layout.addLayout(row)
+        self.message_label = QLabel()
+        self.message_label.setWordWrap(True)
+        self.message_label.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.message_label)
+        self.update_status(status)
+
+    def update_status(self, status: dict) -> None:
+        self.discarded = status.get("state") == "DISCARDED"
+        state = str(status.get("state") or "UNKNOWN")
+        result = {"FINALIZED": "校验通过", "INCOMPLETE": "校验未通过",
+                  "INTERRUPTED": "采集中断", "DISCARDED": "已弃用"}.get(state, state)
+        details = list(status.get("failures") or [])
+        details += list(status.get("boundary_warnings") or [])
+        details += list(status.get("transport_warnings") or [])
+        text = f"核验结果：{result}"
+        if details:
+            text += "\n" + "\n".join(str(item) for item in details[:4])
+            if len(details) > 4:
+                text += f"\n另有 {len(details) - 4} 条信息，详见采集日志。"
+        if status.get("quality"):
+            text += f"\n当前评价：{status['quality']}"
+        self.result_label.setText(text)
+        self.set_available(bool(status.get("can_rate_quality")))
+
+    def set_available(self, available: bool) -> None:
+        for label, button in self.buttons.items():
+            button.setEnabled(available and self.selected_quality is None
+                              and (not self.discarded or label == "放弃"))
+
+
 class OperatorWindow(QMainWindow):
     def __init__(
         self,
@@ -131,6 +188,9 @@ class OperatorWindow(QMainWindow):
         self.collection_next_request_id = 1
         self.collection_pending: dict[int, str] = {}
         self.collection_buffer = b""
+        self.collection_status: dict = {}
+        self.quality_dialog: QualityDialog | None = None
+        self.quality_prompted: set[str] = set()
 
         self.socket = QTcpSocket(self)
         self.socket.readyRead.connect(self._read_responses)
@@ -204,15 +264,23 @@ class OperatorWindow(QMainWindow):
         self.collection_record_button.clicked.connect(
             self._toggle_collection_recording
         )
-        self.collection_discard_button = QPushButton("丢弃最近一次 (A)")
+        self.collection_milestone_button = QPushButton("中间完成标记 (Space)")
+        self.collection_milestone_button.setFocusPolicy(Qt.NoFocus)
+        self.collection_milestone_button.clicked.connect(self._mark_collection_milestone)
+        self.collection_discard_button = QPushButton("丢弃最近一次")
         self.collection_discard_button.setFocusPolicy(Qt.NoFocus)
         self.collection_discard_button.setStyleSheet("color: #a35b00;")
         self.collection_discard_button.clicked.connect(
             lambda: self._send_collection("discard")
         )
+        self.collection_quality_button = QPushButton("数据质量")
+        self.collection_quality_button.setFocusPolicy(Qt.NoFocus)
+        self.collection_quality_button.clicked.connect(self._open_quality_dialog)
         for button in (
             self.collection_record_button,
+            self.collection_milestone_button,
             self.collection_discard_button,
+            self.collection_quality_button,
         ):
             button.setEnabled(False)
             collection_layout.addWidget(button)
@@ -225,20 +293,10 @@ class OperatorWindow(QMainWindow):
         self.capture_home_buttons: dict[str, QPushButton] = {}
         # Compatibility alias used by existing integrations and tests.
         self.engage_buttons = self.arm_engage_buttons
-        pedal_keys = {
-            "left": {
-                "hold": "Space",
-                "hand": HAND_KEY_HINTS["left"],
-            },
-            "right": {
-                "hold": "Q",
-                "hand": HAND_KEY_HINTS["right"],
-            },
-        }
         for side in SIDES:
             box = QGroupBox(side.capitalize())
             grid = QGridLayout(box)
-            keys = pedal_keys[side]
+            hold_key = ARM_HOLD_KEY_HINTS[side]
             arm_engage = QPushButton("Start arm")
             arm_engage.setCheckable(True)
             arm_engage.setFocusPolicy(Qt.NoFocus)
@@ -252,12 +310,12 @@ class OperatorWindow(QMainWindow):
             self.arm_engage_buttons[side] = arm_engage
             grid.addWidget(arm_engage, 0, 0)
 
-            arm_hold = QPushButton(f"Hold arm ({keys['hold']})")
+            arm_hold = QPushButton(f"Hold arm ({hold_key})")
             arm_hold.setCheckable(True)
             arm_hold.setFocusPolicy(Qt.NoFocus)
             arm_hold.setMinimumHeight(48)
             arm_hold.setToolTip(
-                f"Shortcut: {keys['hold']} toggles a stationary hold while "
+                f"Shortcut: {hold_key} toggles a stationary hold while "
                 "continuing to publish this arm's measured joints"
             )
             arm_hold.clicked.connect(
@@ -268,12 +326,12 @@ class OperatorWindow(QMainWindow):
             self.arm_hold_buttons[side] = arm_hold
             grid.addWidget(arm_hold, 1, 0)
 
-            hand_engage = QPushButton(f"Start hand ({keys['hand']})")
+            hand_engage = QPushButton("Start hand")
             hand_engage.setCheckable(True)
             hand_engage.setFocusPolicy(Qt.NoFocus)
             hand_engage.setMinimumHeight(56)
             hand_engage.setToolTip(
-                f"Pedal/shortcut: {keys['hand']} toggles MANUS hand following"
+                "Click to toggle MANUS hand following"
             )
             hand_engage.clicked.connect(
                 lambda checked, side=side: self._send(
@@ -389,8 +447,8 @@ class OperatorWindow(QMainWindow):
         layout.addWidget(preset_box)
 
         shortcut_hint = QLabel(
-            "Shortcuts: L 开始/停止录制 · A 丢弃最近一次  |  "
-            "R left hand · Space left Hold · B right hand · Q right Hold"
+            "Shortcuts: L 开始/停止录制 · Space 中间完成标记  |  "
+            "A left Hold · Q right Hold"
         )
         shortcut_hint.setStyleSheet("color: #666;")
         layout.addWidget(shortcut_hint)
@@ -506,8 +564,7 @@ class OperatorWindow(QMainWindow):
 
     def _button(self, text: str, command: str, arguments=None) -> QPushButton:
         button = QPushButton(text)
-        # Space is a physical pedal binding. Buttons must not also consume it
-        # as Qt's default "activate focused button" key.
+        # Keep keyboard input from activating a previously focused button.
         button.setFocusPolicy(Qt.NoFocus)
         button.clicked.connect(
             lambda: self._send(command, dict(arguments or {}))
@@ -551,7 +608,7 @@ class OperatorWindow(QMainWindow):
             if action == "toggle_recording":
                 shortcut.activated.connect(self._toggle_collection_recording)
             else:
-                shortcut.activated.connect(self._discard_collection)
+                shortcut.activated.connect(self._mark_collection_milestone)
             self.collection_shortcuts.append(shortcut)
 
     def _shortcut_preset(self, key: str) -> None:
@@ -671,7 +728,7 @@ class OperatorWindow(QMainWindow):
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
-                key_hint = "Space" if side == "left" else "Q"
+                key_hint = ARM_HOLD_KEY_HINTS[side]
                 button.setText(f"Hold arm ({key_hint})")
                 button.blockSignals(False)
         for button in getattr(self, "capture_home_buttons", {}).values():
@@ -681,8 +738,7 @@ class OperatorWindow(QMainWindow):
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
-                key_hint = HAND_KEY_HINTS[side]
-                button.setText(f"Start hand ({key_hint})")
+                button.setText("Start hand")
                 button.blockSignals(False)
         self.connect_action.setEnabled(state != "connected")
         self.task_selector.setEnabled(ready)
@@ -802,15 +858,20 @@ class OperatorWindow(QMainWindow):
         )
         self.collection_record_button.setText("开始录制 (L)")
         self.collection_record_button.setEnabled(False)
+        self.collection_milestone_button.setEnabled(False)
         self.collection_discard_button.setEnabled(False)
+        self.collection_quality_button.setEnabled(False)
+        if self.quality_dialog is not None:
+            self.quality_dialog.set_available(False)
+            self.quality_dialog.message_label.setText("采集连接已断开，重新连接后可重试保存。")
         if self.collection_socket.state() != QAbstractSocket.UnconnectedState:
             self.collection_socket.abort()
         if not self.collection_reconnect_timer.isActive():
             self.collection_reconnect_timer.start()
 
-    def _send_collection(self, command: str) -> None:
+    def _send_collection(self, command: str, arguments: dict | None = None) -> bool:
         if self.collection_socket.state() != QAbstractSocket.ConnectedState:
-            return
+            return False
         request_id = self.collection_next_request_id
         self.collection_next_request_id += 1
         self.collection_pending[request_id] = command
@@ -820,16 +881,52 @@ class OperatorWindow(QMainWindow):
             self.collection_status_label.setText("STOPPING — 正在结束并校验…")
         elif command == "discard":
             self.collection_status_label.setText("DISCARDING — 正在标记…")
+        elif command == "mark_milestone":
+            self.collection_status_label.setText("RECORDING — 正在保存中间完成标记…")
         if command != "status":
             for button in (
                 self.collection_record_button,
+                self.collection_milestone_button,
                 self.collection_discard_button,
+                self.collection_quality_button,
             ):
                 button.setEnabled(False)
-        payload = {"id": request_id, "command": command, "arguments": {}}
+        payload = {"id": request_id, "command": command, "arguments": arguments or {}}
         self.collection_socket.write(
             (json.dumps(payload) + "\n").encode("utf-8")
         )
+        return True
+
+    def _open_quality_dialog(self) -> None:
+        status = self.collection_status
+        if not status.get("can_rate_quality") or not status.get("last_episode"):
+            return
+        if self.quality_dialog is not None:
+            self.quality_dialog.raise_()
+            self.quality_dialog.activateWindow()
+            return
+        dialog = QualityDialog(status, self)
+        self.quality_dialog = dialog
+        self.quality_prompted.add(dialog.episode)
+        dialog.quality_selected.connect(self._save_collection_quality)
+        dialog.finished.connect(lambda: self._quality_dialog_finished(dialog))
+        dialog.show()
+
+    def _quality_dialog_finished(self, dialog: QualityDialog) -> None:
+        if self.quality_dialog is dialog:
+            self.quality_dialog = None
+        dialog.deleteLater()
+
+    def _save_collection_quality(self, quality: str) -> None:
+        dialog = self.quality_dialog
+        if dialog is None or dialog.selected_quality is not None:
+            return
+        if self._send_collection("rate_quality", {"episode": dialog.episode, "quality": quality}):
+            dialog.selected_quality = quality
+            dialog.set_available(False)
+            dialog.message_label.setText("正在保存…")
+        else:
+            dialog.message_label.setText("采集端未连接，评价尚未保存。请连接后重试。")
 
     def _toggle_collection_recording(self) -> None:
         if not self.collection_record_button.isEnabled():
@@ -837,9 +934,9 @@ class OperatorWindow(QMainWindow):
         command = "stop" if self.collection_state == "RECORDING" else "start"
         self._send_collection(command)
 
-    def _discard_collection(self) -> None:
-        if self.collection_discard_button.isEnabled():
-            self._send_collection("discard")
+    def _mark_collection_milestone(self) -> None:
+        if self.collection_milestone_button.isEnabled():
+            self._send_collection("mark_milestone")
 
     def _poll_collection_status(self) -> None:
         if self.collection_pending:
@@ -859,11 +956,30 @@ class OperatorWindow(QMainWindow):
                 self.feedback.appendPlainText(
                     f"[collection:{command}] rejected: {response.get('error')}"
                 )
+                if command == "rate_quality" and self.quality_dialog is not None:
+                    self.quality_dialog.selected_quality = None
+                    self.quality_dialog.set_available(True)
+                    self.quality_dialog.message_label.setText(
+                        f"保存失败：{response.get('error')}\n请处理后重新选择以重试。"
+                    )
                 self._poll_collection_status()
                 continue
             self._apply_collection_status(response.get("result", {}))
+            if command in {"rate_quality", "discard"}:
+                result = response.get("result", {})
+                if result.get("quality"):
+                    self.feedback.appendPlainText(
+                        f"[collection] {result.get('last_episode')} 已归类为“{result['quality']}”"
+                    )
+            if command == "mark_milestone":
+                markers = response.get("result", {}).get("milestones") or []
+                if markers:
+                    self.feedback.appendPlainText(
+                        f"[collection] 已保存 {markers[-1]['id']}，继续录制"
+                    )
 
     def _apply_collection_status(self, status: dict) -> None:
+        self.collection_status = dict(status)
         state = str(status.get("state") or "UNKNOWN").upper()
         self.collection_state = state
         episode = status.get("current_episode") or status.get("last_episode") or "-"
@@ -871,6 +987,13 @@ class OperatorWindow(QMainWindow):
         detail = f" · {episode}"
         if elapsed is not None:
             detail += f" · {float(elapsed):.1f}s"
+        if status.get("quality"):
+            detail += f" · {status['quality']}"
+        elif status.get("quality_pending"):
+            detail += " · 待评价"
+        markers = status.get("milestones") or []
+        if markers:
+            detail += f" · 已标记 {len(markers)} 个完成点"
         failures = list(status.get("failures") or [])
         warnings = len(status.get("boundary_warnings") or []) + len(
             status.get("transport_warnings") or []
@@ -894,8 +1017,32 @@ class OperatorWindow(QMainWindow):
         self.collection_record_button.setText(
             "停止并校验 (L)" if can_stop else "开始录制 (L)"
         )
-        self.collection_record_button.setEnabled(can_start or can_stop)
+        self.collection_record_button.setEnabled(
+            can_stop or (can_start and not status.get("quality_pending"))
+        )
+        self.collection_milestone_button.setEnabled(bool(status.get("can_mark_milestone")))
         self.collection_discard_button.setEnabled(bool(status.get("can_discard")))
+        self.collection_quality_button.setEnabled(bool(status.get("can_rate_quality")))
+        if any(command != "status" for command in self.collection_pending.values()):
+            for button in (
+                self.collection_record_button, self.collection_milestone_button,
+                self.collection_discard_button, self.collection_quality_button,
+            ):
+                button.setEnabled(False)
+        dialog = self.quality_dialog
+        if dialog is not None:
+            if status.get("active") or status.get("last_episode") != dialog.episode:
+                dialog.reject()
+            elif dialog.selected_quality is not None and status.get("quality") == dialog.selected_quality:
+                dialog.accept()
+            else:
+                # A lost response can be reconciled by status polling after reconnect.
+                if "rate_quality" not in self.collection_pending.values():
+                    dialog.selected_quality = None
+                dialog.update_status(status)
+        episode = status.get("last_episode")
+        if status.get("quality_pending") and episode and episode not in self.quality_prompted:
+            self._open_quality_dialog()
 
     def closeEvent(self, event) -> None:
         for timer in (
@@ -931,7 +1078,7 @@ class OperatorWindow(QMainWindow):
             button.blockSignals(False)
         for side, button in self.arm_hold_buttons.items():
             held = bool(arm_hold.get(side))
-            key_hint = "Space" if side == "left" else "Q"
+            key_hint = ARM_HOLD_KEY_HINTS[side]
             button.blockSignals(True)
             button.setChecked(held)
             button.setText(
@@ -945,11 +1092,10 @@ class OperatorWindow(QMainWindow):
             engaged = bool(hand_active.get(side))
             button.blockSignals(True)
             button.setChecked(engaged)
-            key_hint = HAND_KEY_HINTS[side]
             button.setText(
-                f"Hand running ({key_hint})"
+                "Hand running"
                 if engaged
-                else f"Start hand ({key_hint})"
+                else "Start hand"
             )
             button.blockSignals(False)
         for side, button in self.capture_home_buttons.items():

@@ -85,13 +85,29 @@ ROS_DOMAIN_ID=1 TELEOP_ROS_DOMAIN_ID=1 ./ops/run/start_wuji_teleop.sh \
 
 仍然需要分别启动遥操和采集两个终端。采集器 READY 后，遥操 UI 的“数据采集”区域
 会通过仅监听 `127.0.0.1:5592` 的独立接口自动连接。一个按钮按当前状态执行
-“开始录制”或“结束并校验”（快捷键 `L`），另一个按钮执行“丢弃最近一次”
-（快捷键 `A`）。UI 关闭或连接失败不会停止采集，也不会影响遥操；
-终端里的 `SPACE` 和 `D` 继续作为备用控制。
+“开始录制”或“结束并校验”（快捷键 `L`），`Space` / “中间完成标记”在录制中保存
+一个完成时间点并继续录制；“丢弃最近一次”保留按钮，无快捷键。
+UI 的 `A` / `Q` 切换左/右臂 HOLD，左右 hand 跟随只保留 GUI 按钮。
+UI 关闭或连接失败不会停止采集，也不会影响遥操；终端里的 `L`、`SPACE`、`D`
+分别作为起停、完成标记、丢弃的备用控制。
+
+停止录制并完成校验后，UI 自动弹出“数据质量评价”，显示原始 episode 编号和
+核验结果。选择“优等 / 一般 / 报错 / 放弃”后，由采集端保存到
+`<data-root>/数据分类/优等.txt`、`一般.txt`、`报错.txt`、`放弃.txt`。
+使用上述启动命令时，主机目录是 `/home/user/franka_teleop_data/数据分类/`。
+四个文件采用 UTF-8，每行一个原始数字编号（例如 `episode384` 写成 `384`），
+可直接复制到转换工程作为 episode list。已有注释和编号会保留，连续范围会展开；
+重新评价会去重并从原分类移除该编号。
+
+每条数据只自动弹窗一次；关闭弹窗后可通过“数据质量”重新打开，也可在开始下一条
+录制前修改最近一次的评价。UI 在评价保存成功后才允许开始下一条；保存失败会显示
+错误并允许重试，断线重连后会重新核对状态。人工质量评价不改变自动校验结果。
+“放弃”和原有“丢弃最近一次”都会保留 bag、标记弃用并写入 `放弃.txt`；已弃用数据
+不能通过修改质量标签恢复。分类文件独立于转换工程，程序不会写入其列表目录。
 
 数据必须写在仓库外。`--data-root` 若落在 Git 仓库内会被拒绝。
 
-- `SPACE`：开始/停止 episode。开始前检查 topic 名称和 ROS 类型；停止后读取整包，
+- `L`：开始/停止 episode。开始前检查 topic 名称和 ROS 类型；停止后读取整包，
   以 source header 检查消息数、频率、150 ms gap 和单调性；bag receive gap 单独作为
   传输拥塞告警，不会把源端连续的数据判坏。默认开头 1 秒、结尾 0.2 秒是操作缓冲区；校验只用
   中间有效 source 区间判断连续性，落在缓冲区内的 receive-time 边界缺口单列为
@@ -100,6 +116,10 @@ ROS_DOMAIN_ID=1 TELEOP_ROS_DOMAIN_ID=1 ./ops/run/start_wuji_teleop.sh \
 - 启动时先显示 `WAITING`；所有必需 topic 均已出现、类型匹配并连续稳定 2 秒后，
   才显示 `READY` 和上述快捷键。看到 `READY` 前不要开始任务动作。
 - `D`：将最近 episode 标记为 `discarded`，不删除源文件。
+- `SPACE`：录制中保存 `milestone_1`、`milestone_2` 等完成标记，不停止、不复制 bag。
+  UI 显示已保存的标记数；UI 快捷键长按不会自动重复。时间为采集端处理请求时的 ROS
+  时间，使用与 source header 相同的时钟域，不使用 UI 计时或时间百分比。
+  标记先落盘，再报告成功，结束录制、丢弃和重校验都会保留标记。
 - `Ctrl-C`：active episode 标记为 `interrupted`。
 
 停止时终端会显示校验开始、耗时，并逐条打印 `[validation FAILED]` 原因。
@@ -138,6 +158,39 @@ action。若该侧从 episode 开始即 disengage，则以同侧实测位置初�
   /home/user/franka_teleop_data/bags/gello/episode0 \
   /home/user/franka_teleop_data/datasets/episode0
 ```
+
+默认 `segments: all`：没有标记的 bag 仍输出一条完整 episode；有一个标记则输出
+“有效开始→标记”和“有效开始→有效结束”两条 episode，放在同一数据集中。
+多个标记按时间顺序各生成一条前缀，最后生成完整 episode。图像、深度、action
+和 state 使用相同截止时间；每条 episode 独立从时间 0 开始，最后一行 `next.done=true`。
+完整数据沿用首尾裁剪；前缀沿用相同有效开始，在标记处结束，不再额外减去结尾 0.2 秒。
+标记必须位于完整数据的有效区间内，否则转换失败且不发布部分输出。
+
+需要两套独立数据集时，可以分别运行：
+
+```bash
+./ops/run/convert_recording.sh SOURCE_BAG PREFIX_DATASET --segments milestones
+./ops/run/convert_recording.sh SOURCE_BAG FULL_DATASET --segments full
+```
+
+任务描述可以以后再填。默认前缀任务名为 `milestone_1` 等占位编号，完整任务名
+沿用配置 `task: teleoperation`。在 `data_collection/config/convert_gello_lerobot_v2.yaml`
+补充以下配置后重新转换，即可批量赋予任务描述，无需修改原始 bag：
+
+```yaml
+segment_tasks:
+  milestone_1: 把物体拿起
+  full: 把物体拿起并放进盒子
+```
+
+`segment_tasks` 优先于 `task` / `--task`；`--task` 只提供完整 episode 的默认描述。
+`meta/episodes.jsonl` 和 `meta/conversion_metadata.json` 保存 `segment_id` 与
+`source_recording_id`，同一次采集的前缀和完整数据共享该 ID；训练/验证划分须按该 ID
+分组。原始 bag 只存一份，导出的不同 episode 各有自己的媒体文件。
+
+本版本仍要求整包校验通过，不会从 `incomplete` / `interrupted` / `discarded` bag
+自动提取前半段；完成标记不等同于数据质量校验通过。标记错误时可用 `--segments full`
+只转换完整数据。
 
 脚本将源 bag 只读挂载；转换前后比较源文件大小和 mtime。输出写到相邻临时目录，
 54/108 维、joint order、有限值、严格单调时间、三视频、头部 raw16 深度和

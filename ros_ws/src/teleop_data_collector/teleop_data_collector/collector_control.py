@@ -7,11 +7,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .quality_lists import DEFAULT_QUALITY_DIR, QUALITY_LABELS, save_quality
+
 
 class CollectorController:
     """Thread-safe command facade around the independent episode recorder."""
 
-    def __init__(self, node: Any, recorder: Any) -> None:
+    def __init__(self, node: Any, recorder: Any, *, quality_dir: Path | None = None) -> None:
         self._node = node
         self._recorder = recorder
         self._operation_lock = threading.Lock()
@@ -20,6 +22,10 @@ class CollectorController:
         self._ready = False
         self._started_at: float | None = None
         self._last_state: dict[str, Any] = {}
+        self._quality_dir = Path(
+            quality_dir if quality_dir is not None else getattr(node, "quality_dir", DEFAULT_QUALITY_DIR)
+        )
+        self._quality: str | None = None
 
     def set_ready(self) -> None:
         with self._state_lock:
@@ -33,6 +39,7 @@ class CollectorController:
             ready = self._ready
             started_at = self._started_at
             last_state = dict(self._last_state)
+            quality = self._quality
         active = bool(self._recorder.active)
         current = self._recorder.current_bag_dir
         last_bag = self._recorder.last_bag_dir
@@ -49,6 +56,9 @@ class CollectorController:
             "current_bag": str(current) if current is not None else None,
             "last_episode": last_bag.name if last_bag is not None else None,
             "last_bag": str(last_bag) if last_bag is not None else None,
+            "quality": quality,
+            "quality_pending": bool(last_state) and quality is None and not active,
+            "can_rate_quality": bool(last_state) and not active and phase not in {"STOPPING", "VALIDATING"},
             "elapsed_sec": elapsed_sec,
             "finalized": bool(last_state.get("finalized", False)),
             "failures": list(last_state.get("failures") or []),
@@ -56,6 +66,8 @@ class CollectorController:
             "transport_warnings": list(last_state.get("transport_warnings") or []),
             "can_start": ready and not active and phase not in {"STOPPING", "VALIDATING"},
             "can_stop": active,
+            "can_mark_milestone": active and phase == "RECORDING",
+            "milestones": self._recorder.milestones,
             "can_discard": not active and last_bag is not None,
         }
 
@@ -73,8 +85,9 @@ class CollectorController:
                 self._phase = "RECORDING"
                 self._started_at = time.monotonic()
                 self._last_state = {}
+                self._quality = None
             self._node.get_logger().info(
-                f"RECORDING: {bag_dir} (UI Stop or SPACE will stop and validate)"
+                f"RECORDING: {bag_dir} (UI Stop or L will stop and validate)"
             )
             return self.status()
 
@@ -83,6 +96,14 @@ class CollectorController:
             if self._recorder.current_bag_dir is None:
                 raise RuntimeError("no episode is currently recording")
             return self._stop_locked(interrupted=interrupted)
+
+    def mark_milestone(self) -> dict[str, Any]:
+        with self._operation_lock:
+            marker = self._recorder.mark_milestone()
+            self._node.get_logger().info(
+                f"Marked {marker['id']} at ROS time {marker['timestamp_ns']} ns; recording continues."
+            )
+            return self.status()
 
     def reconcile_exited_recorder(self) -> dict[str, Any]:
         """Finalize an unexpectedly exited recorder without racing a normal stop.
@@ -134,9 +155,41 @@ class CollectorController:
             self._node.get_logger().warn(
                 f"Bag marked discarded (not deleted): {bag_dir}"
             )
+            self._save_quality_locked(bag_dir.name, "放弃")
             return self.status()
 
-    def dispatch(self, command: str) -> dict[str, Any]:
+    def _save_quality_locked(self, episode: str, quality: str) -> None:
+        # Do not keep advertising an earlier rating if saving a change fails.
+        with self._state_lock:
+            self._quality = None
+        path = save_quality(self._quality_dir, episode, quality)
+        with self._state_lock:
+            self._quality = quality
+        self._node.get_logger().info(f"数据质量已保存：{episode} → {quality} ({path})")
+
+    def rate_quality(self, episode: str, quality: str) -> dict[str, Any]:
+        with self._operation_lock:
+            bag_dir = self._recorder.last_bag_dir
+            if self._recorder.active or self._recorder.current_bag_dir is not None:
+                raise RuntimeError("请等待录制结束并完成校验后再评价")
+            if bag_dir is None or bag_dir.name != episode or not self._last_state:
+                raise ValueError("数据编号已变化，请刷新后评价当前数据")
+            if quality not in QUALITY_LABELS:
+                raise ValueError(f"未知数据质量：{quality}")
+            if self._phase == "DISCARDED" and quality != "放弃":
+                raise ValueError("该数据已弃用，不能通过质量评价恢复")
+            if quality == "放弃":
+                self._recorder.mark_discarded()
+                with self._state_lock:
+                    self._last_state = _read_collection_state(bag_dir)
+                    self._phase = "DISCARDED"
+            self._save_quality_locked(episode, quality)
+            return self.status()
+
+    def dispatch(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        if command == "rate_quality":
+            arguments = arguments or {}
+            return self.rate_quality(str(arguments.get("episode") or ""), str(arguments.get("quality") or ""))
         if command == "status":
             return self.status()
         if command == "start":
@@ -145,6 +198,8 @@ class CollectorController:
             return self.stop()
         if command == "discard":
             return self.discard()
+        if command == "mark_milestone":
+            return self.mark_milestone()
         raise ValueError(f"unknown collector command: {command}")
 
 
@@ -176,7 +231,10 @@ class _CollectorRequestHandler(socketserver.StreamRequestHandler):
                     raise ValueError("request must be a JSON object")
                 request_id = request.get("id")
                 command = str(request.get("command") or "").strip()
-                result = self.server.controller.dispatch(command)
+                arguments = request.get("arguments") or {}
+                if not isinstance(arguments, dict):
+                    raise ValueError("arguments must be a JSON object")
+                result = self.server.controller.dispatch(command, arguments)
                 response = {"id": request_id, "ok": True, "result": result}
             except Exception as error:
                 response = {"id": request_id, "ok": False, "error": str(error)}

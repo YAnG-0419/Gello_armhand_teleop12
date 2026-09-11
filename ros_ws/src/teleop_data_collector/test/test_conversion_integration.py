@@ -348,3 +348,88 @@ def test_failed_conversion_does_not_publish_partial_output(tmp_path: Path) -> No
 
     assert _source_tree_snapshot([bag]) == source_before
     assert not output.exists()
+
+
+@pytest.mark.parametrize("segments,expected_count", [("all", 2), ("full", 1), ("milestones", 1)])
+def test_milestone_exports_prefix_and_full_with_source_clock_and_separate_tasks(
+    tmp_path: Path, segments: str, expected_count: int,
+) -> None:
+    import cv2
+    import pyarrow.parquet as pq
+    import yaml
+
+    bag = tmp_path / "episode_marked"
+    output = tmp_path / "dataset"
+    _write_synthetic_bag(bag, congested_bag_time=True)
+    state_path = bag / "collection_state.json"
+    state = json.loads(state_path.read_text())
+    marker_ns = 1_150_000_000
+    state["source_recording_id"] = "synthetic-recording-id"
+    state["milestones"] = [{"id": "milestone_1", "timestamp_ns": marker_ns, "clock": "ros"}]
+    state_path.write_text(json.dumps(state))
+    source_before = _source_tree_snapshot([bag])
+    config = yaml.safe_load(CONFIG.read_text())
+    config["segment_tasks"] = {"milestone_1": "Pick up", "full": "Pick up and place"}
+    config_path = tmp_path / "conversion.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+
+    main([
+        "--config", str(config_path), "--trim-start-sec", "0.02", "--trim-end-sec", "0.05",
+        "--segments", segments, str(bag), "--output", str(output),
+    ])
+
+    metadata = json.loads((output / "meta/conversion_metadata.json").read_text())
+    info = json.loads((output / "meta/info.json").read_text())
+    tasks = [json.loads(line) for line in (output / "meta/tasks.jsonl").read_text().splitlines()]
+    assert info["total_episodes"] == expected_count
+    assert info["total_tasks"] == expected_count
+    assert metadata["source_bags"] == [str(bag)]
+    assert _source_tree_snapshot([bag]) == source_before
+    tables = {}
+    for episode in metadata["episodes"]:
+        table = pq.read_table(output / episode["data_path"]).to_pylist()
+        tables[episode["segment_id"]] = table
+        assert episode["source_recording_id"] == "synthetic-recording-id"
+        assert table[0]["timestamp"] == 0
+        assert [row["next.done"] for row in table] == [False] * (len(table) - 1) + [True]
+        assert {row["episode_index"] for row in table} == {episode["episode_index"]}
+        assert {row["task_index"] for row in table} == {episode["task_index"]}
+        if episode["segment_id"] == "milestone_1":
+            assert episode["source_effective_end_ns"] == marker_ns
+            assert episode["milestone_timestamp_ns"] == marker_ns
+            assert len(table) == 4
+            assert tasks[episode["task_index"]]["task"] == "Pick up"
+            for video_path in episode["video_paths"].values():
+                video = cv2.VideoCapture(str(output / video_path))
+                try:
+                    assert int(video.get(cv2.CAP_PROP_FRAME_COUNT)) == 5
+                finally:
+                    video.release()
+        else:
+            assert episode["source_effective_end_ns"] == episode["source_common_end_ns"] - 50_000_000
+            assert len(table) == 5
+            assert tasks[episode["task_index"]]["task"] == "Pick up and place"
+    if segments == "all":
+        for short_row, full_row in zip(tables["milestone_1"], tables["full"]):
+            for column in ("timestamp", "action", "observation.state", "observation.depths.cam0"):
+                assert short_row[column] == full_row[column]
+
+
+@pytest.mark.parametrize("marker_ns", [1, 1_999_000_000])
+def test_out_of_range_milestone_does_not_publish_output(tmp_path: Path, marker_ns: int) -> None:
+    bag = tmp_path / "episode_invalid_marker"
+    output = tmp_path / "dataset"
+    _write_synthetic_bag(bag)
+    path = bag / "collection_state.json"
+    state = json.loads(path.read_text())
+    state["milestones"] = [{"id": "milestone_1", "timestamp_ns": marker_ns, "clock": "ros"}]
+    path.write_text(json.dumps(state))
+    source_before = _source_tree_snapshot([bag])
+    with pytest.raises(ValueError, match="outside.*usable source interval"):
+        main([
+            "--config", str(CONFIG), "--trim-start-sec", "0", "--trim-end-sec", "0",
+            str(bag), "--output", str(output),
+        ])
+    assert _source_tree_snapshot([bag]) == source_before
+    assert not output.exists()
+    assert not list(tmp_path.glob(".dataset.tmp-*"))

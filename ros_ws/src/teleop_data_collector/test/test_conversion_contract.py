@@ -18,12 +18,43 @@ from teleop_data_collector.rosbag_to_lerobot import (
     _mode_conversion_config,
     _source_names,
     _trim_source_window,
+    _episode_segments,
     _video_specs_from_config,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 CONVERSION_CONFIG = REPO_ROOT / "data_collection/config/convert_gello_lerobot_v2.yaml"
+
+
+def test_milestone_selection_preserves_legacy_bags_and_supports_multiple_prefixes():
+    assert _episode_segments({}, "all") == [("full", None)]
+    state = {"milestones": [
+        {"id": "milestone_1", "timestamp_ns": 100, "clock": "ros"},
+        {"id": "milestone_2", "timestamp_ns": 200, "clock": "ros"},
+    ]}
+    assert _episode_segments(state, "all") == [
+        ("milestone_1", 100), ("milestone_2", 200), ("full", None),
+    ]
+    assert _episode_segments(state, "full") == [("full", None)]
+    assert _episode_segments(state, "milestones") == [("milestone_1", 100), ("milestone_2", 200)]
+    with pytest.raises(ValueError, match="no milestones"):
+        _episode_segments({}, "milestones")
+
+
+@pytest.mark.parametrize("markers", [
+    None,
+    [None],
+    [{"id": "milestone_1", "timestamp_ns": True, "clock": "ros"}],
+    [{"id": "milestone_1", "timestamp_ns": 100, "clock": "wall"}],
+    [{"id": "full", "timestamp_ns": 100, "clock": "ros"}],
+    [{"id": "milestone_1", "timestamp_ns": 100, "clock": "ros"}] * 2,
+    [{"id": "first", "timestamp_ns": 100, "clock": "ros"},
+     {"id": "second", "timestamp_ns": 50, "clock": "ros"}],
+])
+def test_invalid_milestones_are_rejected(markers):
+    with pytest.raises(ValueError):
+        _episode_segments({"milestones": markers}, "all")
 
 
 def _joint_state(names, positions):

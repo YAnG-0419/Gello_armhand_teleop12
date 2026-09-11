@@ -57,6 +57,7 @@ pid_alive "$camera_pid" || {
 ros2 run teleop_data_collector rosbag_data_collector --ros-args \
   --params-file "$REPO_ROOT/data_collection/config/record_gello.yaml" \
   -p output_dir:="$COLLECTION_OUTPUT_DIR" \
+  -p quality_dir:="/collection_data/数据分类" \
   -p workcell_config_hash:="$COLLECTION_WORKCELL_HASH" \
   -p device_identities.cam0_serial:="$COLLECTION_CAM0_SERIAL" \
   -p device_identities.cam0_semantic:="$COLLECTION_CAM0_SEMANTIC" \

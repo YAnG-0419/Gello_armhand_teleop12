@@ -3,6 +3,11 @@ lerobot_version: v2.0
 teleoperator: gello
 fps: 30
 task: teleoperation
+# A bag with a milestone produces a prefix episode and a full episode.
+# Use full or milestones to export separate datasets. Descriptions can be filled
+# in later, e.g. segment_tasks: {milestone_1: "Pick up the object", full: "Place it"}.
+segments: all
+segment_tasks: {}
 robot_type: dual_fr3_wuji
 sampling:
   frequency_hz: 30

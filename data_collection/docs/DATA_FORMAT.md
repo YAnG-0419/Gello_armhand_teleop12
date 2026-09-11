@@ -77,6 +77,30 @@ cam0/cam1/cam2 的序列号及物理语义写入 `collection_state.json`，并�
 
 ## 时间与完整性
 
+录制中的完成标记保存在 `collection_state.json` 的 `milestones` 列表中，例如：
+
+```json
+{
+  "source_recording_id": "一次原始采集的 UUID",
+  "milestones": [
+    {"id": "milestone_1", "timestamp_ns": 1780000000123456789, "clock": "ros"}
+  ]
+}
+```
+
+`timestamp_ns` 是采集端处理标记请求时的 ROS 时间，须与机器人和相机 source header
+处于同一时钟域；网络请求和人工按键存在延迟，不代表自动检测到任务完成。
+任务描述不要求在采集时填写。默认转换按每个标记生成从相同有效开始到该标记的
+前缀 episode，再输出完整 episode；`segments: full` / `milestones` 可分别导出。
+标记必须严格递增且落在原始录制裁剪后的有效区间内；前缀终点不再应用 `trim_end_sec`。
+前缀不会编码标记之后的视频帧，输出行依旧按 30 Hz 网格采样，最后一行不晚于标记。
+
+`meta/episodes.jsonl` 和转换 metadata 中的 `segment_id` 区分 `milestone_1` 与 `full`，
+`source_recording_id` 关联共同来源，用于按原始采集划分训练/验证集。旧 bag 没有 UUID
+时使用其 provenance 中原始 `source_bag` 路径作分组 ID。`source_provenance` 每个输出
+episode 一项，共享来源的条目相同。`source_bags` 只列输入 bag。
+`task_index` 与任务描述按 segment 映射，未填写时前缀使用标记 ID 占位。
+
 ROS bag 同时保留原始消息 header timestamp 与 rosbag receive time。状态 sidecar
 记录每条 required stream 的首末 receive time、source header 首末值、消息数、
 频率、最大内部 gap、首尾 gap 和非单调计数。内部连续性以 source header 时间为准；

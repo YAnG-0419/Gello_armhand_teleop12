@@ -1,4 +1,5 @@
 import multiprocessing
+import json
 import os
 import socket
 import sys
@@ -30,16 +31,15 @@ from apps.operator_gui.operator_gui import (
 
 def test_shortcut_bindings_match_the_workcell_layout():
     assert PEDAL_BINDINGS == {
-        "R": ("toggle", "hand", "left"),
-        "Space": ("toggle_hold", "arm", "left"),
-        "B": ("toggle", "hand", "right"),
+        "A": ("toggle_hold", "arm", "left"),
         "Q": ("toggle_hold", "arm", "right"),
     }
-    assert COLLECTION_SHORTCUTS == {"L": "toggle_recording", "A": "discard"}
+    assert COLLECTION_SHORTCUTS == {"L": "toggle_recording", "Space": "mark_milestone"}
+    assert not set(PEDAL_BINDINGS) & set(COLLECTION_SHORTCUTS)
     assert PRESET_KEYS == ("W", "E")
 
 
-def test_teleop_shortcuts_no_longer_toggle_arm_following(tmp_path):
+def test_teleop_shortcuts_only_toggle_arm_hold(tmp_path):
     QSettings.setPath(
         QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
     )
@@ -54,8 +54,15 @@ def test_teleop_shortcuts_no_longer_toggle_arm_following(tmp_path):
             (command, arguments or {})
         )
         for shortcut in window.shortcuts:
+            assert not shortcut.autoRepeat()
             shortcut.activated.emit()
             application.processEvents()
+        window._apply_status({"arm_hold": {"left": True}})
+        assert window.arm_hold_buttons["left"].text() == "Release Hold (A)"
+        assert window.hand_engage_buttons["left"].text() == "Start hand"
+        assert window.hand_engage_buttons["right"].text() == "Start hand"
+        left_shortcut = next(s for s in window.shortcuts if s.key().toString() == "A")
+        left_shortcut.activated.emit()
     finally:
         window.poll_timer.stop()
         window.health_timer.stop()
@@ -64,10 +71,9 @@ def test_teleop_shortcuts_no_longer_toggle_arm_following(tmp_path):
         window.close()
 
     assert sent == [
-        ("engage_hand", {"side": "left"}),
         ("hold_arm", {"side": "left", "enabled": True}),
-        ("engage_hand", {"side": "right"}),
         ("hold_arm", {"side": "right", "enabled": True}),
+        ("hold_arm", {"side": "left", "enabled": False}),
     ]
 
 
@@ -246,7 +252,7 @@ def test_collection_panel_enables_only_valid_episode_actions(tmp_path):
         application.processEvents()
 
 
-def test_collection_shortcuts_toggle_recording_and_discard(tmp_path):
+def test_collection_shortcuts_mark_only_while_recording_and_keep_discard_button(tmp_path):
     QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
     application = QApplication.instance() or QApplication([])
     window = OperatorWindow("127.0.0.1", _unused_port())
@@ -263,20 +269,28 @@ def test_collection_shortcuts_toggle_recording_and_discard(tmp_path):
         window._apply_collection_status(
             {"state": "READY", "can_start": True, "can_stop": False}
         )
+        shortcuts["Space"].activated.emit()
         shortcuts["L"].activated.emit()
         window._apply_collection_status(
-            {"state": "RECORDING", "can_start": False, "can_stop": True}
+            {"state": "RECORDING", "can_start": False, "can_stop": True,
+             "can_mark_milestone": True, "milestones": [{"id": "milestone_1"}]}
         )
+        assert "已标记 1 个完成点" in window.collection_status_label.text()
+        assert not shortcuts["Space"].autoRepeat()
+        shortcuts["Space"].activated.emit()
         shortcuts["L"].activated.emit()
         window._apply_collection_status(
             {"state": "FINALIZED", "can_discard": True}
         )
-        shortcuts["A"].activated.emit()
+        shortcuts["Space"].activated.emit()
+        window.collection_discard_button.click()
+        window._set_collection_offline()
+        shortcuts["Space"].activated.emit()
     finally:
         window.close()
         application.processEvents()
 
-    assert sent == ["start", "stop", "discard"]
+    assert sent == ["start", "mark_milestone", "stop", "discard"]
 
 
 def _unused_port() -> int:
@@ -285,6 +299,74 @@ def _unused_port() -> int:
     port = sock.getsockname()[1]
     sock.close()
     return port
+
+
+def test_quality_dialog_waits_for_validation_and_saves_explicit_episode(tmp_path):
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    sent = []
+    try:
+        window._send_collection = lambda command, arguments=None: sent.append((command, arguments)) or True
+        window._apply_collection_status({"state": "STOPPING", "last_episode": "episode384"})
+        assert window.quality_dialog is None
+        status = {"state": "INCOMPLETE", "last_episode": "episode384",
+                  "failures": ["missing frames"], "can_start": True,
+                  "can_rate_quality": True, "quality_pending": True}
+        window._apply_collection_status(status)
+        dialog = window.quality_dialog
+        assert dialog is not None
+        assert "missing frames" in dialog.result_label.text()
+        assert not window.collection_record_button.isEnabled()
+        window._apply_collection_status(status)
+        assert window.quality_dialog is dialog
+        dialog.buttons["一般"].click()
+        assert sent == [("rate_quality", {"episode": "episode384", "quality": "一般"})]
+        assert not dialog.buttons["一般"].isEnabled()
+        window._apply_collection_status({**status, "quality_pending": False, "quality": "一般"})
+        assert window.quality_dialog is None
+        assert window.collection_record_button.isEnabled()
+        window._apply_collection_status({**status, "quality_pending": False, "quality": "一般"})
+        assert window.quality_dialog is None
+        window.collection_quality_button.click()
+        assert window.quality_dialog is not None
+        window.quality_dialog.reject()
+        window._apply_collection_status(status)
+        assert window.quality_dialog is None
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_quality_dialog_keeps_error_for_retry_and_recovers_disconnect(tmp_path):
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    try:
+        status = {"state": "FINALIZED", "last_episode": "episode8",
+                  "can_rate_quality": True, "quality_pending": True}
+        window._apply_collection_status(status)
+        dialog = window.quality_dialog
+        window._send_collection = lambda *args: True
+        dialog.buttons["优等"].click()
+        window.collection_pending[99] = "rate_quality"
+        window.collection_buffer = (json.dumps({"id": 99, "ok": False, "error": "No space left"}) + "\n").encode()
+        window._read_collection_responses()
+        assert window.quality_dialog is dialog
+        assert "No space left" in dialog.message_label.text()
+        assert dialog.buttons["优等"].isEnabled()
+        dialog.buttons["优等"].click()
+        window._set_collection_offline()
+        assert not dialog.buttons["优等"].isEnabled()
+        window._apply_collection_status(status)
+        assert dialog.buttons["优等"].isEnabled()
+        dialog.buttons["优等"].click()
+        window._set_collection_offline()
+        window._apply_collection_status({**status, "quality": "优等", "quality_pending": False})
+        assert window.quality_dialog is None
+    finally:
+        window.close()
+        application.processEvents()
 
 
 def _serve(port: int) -> None:

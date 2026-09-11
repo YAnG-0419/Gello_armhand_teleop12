@@ -43,6 +43,7 @@ class _Node:
         self._failures = iter(failures)
         self.calls = 0
         self.logger = _Logger()
+        self.now_ns = 5_000_000_000
 
     def preflight_failures(self):
         self.calls += 1
@@ -51,6 +52,9 @@ class _Node:
     def get_logger(self):
         return self.logger
 
+    def get_clock(self):
+        return SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=self.now_ns))
+
 
 class _Recorder:
     def __init__(self, root: Path):
@@ -58,6 +62,14 @@ class _Recorder:
         self.active = False
         self.current_bag_dir = None
         self.last_bag_dir = None
+        self.milestones = []
+
+    def mark_milestone(self):
+        if not self.active:
+            raise RuntimeError("no episode is currently recording")
+        marker = {"id": "milestone_1", "timestamp_ns": 5_000_000_000, "clock": "ros"}
+        self.milestones.append(marker)
+        return marker
 
     def start(self):
         self.current_bag_dir = self.root / "episode0"
@@ -103,6 +115,67 @@ def test_default_qos_expands_to_each_configured_topic():
     assert "/cam0/depth/image_raw:" in yaml_text
     assert yaml_text.count("history: keep_last") == 2
     assert yaml_text.count("depth: 100") == 2
+
+
+def test_milestones_persist_without_stopping_and_reset_for_next_bag(tmp_path, monkeypatch):
+    node = _Node([])
+    processes = []
+
+    def popen(*args, **kwargs):
+        process = SimpleNamespace(poll=lambda: None, wait=lambda **kw: 0, returncode=0)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(rosbag_recording_node.shutil, "which", lambda _: "/usr/bin/ros2")
+    monkeypatch.setattr(rosbag_recording_node.subprocess, "Popen", popen)
+    monkeypatch.setattr(rosbag_recording_node, "_signal_process_group", lambda *_: None)
+    recorder = rosbag_recording_node.RosbagEpisodeRecorder(
+        node, tmp_path, "episode", (), 30.0, (), postflight=lambda _: ((), {}),
+    )
+    with pytest.raises(RuntimeError, match="no episode"):
+        recorder.mark_milestone()
+    bag = recorder.start()
+    # rosbag creates its directory asynchronously: markers must persist even
+    # before it exists, without pre-creating it and breaking ros2 bag record.
+    marker = recorder.mark_milestone()
+    sidecar = tmp_path / ".episode0.collection_state.json"
+    assert json.loads(sidecar.read_text())["milestones"] == [marker]
+    assert not bag.exists()
+    bag.mkdir()
+    node.now_ns += 1_000_000_000
+    second = recorder.mark_milestone()
+    state = json.loads((bag / "collection_state.json").read_text())
+    assert state["milestones"] == [marker, second]
+    assert state["state"] == "recording"
+    assert recorder.active
+    assert len(processes) == 1
+    with pytest.raises(RuntimeError, match="increasing"):
+        recorder.mark_milestone()
+    recorder.stop()
+    finalized = json.loads((bag / "collection_state.json").read_text())
+    assert finalized["milestones"] == [marker, second]
+    assert finalized["finalized"] is True
+    recorder.mark_discarded()
+    assert json.loads((bag / "collection_state.json").read_text())["milestones"] == [marker, second]
+    recorder.start()
+    assert recorder.milestones == []
+    assert recorder._source_recording_id != state["source_recording_id"]
+
+
+def test_failed_milestone_write_does_not_report_success(tmp_path, monkeypatch):
+    recorder = rosbag_recording_node.RosbagEpisodeRecorder(
+        _Node([]), tmp_path, "episode", (), 30.0, (),
+    )
+    recorder._current_bag_dir = tmp_path / "episode0"
+    recorder._process = SimpleNamespace(poll=lambda: None)
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(recorder, "_write_state", fail)
+    with pytest.raises(OSError, match="disk full"):
+        recorder.mark_milestone()
+    assert recorder.milestones == []
 
 
 def test_explicit_qos_overrides_arg_is_preserved():
@@ -221,7 +294,7 @@ def test_ready_waits_for_required_topics_to_stay_stable(monkeypatch):
 def test_ui_controller_keeps_waiting_start_stop_and_discard_states(tmp_path):
     node = _Node([])
     recorder = _Recorder(tmp_path)
-    controller = CollectorController(node, recorder)
+    controller = CollectorController(node, recorder, quality_dir=tmp_path / "数据分类")
 
     assert controller.status()["state"] == "WAITING"
     with pytest.raises(RuntimeError, match="waiting"):
@@ -233,6 +306,10 @@ def test_ui_controller_keeps_waiting_start_stop_and_discard_states(tmp_path):
     assert started["state"] == "RECORDING"
     assert started["current_episode"] == "episode0"
     assert started["can_stop"] is True
+    assert started["can_mark_milestone"] is True
+    marked = controller.dispatch("mark_milestone")
+    assert marked["state"] == "RECORDING"
+    assert len(marked["milestones"]) == 1
 
     stopped = controller.stop()
     assert stopped["state"] == "FINALIZED"
@@ -240,6 +317,9 @@ def test_ui_controller_keeps_waiting_start_stop_and_discard_states(tmp_path):
     assert stopped["transport_warnings"] == ["synthetic warning"]
     assert stopped["can_start"] is True
     assert stopped["can_discard"] is True
+    assert stopped["can_mark_milestone"] is False
+    with pytest.raises(RuntimeError, match="no episode"):
+        controller.dispatch("mark_milestone")
     # The main loop can notice active=False just after the UI stop completes.
     # Reconciliation must be idempotent instead of issuing a second stop.
     assert controller.reconcile_exited_recorder()["state"] == "FINALIZED"
@@ -251,7 +331,7 @@ def test_ui_controller_keeps_waiting_start_stop_and_discard_states(tmp_path):
 
 def test_main_loop_marks_only_an_unexpected_recorder_exit_interrupted(tmp_path):
     recorder = _Recorder(tmp_path)
-    controller = CollectorController(_Node([]), recorder)
+    controller = CollectorController(_Node([]), recorder, quality_dir=tmp_path / "数据分类")
     controller.set_ready()
     controller.start()
 
@@ -266,7 +346,7 @@ def test_main_loop_marks_only_an_unexpected_recorder_exit_interrupted(tmp_path):
 
 
 def test_collector_control_server_accepts_line_delimited_local_json(tmp_path):
-    controller = CollectorController(_Node([]), _Recorder(tmp_path))
+    controller = CollectorController(_Node([]), _Recorder(tmp_path), quality_dir=tmp_path / "数据分类")
     controller.set_ready()
     server = CollectorControlServer(("127.0.0.1", 0), controller)
     thread = server.start_in_thread()

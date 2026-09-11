@@ -170,6 +170,10 @@ class EpisodeResult:
     source_common_end_ns: int
     source_effective_start_ns: int
     source_effective_end_ns: int
+    segment_id: str = "full"
+    task_index: int = 0
+    source_recording_id: str = ""
+    milestone_timestamp_ns: int | None = None
 
 
 @dataclass
@@ -330,6 +334,8 @@ class EpisodeConverter:
         task_index: int,
         chunk_size: int,
         compression: str | None,
+        source_end_ns: int | None = None,
+        segment_id: str = "full",
     ) -> None:
         self.bag_path = bag_path
         self.output_dir = output_dir
@@ -346,6 +352,8 @@ class EpisodeConverter:
         self.task_index = task_index
         self.chunk_size = chunk_size
         self.compression = compression
+        self.source_end_ns = source_end_ns
+        self.segment_id = segment_id
         self.unmatched_by_stream: dict[str, int] = defaultdict(int)
         self._held_action_values: dict[int, list[float] | list[str]] = {}
         self._engagement_state: dict[int, bool] = {}
@@ -487,6 +495,11 @@ class EpisodeConverter:
                 )
                 bounds[1] = source_time_ns
 
+                # Keep original stream bounds for endpoint validation, but do
+                # not encode frames or consume actions beyond this completion.
+                if self.source_end_ns is not None and source_time_ns > self.source_end_ns:
+                    continue
+
                 feature_updates = []
                 for feature, source_index, source in feature_sources_by_topic.get(topic, []):
                     value = _message_to_source_value(
@@ -570,6 +583,15 @@ class EpisodeConverter:
             trim_start_ns=self.sampling.trim_start_ns,
             trim_end_ns=self.sampling.trim_end_ns,
         )
+        if self.source_end_ns is not None:
+            if not effective_start_ns < self.source_end_ns <= effective_end_ns:
+                raise ValueError(
+                    f"{self.segment_id}: milestone timestamp {self.source_end_ns} is outside "
+                    f"the usable source interval ({effective_start_ns}, {effective_end_ns}]; "
+                    "check the marker and ROS/source clock alignment"
+                )
+            # trim_end belongs to the physical recording stop, not a milestone.
+            effective_end_ns = self.source_end_ns
         # LeRobot timestamps are relative to the first usable instant, so the
         # fixed-rate production timeline starts at exactly zero after trimming.
         output_time_origin_ns = effective_start_ns
@@ -714,6 +736,9 @@ class EpisodeConverter:
             source_common_end_ns=common_end_ns,
             source_effective_start_ns=effective_start_ns,
             source_effective_end_ns=effective_end_ns,
+            segment_id=self.segment_id,
+            task_index=self.task_index,
+            milestone_timestamp_ns=self.source_end_ns,
         )
 
     def _create_video_writers(self) -> dict[str, EpisodeVideoWriter]:
@@ -1055,6 +1080,8 @@ class LeRobotDatasetConverter:
         compression: str | None,
         teleoperator: str,
         source_provenance: list[dict[str, Any]],
+        segments: str = "all",
+        segment_tasks: Mapping[str, str] | None = None,
     ) -> None:
         self.bag_paths = bag_paths
         self.output_dir = output_dir
@@ -1072,31 +1099,48 @@ class LeRobotDatasetConverter:
         self.compression = compression
         self.teleoperator = teleoperator
         self.source_provenance = source_provenance
+        self.segments = segments
+        self.segment_tasks = dict(segment_tasks or {})
+        if any(not isinstance(value, str) or not value.strip() for value in self.segment_tasks.values()):
+            raise ValueError("segment_tasks must map segment IDs to non-empty task descriptions")
+        self.tasks: list[str] = []
 
     def convert(self) -> dict[str, Any]:
         results: list[EpisodeResult] = []
         global_index = 0
-        for episode_index, bag_path in enumerate(self.bag_paths):
-            converter = EpisodeConverter(
-                bag_path=bag_path,
-                output_dir=self.output_dir,
-                episode_index=episode_index,
-                global_start_index=global_index,
-                storage_id=self.storage_id,
-                feature_specs=self.feature_specs,
-                video_specs=self.video_specs,
-                depth_image_specs=self.depth_image_specs,
-                pointcloud_specs=self.pointcloud_specs,
-                static_topic_specs=self.static_topic_specs,
-                sampling=self.sampling,
-                fps=self.fps,
-                task_index=0,
-                chunk_size=self.chunk_size,
-                compression=self.compression,
-            )
-            result = converter.convert()
-            results.append(result)
-            global_index += result.length
+        self.tasks = []
+        for bag_path, provenance in zip(self.bag_paths, self.source_provenance, strict=True):
+            for segment_id, end_ns in _episode_segments(provenance, self.segments):
+                task = self.segment_tasks.get(
+                    segment_id, self.task if segment_id == "full" else segment_id
+                )
+                if task not in self.tasks:
+                    self.tasks.append(task)
+                converter = EpisodeConverter(
+                    bag_path=bag_path,
+                    output_dir=self.output_dir,
+                    episode_index=len(results),
+                    global_start_index=global_index,
+                    storage_id=self.storage_id,
+                    feature_specs=self.feature_specs,
+                    video_specs=self.video_specs,
+                    depth_image_specs=self.depth_image_specs,
+                    pointcloud_specs=self.pointcloud_specs,
+                    static_topic_specs=self.static_topic_specs,
+                    sampling=self.sampling,
+                    fps=self.fps,
+                    task_index=self.tasks.index(task),
+                    chunk_size=self.chunk_size,
+                    compression=self.compression,
+                    source_end_ns=end_ns,
+                    segment_id=segment_id,
+                )
+                result = converter.convert()
+                result.source_recording_id = str(
+                    provenance.get("source_recording_id") or provenance["source_bag"]
+                )
+                results.append(result)
+                global_index += result.length
 
         manifest = self._write_lerobot_metadata(results)
         _write_dataset_readme(self.output_dir, manifest)
@@ -1104,6 +1148,7 @@ class LeRobotDatasetConverter:
         return manifest
 
     def _write_lerobot_metadata(self, results: list[EpisodeResult]) -> dict[str, Any]:
+        provenance_by_bag = dict(zip(self.bag_paths, self.source_provenance, strict=True))
         total_frames = sum(result.length for result in results)
         total_videos = sum(len(result.video_paths) for result in results)
         total_depth_images = sum(len(result.depth_image_storage) for result in results)
@@ -1126,7 +1171,7 @@ class LeRobotDatasetConverter:
             "fps": self.fps,
             "total_episodes": len(results),
             "total_frames": total_frames,
-            "total_tasks": 1,
+            "total_tasks": len(self.tasks),
             "total_videos": total_videos,
             "total_depth_image_streams": total_depth_images,
             "total_pointcloud_streams": total_pointclouds,
@@ -1141,15 +1186,17 @@ class LeRobotDatasetConverter:
 
         _write_jsonl(
             meta_dir / "tasks.jsonl",
-            [{"task_index": 0, "task": self.task}],
+            [{"task_index": index, "task": task} for index, task in enumerate(self.tasks)],
         )
         _write_jsonl(
             meta_dir / "episodes.jsonl",
             [
                 {
                     "episode_index": result.episode_index,
-                    "tasks": [self.task],
+                    "tasks": [self.tasks[result.task_index]],
                     "length": result.length,
+                    "segment_id": result.segment_id,
+                    "source_recording_id": result.source_recording_id,
                 }
                 for result in results
             ],
@@ -1167,9 +1214,10 @@ class LeRobotDatasetConverter:
 
         metadata = {
             "format": FORMAT_VERSION,
-            "source_bags": [str(result.bag_path) for result in results],
+            "source_bags": [str(path) for path in self.bag_paths],
+            "segments": self.segments,
             "teleoperator": self.teleoperator,
-            "source_provenance": self.source_provenance,
+            "source_provenance": [provenance_by_bag[result.bag_path] for result in results],
             "sampling": {
                 "strategy": self.sampling.strategy,
                 "topic": self.sampling.topic,
@@ -1214,6 +1262,10 @@ class LeRobotDatasetConverter:
                 {
                     "episode_index": result.episode_index,
                     "bag_path": str(result.bag_path),
+                    "source_recording_id": result.source_recording_id,
+                    "segment_id": result.segment_id,
+                    "task_index": result.task_index,
+                    "milestone_timestamp_ns": result.milestone_timestamp_ns,
                     "data_path": result.data_path,
                     "video_paths": result.video_paths,
                     "depth_image_storage": result.depth_image_storage,
@@ -1322,6 +1374,8 @@ def main(argv: list[str] | None = None) -> None:
             compression=args.compression,
             teleoperator=teleoperator,
             source_provenance=source_provenance,
+            segments=args.segments or config.get("segments", "all"),
+            segment_tasks=config.get("segment_tasks"),
         )
         manifest = converter.convert()
         _validate_lerobot_v2_output(temporary_output, manifest)
@@ -1347,6 +1401,40 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  videos: {manifest['info']['total_videos']}")
     print(f"  depth image streams: {manifest['info']['total_depth_image_streams']}")
     print(f"  pointcloud streams: {manifest['info']['total_pointcloud_streams']}")
+
+
+def _episode_segments(
+    state: Mapping[str, Any], mode: str,
+) -> list[tuple[str, int | None]]:
+    if mode not in {"all", "full", "milestones"}:
+        raise ValueError("segments must be all, full, or milestones")
+    if mode == "full":
+        return [("full", None)]
+    markers = state.get("milestones", [])
+    if not isinstance(markers, list):
+        raise ValueError("milestones must be a list")
+    segments: list[tuple[str, int | None]] = []
+    previous_ns = 0
+    seen = {"full"}
+    for marker in markers:
+        if not isinstance(marker, dict):
+            raise ValueError("each milestone must be an object")
+        marker_id = marker.get("id")
+        timestamp_ns = marker.get("timestamp_ns")
+        if not isinstance(marker_id, str) or not marker_id.strip() or marker_id in seen:
+            raise ValueError("milestone IDs must be non-empty, unique, and not 'full'")
+        if marker.get("clock") != "ros":
+            raise ValueError(f"{marker_id}: milestone clock must be ros")
+        if type(timestamp_ns) is not int or timestamp_ns <= previous_ns:
+            raise ValueError("milestone timestamps must be positive, increasing integer nanoseconds")
+        segments.append((marker_id, timestamp_ns))
+        seen.add(marker_id)
+        previous_ns = timestamp_ns
+    if mode == "all":
+        segments.append(("full", None))
+    elif not segments:
+        raise ValueError("milestones export requested but this bag has no milestones")
+    return segments
 
 
 def _load_bag_provenance(bag_path: Path, teleoperator: str) -> dict[str, Any]:
@@ -1562,6 +1650,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Exclude this many seconds from the end of the common source interval.",
     )
     parser.add_argument("--task", help="Task label stored in meta/tasks.jsonl.")
+    parser.add_argument(
+        "--segments", choices=("all", "full", "milestones"),
+        help="Export milestone prefixes and/or the full episode (default: all).",
+    )
     parser.add_argument("--robot-type", help="Robot type stored in meta/info.json.")
     parser.add_argument(
         "--chunk-size",

@@ -310,19 +310,22 @@ O30i 与 G20 的投影表、极性、量化与 URDF 限位绑在一起；改模�
 
 GUI 连 `127.0.0.1:5590`，行分隔 JSON：`{"id","command","arguments"}` → `{"id","ok","result"|"error"}`。服务线程只改 `OperatorConsole` 的激活位和一次性请求；100 Hz 环按自己的节拍读取，与当年键盘轮询相同。
 
-数据采集按钮另连 `127.0.0.1:5592`，只发送 `status/start/stop/discard`。该接口由
+数据采集按钮另连 `127.0.0.1:5592`，只发送 `status/start/stop/mark_milestone/discard`。该接口由
 独立 `teleop_data_collector` 进程提供，不经过遥操 backend，也不能发布机器人命令。
 
 | 操作 | 作用对象 |
 | --- | --- |
 | L | 开始录制；录制中再次按下则结束并校验 |
-| A | 丢弃最近一次录制 |
-| R / B | 左/右手跟随 |
-| Space / Q | 左/右臂 Hold |
+| Space | 录制中保存中间完成标记，继续录制 |
+| A / Q | 左/右臂 Hold |
 | DISENGAGE ALL | 停所有跟随 |
 | W / E | 相对末端预设快捷键 |
 
 左右 `Start arm` 只保留 GUI 按钮，不再绑定键盘快捷键。
+左右 `Start hand` 同样只保留 GUI 按钮，取消原来的 `R` / `B` 跟随快捷键。
+左臂 Hold 使用 `A`；`Space` 保存中间完成标记，原 `R` 标记快捷键取消。
+采集终端同样使用 `L` 起停、`Space` 保存中间标记。
+“丢弃最近一次”保留 GUI 按钮；采集终端备用丢弃键仍为 `D`。
 
 Home 分两阶段：先等所选 FR3 到位并稳定，再让对应 Wuji Hand 2 从实测滑到手部 Home。缺任一侧目标则在臂运动前拒绝。录 Home 必须先停该侧臂和手，只写文件，不驱动硬件。
 
